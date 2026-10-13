@@ -1,0 +1,8 @@
+.gradle/
+build/
+*.log
+.idea/
+*.iml
+.kotlin/
+# 합성 데이터(CSV·덤프)는 생성기로 재현한다
+data/out/
