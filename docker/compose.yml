@@ -1,0 +1,21 @@
+# 개발용 PostgreSQL. 포트는 이 PC 안(127.0.0.1)에만 연다. 앱·테스트는 호스트에서 붙는다.
+name: ccle
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ccle
+      POSTGRES_PASSWORD: ccle
+      POSTGRES_DB: ccle
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d:ro
+      - ccle-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccle -d ccle"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  ccle-pgdata:
