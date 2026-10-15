@@ -24,23 +24,46 @@ dependencies {
 // 실행 opt-in: env BEHAVIOR_TESTS=1 (run.sh가 export한다). DB_URL은 앱 datasource 키와 같아서 판정에 쓰지 않는다
 // (앱용으로 export된 DB_URL 때문에 루트 build가 개발 DB에 픽스처 행을 쓰는 것을 막는다).
 //  - opt-in 없음 + 루트 집계(build·test·check)로 끌려옴 → 이유를 남기고 건너뜀
-//  - opt-in 없음 + 행위 테스트 태스크를 직접 이름으로 호출 → 실패(0건 성공이 red를 green으로 보이게 하므로)
-//  - opt-in 있음 + contractTest → BASE_URL·DB_URL 둘 다 명시돼야 함, 없으면 실패
+//  - opt-in 없음 + 행위 테스트 태스크를 직접(축약 포함) 호출 → 실패(0건 성공이 red를 green으로 보이게 하므로)
+//  - opt-in 있음 + infraTest → DB_URL, contractTest → BASE_URL·DB_URL 명시돼야 함, 없으면 실패
 val behaviorOptIn: Boolean = System.getenv("BEHAVIOR_TESTS") == "1"
 val behaviorTaskNames = setOf("test", "infraTest", "contractTest")
 
-/** 이 모듈의 행위 테스트 태스크를 사용자가 직접 이름으로 불렀나. */
-fun directlyRequested(): List<String> {
+/** 이름을 Gradle 축약 단위로 쪼갠다: '-' 경계와 대문자 앞(camelCase). 예: contractTest → [contract, Test]. */
+fun abbrevParts(name: String): List<String> = name.split('-').flatMap { it.split(Regex("(?=[A-Z0-9])")) }.filter { it.isNotEmpty() }
+
+/** Gradle 축약 규칙: 패턴 조각마다 대상 조각의 접두(대소문자 무시). 예: cT·contractT·iT·tes. */
+fun abbrevMatches(pattern: String, name: String): Boolean {
+    val p = abbrevParts(pattern)
+    val n = abbrevParts(name)
+    return p.isNotEmpty() && p.size <= n.size && p.indices.all { n[it].lowercase().startsWith(p[it].lowercase()) }
+}
+
+/**
+ * 이 모듈의 행위 테스트 태스크를 사용자가 직접(축약 포함) 불렀나. 요청 문자열을 Gradle 축약 규칙으로 해석한다.
+ *  - 경로 형태(`:behavior-tests:cT`, `b-t:iT`): 프로젝트 조각이 이 모듈과 맞고 태스크 조각이 test·infraTest·contractTest 중 하나와 맞으면 직접
+ *  - 이름만: infraTest·contractTest와 맞으면 어디서 불러도 직접(이 모듈에만 있는 이름), test와만 맞으면 모듈 디렉터리에서 부른 경우만 직접
+ *    (루트의 test·tes·build·check는 집계 → 건너뜀)
+ * 판정 뒤 실제 그래프에 그 태스크가 있는 것만 남긴다(축약이 다른 태스크로 해석된 경우를 걸러 낸다).
+ */
+fun directlyRequested(graph: TaskExecutionGraph): List<String> {
     val inModuleDir = gradle.startParameter.currentDir.canonicalFile == projectDir.canonicalFile
-    return gradle.startParameter.taskNames.filter { raw ->
-        val n = raw.removePrefix(":")
-        when {
-            n.contains(":") -> n.substringBeforeLast(":") == project.path.removePrefix(":") && n.substringAfterLast(":") in behaviorTaskNames
-            n == "infraTest" || n == "contractTest" -> true          // 이 모듈에만 있는 이름
-            n == "test" -> inModuleDir
-            else -> false
+    val projectName = project.path.removePrefix(":")
+    val hits = mutableListOf<String>()
+    for (raw in gradle.startParameter.taskNames) {
+        val absolute = raw.startsWith(":")
+        val segs = raw.removePrefix(":").split(":")
+        val taskPart = segs.last()
+        val projPart = segs.dropLast(1)
+        val matched: List<String> = when {
+            projPart.isNotEmpty() ->
+                if (projPart.size == 1 && abbrevMatches(projPart[0], projectName)) behaviorTaskNames.filter { abbrevMatches(taskPart, it) } else emptyList()
+            absolute -> emptyList()                                   // `:x` = 루트 프로젝트의 태스크
+            else -> behaviorTaskNames.filter { abbrevMatches(taskPart, it) && (it != "test" || inModuleDir) }
         }
+        matched.map { "${project.path}:$it" }.filter { graph.hasTask(it) }.forEach { hits += "$raw → $it" }
     }
+    return hits
 }
 
 fun Test.requireOptIn() {
@@ -51,13 +74,16 @@ fun Test.requireOptIn() {
 }
 
 gradle.taskGraph.whenReady {
-    val direct = directlyRequested()
+    val direct = directlyRequested(this)
     if (!behaviorOptIn && direct.isNotEmpty()) {
         throw GradleException(
             "행위 테스트 ${direct}를 직접 호출했지만 env BEHAVIOR_TESTS=1 이 없다. " +
                 "건너뛰면 0건 성공으로 보이므로 실패시킨다. tools/behavior/run.sh 를 쓰거나 " +
                 "BEHAVIOR_TESTS=1 BASE_URL=... DB_URL=... 로 호출하라."
         )
+    }
+    if (behaviorOptIn && hasTask("${project.path}:infraTest") && System.getenv("DB_URL").isNullOrBlank()) {
+        throw GradleException("infraTest에는 env DB_URL 이 명시돼야 한다(코드 기본 주소로 붙어 픽스처 행을 쓰지 않게).")
     }
     if (behaviorOptIn && hasTask("${project.path}:contractTest")) {
         val missing = listOf("BASE_URL", "DB_URL").filter { System.getenv(it).isNullOrBlank() }
