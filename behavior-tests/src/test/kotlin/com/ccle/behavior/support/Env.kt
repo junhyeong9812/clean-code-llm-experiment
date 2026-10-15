@@ -17,4 +17,8 @@ object Env {
     val pgDelayMs: Long = env("PG_DELAY_MS", FakePg.DEFAULT_DELAY_MS.toString()).toLong()
     /** 앱 HTTP 요청 타임아웃(PG 타임아웃 경로가 2초 이상 걸리므로 넉넉히). */
     val httpTimeoutMs: Long = env("HTTP_TIMEOUT_MS", "15000").toLong()
+    /** 배치 호출(POST /admin/batches/...) 전용 타임아웃. 시계를 크게 옮긴 뒤 첫 배치는 시드 전체를 처리할 수 있다. */
+    val batchTimeoutMs: Long = env("BATCH_TIMEOUT_MS", "120000").toLong()
+    /** 가짜 PG 주소. PG_URL이 있으면 그대로, 없으면 http://127.0.0.1:PG_PORT. JVM 안에서 띄우는 PG는 PG_PORT로 뜬다. */
+    val pgUrl: String = System.getenv("PG_URL")?.takeIf { it.isNotBlank() }?.trimEnd('/') ?: "http://127.0.0.1:$pgPort"
 }

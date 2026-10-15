@@ -30,7 +30,7 @@ docker rm -f "$db" > /dev/null 2>&1 || true
 "$root/tools/seedgen/run-db.sh" 1k-s42 "$db" "$db_port"
 export DB_URL="jdbc:postgresql://127.0.0.1:$db_port/ccle_seed" DB_USER=ccle DB_PASSWORD=ccle
 export PG_URL="http://127.0.0.1:$pg_port" PG_PORT=$pg_port PG_TIMEOUT_MS=2000 PG_DELAY_MS=3000 PG_EXTERNAL=1
-export BASE_URL="http://127.0.0.1:$port" SERVER_PORT=$port
+export BASE_URL="http://127.0.0.1:$port" SERVER_PORT=$port BEHAVIOR_TESTS=1
 
 # 가짜 PG: 앱보다 먼저 띄운다(앱이 기동 중 PG에 붙어도 되게)
 "$JAVA_HOME/bin/java" -cp "$(cat behavior-tests/build/fake-pg.classpath)" com.ccle.behavior.pg.FakePgKt > "$logs/fake-pg.log" 2>&1 &

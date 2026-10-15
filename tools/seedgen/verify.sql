@@ -475,6 +475,9 @@ SELECT 'trade_matched_after_bids', count(*) FROM trades t
     OR t.matched_at >= bb.expires_at OR t.matched_at >= sb.expires_at
 UNION ALL -- [§4.2] 결제 기한 = 체결 + 30분
 SELECT 'trade_payment_due', count(*) FROM trades WHERE payment_due_at <> matched_at + interval '30 minutes'
+UNION ALL -- [§4.1·ADR-0003 §7] 판매 입찰 복구(MATCHED → ACTIVE)는 유효기간 안에서만(지났으면 MATCHED → EXPIRED)
+SELECT 'bid_restore_within_validity', count(*) FROM bid_events e JOIN bids b ON b.id = e.bid_id
+ WHERE e.from_status = 'MATCHED' AND e.to_status = 'ACTIVE' AND e.created_at >= b.expires_at
 UNION ALL -- [§9.1] MATCHED 입찰 ⇔ 살아 있는 체결 1건
 SELECT 'bid_matched_live_trade', count(*) FROM bids b
  LEFT JOIN (SELECT bid_id, count(*) AS n FROM (
@@ -519,14 +522,14 @@ SELECT 'trade_price_time_priority', count(*) FROM v_match m
                        ELSE (-z.price, z.created_at, z.bid_id) < (-m.maker_price, m.maker_created, m.maker_id) END)
 UNION ALL -- [§4.1] 호가창은 어느 순간에도 교차하지 않는다: 입찰이 ACTIVE가 되는 순간(등록·복구) 반대편에 교차하는
           -- 다른 사용자의 체결 가능한(만료 시각 전) ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다.
-          -- 예외: 그 구간이 같은 시각의 체결로 끝났고 이 입찰이 그 체결의 테이커이며, 등록(복구)과 체결 사이에
+          -- 예외: 그 구간이 같은 시각의 체결로 끝났고 이 입찰이 그 체결의 테이커이며, 등록(복구)과 체결 이벤트 2행 사이에
           --       같은 사이즈의 다른 이벤트가 없다(등록·복구 즉시 체결). 같은 사이즈 안의 이벤트 id 순서는 실제 처리
           --       순서다(ADR-0003 §3.3 사이즈 단위 직렬화). 다른 사이즈의 이벤트는 사이에 끼어도 된다
 SELECT 'book_never_crossed', count(*) FROM v_act x
  WHERE NOT EXISTS (SELECT 1 FROM v_match m
                    WHERE m.taker_id = x.bid_id AND x.e_eid IN (m.m_eid, m.m_eid2) AND m.m_at = x.s_at
                      AND NOT EXISTS (SELECT 1 FROM bid_events be JOIN bids bb ON bb.id = be.bid_id
-                                     WHERE be.id > x.s_eid AND be.id < x.e_eid
+                                     WHERE be.id > x.s_eid AND be.id < m.m_eid2   -- 등록 ~ 그 체결의 마지막 MATCHED
                                        AND bb.product_size_id = x.product_size_id
                                        AND be.trade_id IS DISTINCT FROM m.trade_id))
    AND EXISTS (SELECT 1 FROM v_act z

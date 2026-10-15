@@ -46,6 +46,7 @@ new_id=$(docker image inspect -f '{{.Id}}' "$image")
 for id in $(printf '%s\n' $old_id $(docker image ls -q --no-trunc -f dangling=true -f "label=ccle.seed.tag=$tag") | sort -u); do
   [ -z "$id" ] || [ "$id" = "$new_id" ] && continue
   if [ -n "$(docker ps -aq -f ancestor="$id")" ]; then echo "남김(사용 중인 컨테이너 있음): $id" >&2; continue; fi
+  if [ "$(docker image inspect -f '{{len .RepoTags}}' "$id" 2>/dev/null || echo 0)" != 0 ]; then echo "남김(다른 태그가 붙어 있음): $id" >&2; continue; fi
   docker image rm -f "$id" > /dev/null && echo "지움: 이전 시드 이미지 $id"
 done
 docker image ls "$image" --format '{{.Repository}}:{{.Tag}} {{.Size}}'

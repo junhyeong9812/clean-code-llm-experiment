@@ -21,14 +21,49 @@ dependencies {
 
 // 테스트는 직렬로 돈다(ADR-0003 §11, 명세 §2): 포크 1개, JUnit 병렬 끔.
 // 실행 결과는 앱·DB 상태에 달려 있으므로 캐시하지 않는다.
-// 환경이 명시됐을 때만 돈다: 루트 `./gradlew test`·`build`에서 env 없이 돌다 실패해
-// god·layered 단위 테스트 결과를 가리지 않게 한다. 판정은 명시적 env로만 한다(코드의 기본값은 보지 않는다).
-// run.sh는 env를 모두 넘기므로 영향이 없다.
-fun Test.requireEnv(name: String) {
-    onlyIf("env $name 가 설정됨") {
-        val set = !System.getenv(name).isNullOrBlank()
-        if (!set) logger.lifecycle("[behavior-tests] $path 건너뜀: env $name 가 없다(행위 테스트 환경 미설정)")
-        set
+// 실행 opt-in: env BEHAVIOR_TESTS=1 (run.sh가 export한다). DB_URL은 앱 datasource 키와 같아서 판정에 쓰지 않는다
+// (앱용으로 export된 DB_URL 때문에 루트 build가 개발 DB에 픽스처 행을 쓰는 것을 막는다).
+//  - opt-in 없음 + 루트 집계(build·test·check)로 끌려옴 → 이유를 남기고 건너뜀
+//  - opt-in 없음 + 행위 테스트 태스크를 직접 이름으로 호출 → 실패(0건 성공이 red를 green으로 보이게 하므로)
+//  - opt-in 있음 + contractTest → BASE_URL·DB_URL 둘 다 명시돼야 함, 없으면 실패
+val behaviorOptIn: Boolean = System.getenv("BEHAVIOR_TESTS") == "1"
+val behaviorTaskNames = setOf("test", "infraTest", "contractTest")
+
+/** 이 모듈의 행위 테스트 태스크를 사용자가 직접 이름으로 불렀나. */
+fun directlyRequested(): List<String> {
+    val inModuleDir = gradle.startParameter.currentDir.canonicalFile == projectDir.canonicalFile
+    return gradle.startParameter.taskNames.filter { raw ->
+        val n = raw.removePrefix(":")
+        when {
+            n.contains(":") -> n.substringBeforeLast(":") == project.path.removePrefix(":") && n.substringAfterLast(":") in behaviorTaskNames
+            n == "infraTest" || n == "contractTest" -> true          // 이 모듈에만 있는 이름
+            n == "test" -> inModuleDir
+            else -> false
+        }
+    }
+}
+
+fun Test.requireOptIn() {
+    onlyIf("env BEHAVIOR_TESTS=1") {
+        if (!behaviorOptIn) logger.lifecycle("[behavior-tests] $path 건너뜀: env BEHAVIOR_TESTS=1 이 없다(행위 테스트는 run.sh 또는 명시적 opt-in으로만 돈다)")
+        behaviorOptIn
+    }
+}
+
+gradle.taskGraph.whenReady {
+    val direct = directlyRequested()
+    if (!behaviorOptIn && direct.isNotEmpty()) {
+        throw GradleException(
+            "행위 테스트 ${direct}를 직접 호출했지만 env BEHAVIOR_TESTS=1 이 없다. " +
+                "건너뛰면 0건 성공으로 보이므로 실패시킨다. tools/behavior/run.sh 를 쓰거나 " +
+                "BEHAVIOR_TESTS=1 BASE_URL=... DB_URL=... 로 호출하라."
+        )
+    }
+    if (behaviorOptIn && hasTask("${project.path}:contractTest")) {
+        val missing = listOf("BASE_URL", "DB_URL").filter { System.getenv(it).isNullOrBlank() }
+        if (missing.isNotEmpty()) {
+            throw GradleException("contractTest에는 env $missing 가 명시돼야 한다(코드 기본값으로 엉뚱한 앱·DB를 보지 않게).")
+        }
     }
 }
 
@@ -51,7 +86,7 @@ val infraTest by tasks.registering(Test::class) {
     classpath = testSourceSet.runtimeClasspath
     useJUnitPlatform { includeTags("infra") }
     behaviorDefaults()
-    requireEnv("DB_URL")      // DB만 쓴다
+    requireOptIn()
 }
 
 val contractTest by tasks.registering(Test::class) {
@@ -61,7 +96,7 @@ val contractTest by tasks.registering(Test::class) {
     classpath = testSourceSet.runtimeClasspath
     useJUnitPlatform { includeTags("contract") }
     behaviorDefaults()
-    requireEnv("BASE_URL")    // 앱 대상(DB_URL도 함께 넘겨야 기본값이 아닌 DB를 본다)
+    requireOptIn()
     mustRunAfter(infraTest)
 }
 

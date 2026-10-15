@@ -91,10 +91,10 @@ object Flow {
         assertEquals(200, r.status, "가짜 PG 제어 실패: $r")
     }
 
-    fun pgUrl() = "http://127.0.0.1:${Env.pgPort}"
+    fun pgUrl() = Env.pgUrl
 
     // ---- 배치 (§7) ----
-    fun batch(name: String): Resp = Api.post("/admin/batches/$name", null)
+    fun batch(name: String): Resp = Api.request("POST", "/admin/batches/$name", timeoutMs = Env.batchTimeoutMs)
 
     fun runBatch(name: String): Resp {
         val r = batch(name).assertStatus(200)

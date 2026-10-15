@@ -79,10 +79,11 @@ object Api {
         idempotencyKey: String? = null,
         rawBody: String? = null,
         base: String = Env.baseUrl,
+        timeoutMs: Long = Env.httpTimeoutMs,
     ): Resp {
         val payload = rawBody ?: body?.let { mapper.writeValueAsString(it) }
         val b = HttpRequest.newBuilder(URI.create(base + path))
-            .timeout(Duration.ofMillis(Env.httpTimeoutMs))
+            .timeout(Duration.ofMillis(timeoutMs))
             .header("Accept", "application/json")
         if (payload != null) b.header("Content-Type", "application/json")
         if (userId != null) b.header("X-User-Id", userId.toString())
