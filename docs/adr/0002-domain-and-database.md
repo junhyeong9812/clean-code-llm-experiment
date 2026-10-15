@@ -254,3 +254,53 @@ seller_penalties(id PK, seller_id FK, order_item_id FK, amount bigint, settlemen
 - 갓 클래스의 범위: 위 절차 전체(입찰·체결·결제·취소·포인트·검수·확정·정산 배치)를 클래스 1개, 파일 1개에 담는다. 컨트롤러·엔티티·DTO는 바깥에 둔다(ADR-0001).
 - 배치(만료·결제 기한·자동 확정·등급 재산정·포인트 소멸·주간 정산)는 HTTP 관리 엔드포인트로도 실행할 수 있게 한다. 테스트와 과제에서 시각을 고정해 부르기 위해서다.
 - 다음 작업: DDL 확정(`docker/init`) → 합성 데이터 생성기·CSV·적재·불변식 검증 → 행위 테스트 → 갓 클래스 구현
+
+## 9. 개정 (2026-10-15, DDL·생성기 작업 중)
+
+### 9.1 입찰 복구와 체결 유일성
+
+§4.1의 "판매 입찰 복구"와 불변식 6(`trades.sell_bid_id` UNIQUE)이 서로 부딪혔다. 복구된 입찰이 다시 체결될 수 없기 때문이다. 다음과 같이 고친다(사용자 결정).
+
+- `bids.status`는 현재 상태만 갖는다. 모든 상태 변화는 append-only 테이블 `bid_events(id, bid_id, from_status, to_status, trade_id NULL, created_at)`에 쌓는다. 등록 시에도 `NULL → ACTIVE`를 1행 남긴다.
+- 결제 기한이 지난 체결은 지우지 않고 `PAYMENT_EXPIRED`로 남긴다. `buyer_warnings`가 이 행을 참조한다.
+- 유일성은 부분 UNIQUE로 강제한다: `UNIQUE(buy_bid_id) WHERE status <> 'PAYMENT_EXPIRED'`, `sell_bid_id`도 같다.
+- 불변식 6을 고친다: 입찰 1개에 **살아 있는**(PAYMENT_EXPIRED가 아닌) 체결은 최대 1건이다.
+- 같은 이유로 주문 항목에도 부분 UNIQUE를 쓴다. 결제가 거절되면 그 주문의 항목은 `PAYMENT_FAILED`가 되고, 같은 체결로 새 주문을 만들 수 있다: `UNIQUE(trade_id) WHERE status <> 'PAYMENT_FAILED'`. 결제 중인 항목의 상태는 `AWAITING_PAYMENT`다.
+
+### 9.2 금액 세부 (기본값의 구체화)
+
+- **항목 몫:** 항목 i의 기준액 `b_i = 체결가 + 구매 수수료 (+ 배송비, 첫 항목만)`. 카드 몫은 `floor(card_amount × b_i / 주문 총액)`로 나누고, 남은 원은 앞 항목부터 1원씩(그 항목의 기준액을 넘지 않게) 더한다. 포인트 몫 = `b_i − 카드 몫`. `shipping_share`는 첫 항목에만 배송비, 나머지는 0이다.
+- **배송비의 카드·포인트 분할:** 첫 항목의 배송비 중 카드 부분은 `floor(배송비 × 카드 몫 / b_1)`, 나머지는 포인트 부분이다.
+- **환불:** 구매자 취소는 그 항목의 몫에서 배송비 부분을 뺀 만큼 환불한다. 주문의 모든 항목이 취소·환불되는 마지막 환불에서 아직 환불되지 않은 배송비를 함께 돌려준다. 판매자 귀책과 분쟁 인정은 항목의 몫 전부(배송비 부분 포함)를 즉시 환불한다. 결과: 모든 항목이 환불된 주문은 `Σ환불 = 결제액`이 정확히 성립한다.
+- **적립 기준:** 항목의 카드 몫 중 체결가 부분 = `floor(카드 몫 × 체결가 / b_i)`. 적립 = `floor(그 값 × 적립률)`. 0이면 적립 행을 만들지 않는다.
+- **포인트 배분:** `point_allocations(entry_id, earn_entry_id, amount)`. `entry_id`는 USE·EXPIRE·REVOKE(묶음에서 빠짐) 또는 RESTORE(묶음으로 되돌아옴)다. 어느 경우든 한 항목의 배분 합 = 그 항목의 금액이다. AVAILABLE EARN의 `remaining = amount − Σ(USE·EXPIRE·REVOKE 배분) + Σ(RESTORE 배분)`, `0 ≤ remaining ≤ amount`.
+- **복구 순서:** 취소된 항목의 포인트 몫은 그 주문 USE가 빠져나간 묶음으로 되돌린다. 만료일이 늦은 묶음부터 채운다. 되돌린 묶음이 이미 만료됐으면 같은 시각에 EXPIRE가 뒤따른다.
+- **회수(REVOKE):** 분쟁 인정 시 그 항목 적립 묶음의 남은 양만큼만 회수한다. 이미 쓴 부분은 회수하지 않는다(플랫폼 부담).
+- **등급 산정 금액:** 구매 확정 시 체결가를 더하고, 확정 후 환불(분쟁 인정) 시 그 확정 월에서 뺀다.
+
+### 9.3 정산 세부
+
+- 정산은 매주 월요일 00:00(KST)에 지난주 분을 계산하고, 수요일 00:00에 지급한다(`paid_at`). 그 주에 포함 항목·보류·회수·패널티·이월이 하나도 없는 판매자는 행을 만들지 않는다.
+- `settlement_items`: INCLUDED(amount = 체결가, fee = 판매 수수료), HELD(그 시점 DISPUTED, amount·fee 0 — 기록용), CLAWBACK(이미 포함된 뒤 분쟁 인정, amount·fee는 음수).
+- `gross = Σ amount`, `fee_total = Σ fee`(INCLUDED·CLAWBACK), `penalty_total =` 그 정산에 붙은 패널티 합, `carry_in =` 직전 정산의 `carry_out`.
+- 불변식 8을 고친다: 정산 마감 전에 확정된 CONFIRMED 항목은 INCLUDED가 정확히 1행이고 CLAWBACK이 없다. REFUNDED_AFTER_CONFIRM 항목은 INCLUDED 수 = CLAWBACK 수(0 또는 1)다.
+- 정산 상태: `PAID`(payout > 0, 수요일 지급), `CARRIED`(payout 0).
+
+### 9.4 상태 값
+
+- bids: ACTIVE·MATCHED·CANCELLED·EXPIRED / trades: AWAITING_PAYMENT·PAID·PAYMENT_EXPIRED
+- orders: PENDING·PAYING·PAID·FAILED·UNKNOWN·PARTIALLY_CANCELLED·CANCELLED
+- order_items: AWAITING_PAYMENT·PAYMENT_FAILED·PAID·SHIPPED_TO_CENTER·INSPECTING·DELIVERING·DELIVERED·CONFIRMED·DISPUTED·REFUNDED_AFTER_CONFIRM·CANCELLED_BY_BUYER·CANCELLED_SELLER_FAULT
+- point_ledger: EARN(PENDING·AVAILABLE·CANCELLED), USE(RESERVED·CONFIRMED·RELEASED), RESTORE·EXPIRE·REVOKE(DONE)
+- inspections.result: PASS·FAIL / disputes.status: OPEN·ACCEPTED·REJECTED / settlements.status: PAID·CARRIED
+
+### 9.5 세부 해석 (검증 SQL 작성 중 드러난 모호점의 확정)
+
+- **PG 승인:** 승인 = `APPROVE`가 APPROVED이거나, `APPROVE`가 UNKNOWN이고 뒤따른 `INQUIRY`가 APPROVED. 행은 고치지 않고 덧붙인다(append-only).
+- **포인트 예약 해제:** RELEASED된 USE에는 배분 행이 없다(예약은 승인될 때 배분으로 기록된다). §9.2의 배분 합 규칙은 CONFIRMED USE에 적용한다.
+- **확정 후 환불(REFUNDED_AFTER_CONFIRM):** 주문 상태 계산에서 취소와 같이 센다(일부면 PARTIALLY_CANCELLED, 전부면 CANCELLED). `cancelled_at` = 분쟁 인정 시각.
+- **환불 행의 열:** `card_amount + point_amount` = 실제 환불액. `buyer_fee_amount` = 그 항목의 구매 수수료(구매자 취소도 수수료를 환불한다, §5.3 첫 줄), `shipping_amount` = 이 환불에 포함된 배송비.
+- **분쟁 인정의 포인트 몫:** 다른 취소와 같이 RESTORE로 되돌린다.
+- **항목 순서:** "첫 항목·앞 항목"은 `order_items.id` 순서.
+- **패널티의 정산:** 패널티는 발생 후 처음 마감되는 그 판매자의 주간 정산에 붙는다.
+- **CARRIED 정산:** `paid_at`은 NULL.
