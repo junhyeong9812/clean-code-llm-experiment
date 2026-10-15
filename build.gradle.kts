@@ -7,7 +7,8 @@ plugins {
 }
 
 // 두 구현(god·layered)은 같은 의존성·같은 런타임으로 맞춘다: 구조만 다르게 비교하기 위해서다
-subprojects {
+// behavior-tests 는 Spring 앱이 아니므로 이 설정 밖에 둔다
+configure(listOf(project(":god"), project(":layered"))) {
     apply(plugin = "org.springframework.boot")
     apply(plugin = "io.spring.dependency-management")
     apply(plugin = "org.jetbrains.kotlin.jvm")
