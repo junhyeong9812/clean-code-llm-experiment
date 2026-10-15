@@ -248,6 +248,26 @@ seller_penalties(id PK, seller_id FK, order_item_id FK, amount bigint, settlemen
 
 - 디스크(여유 약 50GB)와 시드 이미지 크기 때문에 실제 행 수는 데이터 생성 작업에서 측정하고 조정한다.
 
+**실측 (2026-10-15, `seedgen.py --users 500000`, 시드 42, manifest sha256 `ee0996d0…5cc773`)**
+
+| 테이블 | 행 수 | 테이블 | 행 수 |
+|---|---|---|---|
+| users | 500,000 | user_grade_history | 1,026,737 |
+| seller_payout_accounts | 100,000 | categories | 4 |
+| products / product_sizes | 20,000 / 209,187 | bids | 12,999,508 |
+| bid_events | 26,128,711 | trades | 4,900,774 |
+| buyer_warnings | 152,155 | orders | 4,382,640 |
+| order_items | 4,906,003 | pg_transactions | 4,727,732 |
+| refunds | 301,255 | inspections | 4,526,119 |
+| disputes | 43,096 | point_ledger | 6,807,379 |
+| point_allocations | 5,180,725 | point_balances | 425,614 |
+| settlements | 3,209,197 | settlement_items | 4,361,796 |
+| seller_penalties | 137,712 | | |
+
+- 주문당 항목은 1.12건이다(예상은 1.6건). 체결의 43%가 판매자의 즉시 판매라 단건 주문이 많다. 예상치는 추정이었으므로 실측을 따른다.
+- 크기: CSV 6.2GB(생성 72분, 최대 메모리 4.2GB) → DB 13GB → 시드 이미지 16.6GB. 적재·제약·VACUUM 30분, `verify.sql` 83분, 위반 0.
+- 실행 컨테이너는 1.7초 만에 뜬다. 단 PostgreSQL은 데이터 파일을 쓰기 모드로 연다. 그래서 overlay2가 **처음 건드린 테이블 파일 전체를 쓰기층에 복사**한다(실측: `trades` 첫 조회 2.4초, 다음 조회 0.5초, 쓰기층 1.2GB). 모든 테이블을 건드리면 실행 한 번에 최대 약 14GB를 쓴다. 그러니 실행 컨테이너는 끝나면 바로 지우고, 여러 개를 동시에 띄우지 않는다.
+
 ## 8. 미결정 · 다음 단계
 
 - [기본값] 항목 13곳은 검토 결과 그대로 채택했다(2026-10-15).
