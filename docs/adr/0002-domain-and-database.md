@@ -325,3 +325,9 @@ seller_penalties(id PK, seller_id FK, order_item_id FK, amount bigint, settlemen
 - **패널티의 정산:** 패널티는 발생 후 처음 마감되는 그 판매자의 주간 정산에 붙는다.
 - **CARRIED 정산:** `paid_at`은 NULL.
 - **정산 시점의 예외(현재 시각 스냅샷):** 마지막 마감 뒤에 분쟁이 기각된 항목은 아직 INCLUDED가 없다(보류만 있다). 마지막 마감 뒤에 분쟁이 인정된 항목은 아직 CLAWBACK이 없다. 둘 다 다음 정산에서 처리된다.
+
+### 9.6 ADR-0003 채택에 따른 개정 (2026-10-15)
+
+- **포인트 예약:** 예약(USE `RESERVED`) 시점에 `point_allocations`를 쓰고 묶음 `remaining`과 `point_balances.available`을 줄인다. 해제(`RELEASED`) 시 그 배분 행을 지우고 되돌린다. §9.5의 "예약은 승인될 때 배분으로 기록된다"를 대체한다. 예약 중인 포인트를 다른 주문이 쓰지 못하게 하기 위해서다.
+- **멱등 재요청:** 같은 멱등 키의 재요청은 그 주문의 **현재 상태**를 돌려준다(§4.3의 "첫 결과"를 대체). 새 승인은 만들지 않는다.
+- 이 밖에 ADR-0003 §9가 정한 해석(결제 기한 때 만료된 판매 입찰의 `MATCHED → EXPIRED`, `pg_transactions` 결과 뒤 1행 기록, `PENDING` 미사용)도 따른다.

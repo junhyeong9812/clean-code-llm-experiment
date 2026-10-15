@@ -10,6 +10,7 @@
 | 2026-10-15 | 설계 문서 리뷰(설계 선검증 + 듀얼 1패스): packet base `6be30b8`, OUT=`scratchpad/rv.bxiW`, 미러 `mirror.neEu`. 보안 스캔: 개발 기본 비밀번호 `ccle` 2건(공개 기본값, 오탐) | Opus 18건 + OQ4, codex 10건 + OQ3 |
 | 2026-10-15 | 종합: 근거를 verify.sql·seedgen.py로 대조(예약 배분 시점, MATCHED→EXPIRED, 경고 재계수, PG 행 형식). 전부 채택 → ADR-0003 재작성, 금액 예시는 스크립트 계산 | A1~A23 |
 | 2026-10-15 | codex 종합 감사 + post-fix 재점검(1회): 3건 | A24~A26 반영. 설계 문서 리뷰 상한(듀얼 1패스 + 재점검 1회) 도달 |
+| 2026-10-15 | 사용자: ADR-0003 "채택", 명세 "합의, auto" | ADR-0003 채택, ADR-0002 §9.6 개정 2곳 |
 
 ## 리뷰 ledger
 
