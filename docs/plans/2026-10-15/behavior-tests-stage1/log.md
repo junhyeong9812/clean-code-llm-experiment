@@ -30,6 +30,8 @@
 | 2026-10-15 | 루프 2 종합 감사(codex) ∥ 루프 3 리뷰(Opus ∥ codex): 미러 `mirror.oDXN`, OUT=`scratchpad/rv.ifzl` | 감사 1, codex 4, Opus 3 + OQ1 → 채택 7·기각 1. 3회차에도 신규 채택이 있어 종료 조건 미충족(최대 3루프) → review unresolved: 수정 후 사용자 판단 |
 | 2026-10-15 | 테스트 워커 D2·D3·D8: env 없이 루트 build 건너뜀·직접 호출 실패·opt-in만 있고 BASE_URL 없으면 실패 확인. 반증 3판 12종: 정상 5종 위반 0(검사 76개), 결함 7종 검출(체결 이벤트 사이 끼어듦·만료 뒤 복구 포함) | |
 | 2026-10-15 | 회귀: 1k·2만 verify 76개 위반 0, run.sh god 113초·layered 115초: infra 18 통과·contract 117 실패(116 HTTP 404, 1 code 없음)·verify 0. 500k 이미지는 옛 verify(75개)로 빌드 → 새 verify를 500k 컨테이너에 백그라운드 실행 | |
+| 2026-10-15 | 사용자: "타깃 재점검 1회 후 종료". codex post-fix(3회차 수정 hunk만): 1차 bwrap 오류 → 재시도 2건(E1·E2) | 워커 수정: 축약 호출·infraTest DB_URL 확인표 전부 기대대로 |
+| 2026-10-15 | run.sh god 117초·layered 110초: infra 18 통과, contract 117 실패, verify 76개 위반 0 | |
 ## 리뷰 ledger
 
 | id | source | 근거 | 내용 | disposition | status |
@@ -89,6 +91,8 @@
 | D6 | opus L3 F1 | PaymentTest.kt:272·316 | INQUIRY pg_tx_id 단언이 계약 밖 | 채택 | fixed L3: ADR-0003 §7에 APPROVED = PG 값·DECLINED = NULL 명시(생성기와 같음), 단언 유지 |
 | D7 | opus L3 F3 | verify.sql:133-141 | 만료된 판매 입찰의 ACTIVE 복구 미검출 | 채택 | fixed L3: bid_restore_within_validity(검사 76개) |
 | D8 | opus L3 OQ1 | Env.kt:89 | 1년 이동 뒤 배치가 15초 타임아웃에 걸릴 수 있음 | 채택 | fixed L3: 배치만 BATCH_TIMEOUT_MS(기본 120초) |
+| E1 | codex post-fix F1 | behavior-tests/build.gradle.kts:35 | Gradle 축약 호출(contractT·cT)은 직접 호출로 인정 안 됨 → opt-in 없이 0건 성공 | 채택 | fixed: camelCase·하이픈 접두 규칙으로 해석, 그래프에 있는 태스크만 |
+| E2 | codex post-fix F2 | behavior-tests/build.gradle.kts:62 | opt-in만 있으면 infraTest가 기본 DB 주소에 행을 씀 | 채택 | fixed: infraTest도 DB_URL 필수 |
 
 ## 생략한 검증
 
