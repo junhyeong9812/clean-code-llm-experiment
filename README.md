@@ -34,6 +34,19 @@ java -jar layered/build/libs/layered-0.0.1.jar  # :8082
 curl localhost:8081/actuator/health
 ```
 
+- 스키마(`docker/schema/`)는 빈 볼륨에서만 init으로 걸린다. 스키마가 바뀌면 `docker compose -f docker/compose.yml down -v` 뒤 다시 올린다.
+
+### 합성 데이터와 시드 이미지
+
+```bash
+python3 tools/seedgen/seedgen.py --users 500000 --out ~/ccle-csv/500k   # CSV + manifest.json(행 수·sha256), 시드 고정
+tools/seedgen/build-image.sh ~/ccle-csv/500k 500k-s42                    # 적재 → 제약 → VACUUM FREEZE → verify.sql → 이미지
+tools/seedgen/run-db.sh 500k-s42 ccle-run-001 15433                      # 실행 1회용 DB, DB_URL 출력
+```
+
+- 시드 이미지에는 DB `ccle_seed` 하나만 있다. 실행마다 컨테이너를 따로 띄우고, 앱은 `DB_URL`로 그 컨테이너에 붙는다.
+- `verify.sql`은 ADR-0002의 불변식(§6.1·§9)을 검사하고, 위반이 있으면 실패한다.
+
 ## 진행
 
 | 단계 | 상태 |
