@@ -66,6 +66,7 @@
 - **체결가 = `(created_at, id)`가 앞선 입찰의 가격.** 복구된 판매 입찰(§7)은 원래 `created_at`을 유지하므로, 복구 뒤 다시 체결될 때는 그 입찰이 상대보다 앞서면 자기 가격으로 체결된다.
 - 체결 1건: `trades`(`AWAITING_PAYMENT`, `matched_at` = 현재, `payment_due_at` = 현재 + 30분) + 두 입찰 `MATCHED` + `bid_events` 2행(`ACTIVE → MATCHED`, `trade_id` = 새 체결; 구매 입찰 행 먼저).
 - 입찰 1개에 살아 있는(`PAYMENT_EXPIRED`가 아닌) 체결은 최대 1건이다. 같은 상대를 노리는 요청이 동시에 와도 그 상대와의 체결은 1건이다. 진 요청도 201을 받고(다음 순위와 체결했거나 ACTIVE로 남음), 즉시 주문이면서 남은 상대가 없으면 409 `NO_COUNTER_BID`다. 테스트는 동시성에서 "살아 있는 체결 수와 불변식"만 단언한다.
+- **사이즈 단위 직렬화:** 한 사이즈의 입찰 상태를 바꾸는 처리(등록·즉시 주문·취소·체결, 배치의 만료·복구·재매칭)는 그 `product_sizes` 행을 잠근(`SELECT … FOR UPDATE`) 트랜잭션 안에서 하고, 잠금은 커밋까지 유지한다. `bid_events` 행은 잠근 뒤에 쓴다. 그래서 **같은 사이즈 안에서는 `bid_events.id` 순서가 실제 처리 순서**다. `verify.sql`의 호가 이력 검사(무교차·가격·시간 우선)가 이 순서에 기댄다. 등록이 교차하면 그 등록 이벤트 바로 뒤에 체결 이벤트 2행이 오고, 그 사이에 같은 사이즈의 다른 이벤트는 없다.
 
 ### 3.4 조회
 
@@ -135,7 +136,7 @@
 | name | 대상(순서) | 하는 일 |
 |---|---|---|
 | `bid-expiry` | `status = ACTIVE AND expires_at ≤ 현재` 입찰, id 순 | → `EXPIRED`, `bid_events`(`ACTIVE → EXPIRED`, `trade_id` NULL), 이벤트 시각 = 현재 |
-| `payment-due` | `AWAITING_PAYMENT AND payment_due_at ≤ 현재` 체결 중 **UNKNOWN 주문이 없는 것**, id 순 | 체결 → `PAYMENT_EXPIRED`. `buyer_warnings` 1행. 구매 입찰 `MATCHED → CANCELLED`. 판매 입찰은 `expires_at ≤ 현재`면 `MATCHED → EXPIRED`, 아니면 `MATCHED → ACTIVE` 후 §3.3으로 즉시 재매칭(새 입찰처럼 반대편을 찾는다). 이 이벤트들의 `trade_id` = 만료된 체결 |
+| `payment-due` | `AWAITING_PAYMENT AND payment_due_at ≤ 현재` 체결 중 **UNKNOWN 주문이 없는 것**, id 순 | 체결 → `PAYMENT_EXPIRED`. `buyer_warnings` 1행. 구매 입찰 `MATCHED → CANCELLED`(판매 입찰 이벤트보다 먼저). 판매 입찰은 `expires_at ≤ 현재`면 `MATCHED → EXPIRED`, 아니면 `MATCHED → ACTIVE` 후 §3.3으로 즉시 재매칭(새 입찰처럼 반대편을 찾는다). 이 이벤트들의 `trade_id` = 만료된 체결. 체결 1건의 처리는 그 사이즈를 잠근 트랜잭션 하나다(§3.3) |
 | `pg-inquiry` | `UNKNOWN` 주문, id 순 | PG 재조회 → `pg_transactions` INQUIRY 1행(`amount = card_amount`, 같은 키, `requested_at`·`responded_at` = 현재, 404는 `DECLINED`, 응답 없음이면 행을 만들지 않고 주문은 UNKNOWN 유지). APPROVED면 §5.1 승인 처리, DECLINED면 거절 처리 |
 
 - **구매 경고:** 경고 1행(`created_at` = 현재)을 쓴 뒤, 그 구매자의 경고 중 `created_at > 현재 − 30일` 이고 `created_at > coalesce(purchase_restricted_until − 7일, -∞)`(마지막 제한이 걸린 시각 뒤)인 것이 3건 이상이면 `purchase_restricted_until = 현재 + 7일`. 제한을 건 경고는 다음 계산에서 빠지므로 횟수는 다시 센다. **[기본값 — 생성기와 같은 해석]**

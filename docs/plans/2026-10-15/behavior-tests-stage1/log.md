@@ -23,6 +23,10 @@
 | 2026-10-15 | build-image 태그 라벨: 1k 2회 재빌드 → 2회차에 같은 태그 이전 빌드만 지움, 500k 유지. 라벨 없던 옛 1k 이미지는 수동 삭제(개발 DB 컨테이너가 쓰고 있어 컨테이너 삭제 뒤) | |
 | 2026-10-15 | 테스트 워커(같은 Opus) 수정 B3~B8·B10·B12: infraTest 18 green, 앱 없이 contract 117 red, PG_EXTERNAL 경로 확인(PG 꺼지면 8 클래스 모두 명시 실패) | |
 | 2026-10-15 | run.sh 재실행: god 96초·layered 98초, infra 18 통과, contract 117 실패(116 HTTP 상태 404, 1 오류 code 없음), verify 위반 0, 가짜 PG 프로세스 잔존 0 | |
+| 2026-10-15 | 루프 1 종합 감사(codex) ∥ 루프 2 리뷰(Opus ∥ codex): 미러 `mirror.VbOM`, OUT=`scratchpad/rv.YIJv` | 감사 2, codex 3, Opus 3 + 참고 2. verify 이벤트 순서 문제가 같은 검사 3번째 수정 → core §3 정지 규칙: 다듬기 대신 전제(이벤트 순서 보장)를 계약으로 결정 → 사용자 "사이즈 단위 직렬화를 계약에" |
+| 2026-10-15 | 반증 2판 9종(만료 = 등록 + 30일로 표본 정리): 정상 4종 위반 0(만료 시각 교차·다른 사이즈 끼어듦·직렬화된 진 요청·만료된 우선 입찰), 결함 5종 검출(살아 있는 교차·같은 사이즈 끼어듦·취소된 최우선 건너뜀·비직렬 진 요청·살아 있는 우선 입찰) | |
+| 2026-10-15 | 테스트 워커 C3·C4·C6. 참고: 포인트 묶음 도우미는 확정 시각이 마지막 정산 마감(시드 09-28) 뒤여야 해 CLOCK_START < 약 09-30이면 포인트 테스트 준비가 실패 — 테스트 고정 데이터 제약(run.sh는 CLOCK_START를 쓰지 않음) | |
+| 2026-10-15 | 회귀: 1k 재빌드(이전 같은 태그 이미지 정리, 중복 "지움" 출력 → id 중복 제거 후 1줄), 2만 빌드 verify 위반 0(이미지 삭제), run.sh god 109초·layered 95초: infra 18 통과·contract 117 실패·verify 0 | |
 ## 리뷰 ledger
 
 | id | source | 근거 | 내용 | disposition | status |
@@ -67,6 +71,13 @@
 | B12 | codex F4 | FakePg.kt:96 | amount 누락에도 승인 | 채택 | fixed L1: 400, 결제 테스트 전부 PG 수신 금액 = card_amount 단언 |
 | B13 | opus OQ2 | ADR-0003 §8 | 예시 산문 floor 값 오기(119,963) | 채택 | fixed L1(docs) |
 | B14 | opus OQ3 | run.sh | 고정 포트로 동시 실행 불가 | 기각(의도: ADR-0002 §7 동시 실행 금지) | run.sh 주석으로 명시 |
+| C1 | 감사 F1 · codex L2 F1 · opus L2 F1 (main-synthesis: 같은 뿌리) | verify.sql:510-532 | 이벤트 id 순서를 실제 순서로 가정 — 동시 요청에서 정상 위반(진 요청 ACTIVE)·결함 통과(취소된 최우선 건너뜀) | 채택(사용자: "사이즈 단위 직렬화를 계약에") | fixed L2: ADR-0003 §3.3 직렬화 조항, 테이커 예외에 "같은 사이즈 다른 이벤트 없음" |
+| C2 | opus L2 F2 | verify.sql:525 | 새 예외에 간격 상한 없음(지연 매칭 통과) | 채택 | fixed L2(C1과 같은 수정) |
+| C3 | 감사 F2 | PaymentTest.kt:183·324 | 재결제 경로 PG 금액 미검증 | 채택 | fixed L2: Flow.pay 201마다 PG 수신 금액 = cardAmount 공통 단언 |
+| C4 | codex L2 F2 | BatchAndClockTest.kt:25 | 시작 시계 ≥ 시드 시각 단언(CLOCK_START 허용과 충돌) | 채택 | fixed L2 |
+| C5 | codex L2 F3 | build-image.sh:45 | 라벨 도입 전 같은 태그 이미지 미정리 | 채택 | fixed L2: 커밋 전 같은 태그 이미지 id 보관 → 정리 |
+| C6 | opus L2 F3 | behavior-tests/build.gradle.kts:57 | 루트 build·test가 환경 없이 행위 테스트 실행 | 채택 | fixed L2: env DB_URL·BASE_URL 있을 때만, 건너뜀 사유 로그 |
+| C7 | opus L2 참고 | spec §4 | 재합의 문구 "2개" vs 실제 3곳+보조 뷰 | 채택 | fixed L2(docs) |
 
 ## 생략한 검증
 
