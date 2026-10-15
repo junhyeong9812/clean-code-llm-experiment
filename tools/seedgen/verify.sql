@@ -514,10 +514,11 @@ SELECT 'trade_price_time_priority', count(*) FROM v_match m
                        WHEN 'BUY'  THEN (z.price, z.created_at, z.bid_id) < (m.maker_price, m.maker_created, m.maker_id)
                        ELSE (-z.price, z.created_at, z.bid_id) < (-m.maker_price, m.maker_created, m.maker_id) END)
 UNION ALL -- [§4.1] 호가창은 어느 순간에도 교차하지 않는다: 입찰이 ACTIVE가 되는 순간(등록·복구) 반대편에 교차하는
-          -- 다른 사용자의 ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다. 바로 체결된 테이커 순간(구간이 MATCHED 이벤트 2개 안에 끝남)은 제외
+          -- 다른 사용자의 ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다. 바로 체결된 테이커 순간(같은 시각, 전역 이벤트 2개 안에 MATCHED)은 제외
 SELECT 'book_never_crossed', count(*) FROM v_act x
  WHERE NOT (x.e_eid IS NOT NULL AND x.e_eid - x.s_eid <= 2
-            AND EXISTS (SELECT 1 FROM bid_events be WHERE be.id = x.e_eid AND be.to_status = 'MATCHED'))
+            AND EXISTS (SELECT 1 FROM bid_events be JOIN bid_events bs ON bs.id = x.s_eid
+                        WHERE be.id = x.e_eid AND be.to_status = 'MATCHED' AND be.created_at = bs.created_at))
    AND EXISTS (SELECT 1 FROM v_act z
                WHERE z.product_size_id = x.product_size_id AND z.side <> x.side
                  AND z.s_eid < x.s_eid AND (z.e_eid IS NULL OR z.e_eid > x.s_eid)
