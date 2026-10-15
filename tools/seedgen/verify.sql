@@ -128,6 +128,31 @@ FROM (SELECT be.*, row_number() OVER w AS rn, lag(to_status) OVER w AS prev_to, 
 GROUP BY bid_id;
 ANALYZE v_be;
 
+-- 입찰의 ACTIVE 구간(이벤트 id 기준 — 이벤트 id는 처리 순서라 같은 초 안의 선후도 구분한다)
+CREATE TEMP TABLE v_act ON COMMIT DROP AS
+SELECT x.bid_id, x.s_eid, x.e_eid, b.side, b.price, b.created_at, b.user_id, b.product_size_id
+FROM (SELECT bid_id, to_status, id AS s_eid, lead(id) OVER (PARTITION BY bid_id ORDER BY id) AS e_eid
+      FROM bid_events) x
+JOIN bids b ON b.id = x.bid_id
+WHERE x.to_status = 'ACTIVE';
+CREATE INDEX ON v_act (bid_id);
+ANALYZE v_act;
+
+-- 체결별 매칭 순간(MATCHED 이벤트 id), 테이커(ACTIVE 구간이 더 늦게 시작한 쪽)와 메이커
+CREATE TEMP TABLE v_match ON COMMIT DROP AS
+SELECT t.id AS trade_id, t.product_size_id, me.eid AS m_eid,
+       CASE WHEN ba.s_eid > sa.s_eid THEN 'BUY' ELSE 'SELL' END AS taker_side,
+       CASE WHEN ba.s_eid > sa.s_eid THEN ba.user_id ELSE sa.user_id END AS taker_user,
+       CASE WHEN ba.s_eid > sa.s_eid THEN sa.bid_id ELSE ba.bid_id END AS maker_id,
+       CASE WHEN ba.s_eid > sa.s_eid THEN sa.price ELSE ba.price END AS maker_price,
+       CASE WHEN ba.s_eid > sa.s_eid THEN sa.created_at ELSE ba.created_at END AS maker_created
+FROM trades t
+JOIN (SELECT trade_id, min(id) AS eid, max(id) AS eid2 FROM bid_events WHERE to_status = 'MATCHED' GROUP BY trade_id) me
+  ON me.trade_id = t.id
+JOIN v_act ba ON ba.bid_id = t.buy_bid_id  AND ba.e_eid IN (me.eid, me.eid2)
+JOIN v_act sa ON sa.bid_id = t.sell_bid_id AND sa.e_eid IN (me.eid, me.eid2);
+ANALYZE v_match;
+
 ------------------------------------------------------------------------------------------
 -- 검사
 ------------------------------------------------------------------------------------------
@@ -477,6 +502,18 @@ SELECT 'bid_events_matched_trade', count(*) FROM (
   LEFT JOIN (SELECT trade_id, count(*) AS n FROM bid_events WHERE to_status = 'MATCHED' GROUP BY trade_id) m
     ON m.trade_id = t.id
   WHERE m.n IS DISTINCT FROM 2) x
+UNION ALL -- [§4.1] 가격·시간 우선: 매칭 순간 메이커보다 우선순위가 높은 반대편 ACTIVE 입찰(테이커 본인 것 제외)이 없어야 한다
+SELECT 'trade_price_time_priority', count(*) FROM v_match m
+ WHERE EXISTS (SELECT 1 FROM v_act z
+               WHERE z.product_size_id = m.product_size_id
+                 AND z.side = CASE m.taker_side WHEN 'BUY' THEN 'SELL' ELSE 'BUY' END
+                 AND z.s_eid < m.m_eid AND (z.e_eid IS NULL OR z.e_eid > m.m_eid)
+                 AND z.bid_id <> m.maker_id AND z.user_id <> m.taker_user
+                 AND CASE m.taker_side
+                       WHEN 'BUY'  THEN (z.price, z.created_at, z.bid_id) < (m.maker_price, m.maker_created, m.maker_id)
+                       ELSE (-z.price, z.created_at, z.bid_id) < (-m.maker_price, m.maker_created, m.maker_id) END)
+UNION ALL -- 체결마다 매칭 순간·테이커·메이커가 정해져야 한다(위 검사가 빈 집합으로 통과하지 않게)
+SELECT 'trade_match_resolved', (SELECT count(*) FROM trades) - (SELECT count(*) FROM v_match)
 UNION ALL -- [§4.1] 호가 교차 없음: 같은 사이즈의 ACTIVE 구매 최고가 < ACTIVE 판매 최저가 (자기 체결 금지 쌍은 예외)
 SELECT 'active_book_no_cross', count(*) FROM (
   SELECT DISTINCT bb.product_size_id

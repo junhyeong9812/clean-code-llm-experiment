@@ -3,6 +3,7 @@ name: ccle
 services:
   postgres:
     image: postgres:17
+    shm_size: 1g          # 병렬 해시 조인(verify.sql) — 도커 기본 64MB로는 부족
     environment:
       POSTGRES_USER: ccle
       POSTGRES_PASSWORD: ccle

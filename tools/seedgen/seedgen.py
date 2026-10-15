@@ -78,6 +78,10 @@ GRADE_MIN = [("VIP", 5_000_000), ("GOLD", 2_000_000), ("SILVER", 500_000)]
 BANKS = ["004", "011", "020", "081", "088", "090"]
 INSPECT_FAIL_REASONS = ["오염", "사이즈 불일치", "가품 의심", "구성품 누락", "손상"]
 
+# 하루 흐름(사용자 50만 기준, 성장·요일 계수 곱하기 전). 2만 명 실측 ×25 환산으로 체결 약 485만·입찰 약 1,300만이 되도록 맞춘 값
+BUY_SESSIONS_PER_DAY = 4800
+SELLERS_PER_DAY = 8700
+
 # 이벤트 우선순위(같은 시각일 때): 배치가 먼저
 P_BATCH, P_EVENT = 0, 1
 
@@ -215,7 +219,10 @@ class Gen:
                 return u
         return None
 
-    # ---- 입찰 ----
+    # ---- 입찰과 호가창(ADR §4.1) ----
+    # 사이즈마다 호가창: 구매는 가격 높은 순, 판매는 가격 낮은 순, 같은 가격은 먼저 등록한 순(created, id).
+    # 새 입찰이 들어오거나 판매 입찰이 복구될 때 반대편 최우선 입찰과 교차하면 체결한다(자기 입찰 제외).
+    # 체결가 = 둘 중 먼저 등록된 입찰의 가격. 그래서 호가창은 어느 시점에도 교차하지 않는다.
     def new_bid(self, user, size, side, price, created, period_days):
         bid = {"id": self.nid("bids"), "user": user, "size": size, "side": side, "price": price,
                "created": created, "expires": created + period_days * DAY, "status": "ACTIVE"}
@@ -230,117 +237,174 @@ class Gen:
         self.row("bids", bid["id"], bid["user"], bid["size"], bid["side"], bid["price"], bid["status"],
                  ts(bid["expires"]), ts(bid["created"]))
 
-    def close_unmatched(self, bid, t_from):
-        """매칭되지 않을 입찰의 끝: 취소·만료·현재 ACTIVE 중 하나로 정하고 쓴다."""
+    def book(self, size):
+        bk = self.books.get(size)
+        if bk is None:
+            bk = self.books[size] = ([], [])          # (구매 heap, 판매 heap)
+        return bk
+
+    def best(self, size, side, not_user):
+        """side 쪽 최우선 ACTIVE 입찰(not_user 의 입찰은 건너뜀). 없으면 None."""
+        h = self.book(size)[0 if side == "BUY" else 1]
+        skipped, found = [], None
+        while h:
+            e = h[0]
+            bid = e[3]
+            if bid["status"] != "ACTIVE" or not bid.get("in_book"):
+                heapq.heappop(h)                        # 체결·취소·만료된 항목은 지운다
+                continue
+            if bid["user"] == not_user:
+                skipped.append(heapq.heappop(h))
+                continue
+            found = bid
+            break
+        for e in skipped:
+            heapq.heappush(h, e)
+        return found
+
+    def add_to_book(self, bid, t):
+        h = self.book(bid["size"])[0 if bid["side"] == "BUY" else 1]
+        key = -bid["price"] if bid["side"] == "BUY" else bid["price"]
+        heapq.heappush(h, (key, bid["created"], bid["id"], bid))
+        bid["in_book"] = True
+        self.active[bid["id"]] = bid
+        if bid["expires"] < NOW:
+            self.push(bid["expires"], P_EVENT, "bid_expire", bid)
+
+    def try_match(self, bid, t):
+        """bid 가 반대편 최우선 입찰과 교차하면 체결하고 체결을 돌려준다."""
+        opp_side = "SELL" if bid["side"] == "BUY" else "BUY"
+        opp = self.best(bid["size"], opp_side, bid["user"])
+        if opp is None:
+            return None
+        if (bid["side"] == "BUY" and bid["price"] < opp["price"]) or (bid["side"] == "SELL" and bid["price"] > opp["price"]):
+            return None
+        first = min(bid, opp, key=lambda x: (x["created"], x["id"]))
+        buy, sell = (bid, opp) if bid["side"] == "BUY" else (opp, bid)
+        for x in (buy, sell):
+            x["in_book"] = False
+            self.active.pop(x["id"], None)
+        tr = {"id": self.nid("trades"), "buy": buy, "sell": sell, "buyer": buy["user"], "seller": sell["user"],
+              "size": bid["size"], "price": first["price"], "status": "AWAITING_PAYMENT", "matched": t,
+              "due": t + 30 * MIN}
+        self.bid_event(buy, "ACTIVE", "MATCHED", tr["id"], t)
+        self.bid_event(sell, "ACTIVE", "MATCHED", tr["id"], t)
+        self.on_trade(tr, t)
+        return tr
+
+    def place(self, user, size, side, price, t, period, cancel_p):
+        """입찰 등록: 교차하면 바로 체결, 아니면 호가창에 걸고 취소 여부를 정한다."""
         r = self.rng
-        tc = t_from + r.randrange(HOUR, 10 * DAY)
-        if r.random() < 0.4 and tc < bid["expires"] and tc < NOW:
-            self.bid_event(bid, "ACTIVE", "CANCELLED", None, tc)
-        elif bid["expires"] <= NOW:
-            self.bid_event(bid, "ACTIVE", "EXPIRED", None, bid["expires"])
+        bid = self.new_bid(user, size, side, price, t, period)
+        if self.try_match(bid, t):
+            return bid
+        self.add_to_book(bid, t)
+        if r.random() < cancel_p:
+            tc = t + r.randrange(HOUR, min(period, 20) * DAY)
+            if tc < bid["expires"] and tc < NOW:
+                self.push(tc, P_EVENT, "bid_cancel", bid)
+        return bid
+
+    def end_bid(self, bid, to, t):
+        if bid["status"] != "ACTIVE":
+            return
+        bid["in_book"] = False
+        self.active.pop(bid["id"], None)
+        self.bid_event(bid, "ACTIVE", to, None, t)
         self.write_bid(bid)
 
-    def unmatched_bids(self, day_start):
-        for _ in range(self.poisson(2300 * self.scale)):
-            self.push(day_start + self.rng.randrange(DAY), P_EVENT, "spawn_bid", None)
+    def ev_bid_expire(self, t, bid):
+        if bid["expires"] <= t:
+            self.end_bid(bid, "EXPIRED", t)
 
-    def ev_spawn_bid(self, t, _):
-        r = self.rng
-        size = self.pick_size()
-        ref = self.size_ref[size]
-        if r.random() < 0.5:
-            u = self.pick_buyer(t)
-            side, price = "BUY", r1000(ref * r.uniform(0.6, 0.85))
-        else:
-            u = self.pick_seller(t)
-            side, price = "SELL", r1000(ref * r.uniform(1.12, 1.5))
-        if u is None:
-            return
-        bid = self.new_bid(u, size, side, price, t, r.choice((30, 60, 90)))
-        self.close_unmatched(bid, t)
+    def ev_bid_cancel(self, t, bid):
+        self.end_bid(bid, "CANCELLED", t)
 
     def poisson(self, lam):
         # 큰 λ 는 정규 근사
         return max(0, int(round(self.rng.gauss(lam, lam ** 0.5))))
 
-    # ---- 체결·결제 세션 ----
-    def start_sessions(self, day_start, day_idx):
-        r = self.rng
+    # ---- 수요·공급 흐름 ----
+    def day_rate(self, day_start, day_idx):
         growth = 0.6 + 0.8 * day_idx / 730
-        weekday = time.gmtime(day_start + KST).tm_wday
-        wk = 1.15 if weekday >= 5 else 0.94
-        for _ in range(self.poisson(4110 * self.scale * growth * wk)):
+        wk = 1.15 if time.gmtime(day_start + KST).tm_wday >= 5 else 0.94
+        return self.scale * growth * wk
+
+    def start_sessions(self, day_start, day_idx):
+        r, k = self.rng, self.day_rate(day_start, day_idx)
+        for _ in range(self.poisson(BUY_SESSIONS_PER_DAY * k)):
             self.push(day_start + r.randrange(DAY), P_EVENT, "spawn_session", None)
+        for _ in range(self.poisson(SELLERS_PER_DAY * k)):
+            self.push(day_start + r.randrange(DAY), P_EVENT, "spawn_seller", None)
 
     def ev_spawn_session(self, t0, _):
+        """구매자 1명이 몇 분 사이에 상품 몇 개를 산다. 상품마다 그 시각의 이벤트로 처리한다(시간 역전 방지)."""
         r = self.rng
-        buyer = self.pick_buyer(t0 - 21 * DAY)
-        if buyer is None or self.restricted(self.purch_restr, buyer, t0):
+        buyer = self.pick_buyer(t0)
+        if buyer is None:
             return
-        n = r.choices((1, 2, 3, 4), (60, 25, 10, 5))[0]
-        trades, t = [], t0
-        for _ in range(n):
-            if t >= NOW:                    # 현재 시각 직전 세션: 결제 전 상태로 남는다
+        t = t0
+        for _ in range(r.choices((1, 2, 3, 4), (45, 30, 15, 10))[0]):
+            if t >= NOW:
                 break
-            tr = self.new_trade(buyer, t, None)
-            if tr:
-                trades.append(tr)
-            t += r.randrange(30, 5 * MIN)
-        if trades:
-            self.begin_payment(buyer, trades)
+            self.push(t, P_EVENT, "buy_item", buyer)
+            t += r.randrange(30, 3 * MIN)
 
-    def new_trade(self, buyer, t, restored_sell):
-        """체결 1건. restored_sell 이 있으면 그 판매 입찰(복구된)이 maker."""
+    def ev_buy_item(self, t, buyer):
+        """최저 판매가가 지불 의사 이하면 즉시 구매, 아니면 구매 입찰."""
         r = self.rng
-        if restored_sell:
-            sell = restored_sell
-            size, price, seller = sell["size"], sell["price"], sell["user"]
-            if seller == buyer:
-                return None
-            buy = self.new_bid(buyer, size, "BUY", price, t, 30)
+        if self.restricted(self.purch_restr, buyer, t):
+            return
+        size = self.pick_size()
+        ref = self.size_ref[size]
+        ask = self.best(size, "SELL", buyer)
+        if ask and ask["price"] <= ref * r.uniform(1.0, 1.3):
+            self.place(buyer, size, "BUY", ask["price"], t, 30, 0)
         else:
-            size = self.pick_size()
-            price = r1000(self.size_ref[size] * r.uniform(0.9, 1.1))
-            maker_t = t - r.randrange(MIN, 20 * DAY)
-            seller = self.pick_seller(maker_t - DAY, not_user=buyer)
-            if seller is None or self.restricted(self.sale_restr, seller, maker_t) \
-                    or self.restricted(self.sale_restr, seller, t):
-                return None
-            if r.random() < 0.75:   # 판매 입찰이 먼저 → 즉시 구매
-                sell = self.new_bid(seller, size, "SELL", price, maker_t, r.choice((30, 60, 90)))
-                buy = self.new_bid(buyer, size, "BUY", price, t, 30)
-            else:                   # 구매 입찰이 먼저 → 즉시 판매
-                if self.restricted(self.purch_restr, buyer, maker_t):
-                    return None
-                buy = self.new_bid(buyer, size, "BUY", price, maker_t, r.choice((30, 60, 90)))
-                sell = self.new_bid(seller, size, "SELL", price, t, 30)
-        tr = {"id": self.nid("trades"), "buy": buy, "sell": sell, "buyer": buyer, "seller": seller,
-              "size": size, "price": price, "status": "AWAITING_PAYMENT", "matched": t, "due": t + 30 * MIN}
-        self.bid_event(buy, "ACTIVE", "MATCHED", tr["id"], t)
-        self.bid_event(sell, "ACTIVE", "MATCHED", tr["id"], t)
-        return tr
+            self.place(buyer, size, "BUY", r1000(ref * r.uniform(0.85, 1.0)), t, r.choice((30, 60, 90)), 0.2)
+
+    def ev_spawn_seller(self, t, _):
+        """판매자 1명: 최고 구매가가 받을 의사 이상이면 즉시 판매, 아니면 판매 입찰."""
+        r = self.rng
+        seller = self.pick_seller(t)
+        if seller is None or self.restricted(self.sale_restr, seller, t):
+            return
+        size = self.pick_size()
+        ref = self.size_ref[size]
+        bid = self.best(size, "BUY", seller)
+        if bid and bid["price"] >= ref * r.uniform(0.8, 0.95):
+            self.place(seller, size, "SELL", bid["price"], t, 30, 0)
+        else:
+            self.place(seller, size, "SELL", r1000(ref * r.uniform(0.95, 1.2)), t, r.choice((30, 60, 90)), 0.2)
 
     def write_trade(self, tr):
         self.row("trades", tr["id"], tr["buy"]["id"], tr["sell"]["id"], tr["buyer"], tr["seller"], tr["size"],
                  tr["price"], tr["status"], ts(tr["matched"]), ts(tr["due"]))
 
-    def begin_payment(self, buyer, trades):
+    # ---- 결제(구매자별로 결제 대기 체결을 묶는다) ----
+    def on_trade(self, tr, t):
         r = self.rng
-        first, last = trades[0]["matched"], trades[-1]["matched"]
-        sess = {"buyer": buyer, "trades": trades, "due": trades[0]["due"]}
-        for tr in trades:
-            self.push(tr["due"], P_EVENT, "trade_due", tr)
+        b = tr["buyer"]
+        self.push(tr["due"], P_EVENT, "trade_due", tr)
+        self.awaiting.setdefault(b, []).append(tr)
+        p = self.pend.get(b)
+        if p and p[1] > t:
+            return                                       # 이미 잡힌 결제 시도(또는 포기 구간)에 묶인다
         if r.random() < 0.02:
-            return                                     # 결제하지 않음 → 기한 초과
-        tp = min(last + r.randrange(MIN, 20 * MIN), first + 28 * MIN)
-        self.push(max(tp, last + 1), P_EVENT, "pay_attempt", sess)
-
-    def ev_pay_attempt(self, t, sess):
-        r = self.rng
-        trades = [tr for tr in sess["trades"] if tr["status"] == "AWAITING_PAYMENT"]
-        if not trades or t >= sess["due"]:
+            self.pend[b] = ("abandon", t + 30 * MIN)     # 결제하지 않음 → 기한 초과
             return
-        buyer = sess["buyer"]
+        ta = t + r.randrange(5 * MIN, 20 * MIN)       # 세션의 다음 상품(≤ 3개 × 3분)까지 묶이게
+        self.pend[b] = ("pay", ta)
+        self.push(ta, P_EVENT, "pay_attempt", b)
+
+    def ev_pay_attempt(self, t, buyer):
+        r = self.rng
+        self.pend.pop(buyer, None)
+        trades = [tr for tr in self.awaiting.get(buyer, ()) if tr["status"] == "AWAITING_PAYMENT" and tr["due"] > t]
+        self.awaiting[buyer] = trades
+        if not trades:
+            return
+        due = min(tr["due"] for tr in trades)
         # 금액
         items = []
         for tr in trades:
@@ -392,8 +456,10 @@ class Gen:
         if outcome < 0.03:
             self.pg(o, "APPROVE", card, "DECLINED", t, resp)
             self.pay_failed(o, resp, use_entry)
-            if r.random() < 0.7 and resp + 5 * MIN < sess["due"]:
-                self.push(resp + r.randrange(MIN, 3 * MIN), P_EVENT, "pay_attempt", sess)
+            if r.random() < 0.7 and resp + 5 * MIN < due:   # 재시도 + UNKNOWN 조회(≤ 3분 + 91초)가 기한 안
+                tr_ = resp + r.randrange(MIN, 3 * MIN)
+                self.pend[buyer] = ("pay", tr_)
+                self.push(tr_, P_EVENT, "pay_attempt", buyer)
         elif outcome < 0.04:
             self.pg(o, "APPROVE", card, "UNKNOWN", t, None)
             inq = t + 60 + r.randrange(30)
@@ -449,7 +515,6 @@ class Gen:
     def ev_trade_due(self, t, tr):
         if tr["status"] != "AWAITING_PAYMENT":
             return
-        r = self.rng
         tr["status"] = "PAYMENT_EXPIRED"
         self.write_trade(tr)
         buyer = tr["buyer"]
@@ -466,21 +531,10 @@ class Gen:
             self.bid_event(sell, "MATCHED", "EXPIRED", tr["id"], t)
             self.write_bid(sell)
             return
+        # 판매 입찰 복구: 원래 등록 시각(우선순위) 그대로 호가창에 돌아오고, 교차하면 바로 체결된다
         self.bid_event(sell, "MATCHED", "ACTIVE", tr["id"], t)
-        if r.random() < 0.5:
-            tm = t + r.randrange(10 * MIN, max(10 * MIN + 1, min(5 * DAY, sell["expires"] - t)))
-            if tm < sell["expires"] and tm < NOW:
-                self.push(tm, P_EVENT, "rematch", sell)
-                return
-        self.close_unmatched(sell, t)
-
-    def ev_rematch(self, t, sell):
-        buyer = self.pick_buyer(t, not_user=sell["user"])
-        tr = self.new_trade(buyer, t, sell) if buyer else None
-        if tr is None:
-            self.close_unmatched(sell, t)
-            return
-        self.begin_payment(buyer, [tr])
+        if not self.try_match(sell, t):
+            self.add_to_book(sell, t)
 
     # ---- 주문 항목 진행 ----
     def plan_item(self, it, t):
@@ -815,6 +869,7 @@ class Gen:
     # ---- 실행 ----
     def run(self):
         self.sq = {}
+        self.books, self.active, self.awaiting, self.pend = {}, {}, {}, {}
         self.make_users()
         self.make_products()
         # 배치 일정: 매월 1일 등급, 매주 월요일 정산
@@ -829,7 +884,6 @@ class Gen:
         handlers = {k[3:]: getattr(self, k) for k in dir(self) if k.startswith("ev_")}
         day_idx, day = 0, START
         while day < NOW:
-            self.unmatched_bids(day)
             self.start_sessions(day, day_idx)
             end = day + DAY
             while self.heap and self.heap[0][0] < min(end, NOW):
@@ -842,21 +896,17 @@ class Gen:
 
     def flush_at_now(self):
         """현재 시각에 진행 중인 것들을 현재 상태로 쓴다."""
-        pending_sessions = set()
         items, trades = {}, {}
         for t, _, _, kind, obj in self.heap:
             if kind == "trade_due":
                 trades[obj["id"]] = obj
-            elif kind == "pay_attempt":
-                pending_sessions.add(id(obj))
-                for tr in obj["trades"]:
-                    trades[tr["id"]] = tr
-            elif kind == "rematch":
-                self.write_bid(obj)          # 복구되어 ACTIVE 인 판매 입찰
-            elif kind in ("grade", "settle", "spawn_bid", "spawn_session"):
+            elif kind in ("grade", "settle", "spawn_session", "spawn_seller", "buy_item", "pay_attempt", "bid_expire",
+                          "bid_cancel"):
                 continue
             else:
                 items[obj["id"]] = obj
+        for bid_id in sorted(self.active):           # 호가창에 걸린 ACTIVE 입찰
+            self.write_bid(self.active[bid_id])
         for tr in trades.values():
             if tr["status"] == "AWAITING_PAYMENT":
                 self.write_trade(tr)
@@ -892,11 +942,11 @@ def main():
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "manifest.json").unlink(missing_ok=True)      # 실패한 실행이 옛 manifest 와 섞이지 않게
     need = int(a.users * 11_000 * 1.3)                    # 1천 명 실측 CSV 11MB, 30% 여유
     free = shutil.disk_usage(out).free
     if free < need:
         raise SystemExit(f"디스크 부족: 여유 {free >> 30}GB, 필요 약 {need >> 30}GB")
+    (out / "manifest.json").unlink(missing_ok=True)      # 생성 시작 직전: 실패한 실행이 옛 manifest 와 섞이지 않게
     t0 = time.time()
     g = Gen(a.users, a.seed, a.out)
     g.run()
