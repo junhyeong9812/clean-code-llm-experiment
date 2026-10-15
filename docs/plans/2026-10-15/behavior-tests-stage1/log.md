@@ -27,6 +27,9 @@
 | 2026-10-15 | 반증 2판 9종(만료 = 등록 + 30일로 표본 정리): 정상 4종 위반 0(만료 시각 교차·다른 사이즈 끼어듦·직렬화된 진 요청·만료된 우선 입찰), 결함 5종 검출(살아 있는 교차·같은 사이즈 끼어듦·취소된 최우선 건너뜀·비직렬 진 요청·살아 있는 우선 입찰) | |
 | 2026-10-15 | 테스트 워커 C3·C4·C6. 참고: 포인트 묶음 도우미는 확정 시각이 마지막 정산 마감(시드 09-28) 뒤여야 해 CLOCK_START < 약 09-30이면 포인트 테스트 준비가 실패 — 테스트 고정 데이터 제약(run.sh는 CLOCK_START를 쓰지 않음) | |
 | 2026-10-15 | 회귀: 1k 재빌드(이전 같은 태그 이미지 정리, 중복 "지움" 출력 → id 중복 제거 후 1줄), 2만 빌드 verify 위반 0(이미지 삭제), run.sh god 109초·layered 95초: infra 18 통과·contract 117 실패·verify 0 | |
+| 2026-10-15 | 루프 2 종합 감사(codex) ∥ 루프 3 리뷰(Opus ∥ codex): 미러 `mirror.oDXN`, OUT=`scratchpad/rv.ifzl` | 감사 1, codex 4, Opus 3 + OQ1 → 채택 7·기각 1. 3회차에도 신규 채택이 있어 종료 조건 미충족(최대 3루프) → review unresolved: 수정 후 사용자 판단 |
+| 2026-10-15 | 테스트 워커 D2·D3·D8: env 없이 루트 build 건너뜀·직접 호출 실패·opt-in만 있고 BASE_URL 없으면 실패 확인. 반증 3판 12종: 정상 5종 위반 0(검사 76개), 결함 7종 검출(체결 이벤트 사이 끼어듦·만료 뒤 복구 포함) | |
+| 2026-10-15 | 회귀: 1k·2만 verify 76개 위반 0, run.sh god 113초·layered 115초: infra 18 통과·contract 117 실패(116 HTTP 404, 1 code 없음)·verify 0. 500k 이미지는 옛 verify(75개)로 빌드 → 새 verify를 500k 컨테이너에 백그라운드 실행 | |
 ## 리뷰 ledger
 
 | id | source | 근거 | 내용 | disposition | status |
@@ -78,6 +81,14 @@
 | C5 | codex L2 F3 | build-image.sh:45 | 라벨 도입 전 같은 태그 이미지 미정리 | 채택 | fixed L2: 커밋 전 같은 태그 이미지 id 보관 → 정리 |
 | C6 | opus L2 F3 | behavior-tests/build.gradle.kts:57 | 루트 build·test가 환경 없이 행위 테스트 실행 | 채택 | fixed L2: env DB_URL·BASE_URL 있을 때만, 건너뜀 사유 로그 |
 | C7 | opus L2 참고 | spec §4 | 재합의 문구 "2개" vs 실제 3곳+보조 뷰 | 채택 | fixed L2(docs) |
+| D1 | 감사 L2 F1 | verify.sql:527 | 직렬화 검사가 등록~테이커 MATCHED만 봄(두 MATCHED 사이 끼어듦 놓침) | 채택 | fixed L3: 범위 = 등록 ~ 그 체결의 마지막 MATCHED |
+| D2 | codex L3 F1 · opus L3 F2 | behavior-tests/build.gradle.kts:27·54·64 | env 없으면 0건 성공(red 오인) / 앱 키 DB_URL로 판정 → 개발 DB 오염 | 채택 | fixed L3: BEHAVIOR_TESTS=1 opt-in, 직접 호출 시 없으면 실패, 루트 집계만 건너뜀 |
+| D3 | codex L3 F2 | Flow.kt:94 | 테스트가 PG_URL 대신 PG_PORT로 주소 구성 | 채택 | fixed L3 |
+| D4 | codex L3 F3 | build-image.sh:46 | 같은 규모 다른 시드 태그(1k-s42→1k-s43) 미정리 | 기각 | 시드가 다르면 다른 데이터 세트 — 정리 단위 = 전체 태그(명세 산출물 5 "규모 태그") |
+| D5 | codex L3 F4 | build-image.sh:49 | 이전 이미지 id 강제 삭제가 다른 태그까지 지움 | 채택 | fixed L3: 남은 RepoTags 있으면 남김 |
+| D6 | opus L3 F1 | PaymentTest.kt:272·316 | INQUIRY pg_tx_id 단언이 계약 밖 | 채택 | fixed L3: ADR-0003 §7에 APPROVED = PG 값·DECLINED = NULL 명시(생성기와 같음), 단언 유지 |
+| D7 | opus L3 F3 | verify.sql:133-141 | 만료된 판매 입찰의 ACTIVE 복구 미검출 | 채택 | fixed L3: bid_restore_within_validity(검사 76개) |
+| D8 | opus L3 OQ1 | Env.kt:89 | 1년 이동 뒤 배치가 15초 타임아웃에 걸릴 수 있음 | 채택 | fixed L3: 배치만 BATCH_TIMEOUT_MS(기본 120초) |
 
 ## 생략한 검증
 
