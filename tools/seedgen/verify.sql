@@ -14,6 +14,7 @@
 
 BEGIN;
 SET LOCAL work_mem = '512MB';
+SET LOCAL enable_parallel_hash = off;   -- 병렬 해시는 /dev/shm(DSM)에 해시 테이블을 둔다: 본 규모에서 1GB를 넘어 실패(실측)
 SET LOCAL TIME ZONE 'Asia/Seoul';
 
 -- 결제 이후 항목 상태(§9.4에서 AWAITING_PAYMENT·PAYMENT_FAILED를 뺀 것)
