@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# 시드 이미지: CSV를 적재·검증한 PGDATA를 이미지 레이어에 담는다(볼륨 밖 경로 /pgseed/data).
+# 실행마다 이 이미지로 컨테이너를 띄우면 CSV를 다시 적재하지 않는다(run-db.sh).
+# 사용: tools/seedgen/build-image.sh <csv_dir> <tag>     예: build-image.sh ~/ccle-csv/500k 500k-s42
+set -euo pipefail
+csv=$1 tag=$2
+here=$(cd "$(dirname "$0")" && pwd)
+name=ccle-seed-build
+image=ccle-postgres-seed:$tag
+
+need_gb=$(( $(du -sk "$csv" | cut -f1) * 7 / 1024 / 1024 + 2 ))   # DB ≈ CSV×3.1(1천 명 실측), 커밋 순간 컨테이너+이미지 두 벌
+free_gb=$(( $(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2{print $4}' || df -Pk / | awk 'NR==2{print $4}') / 1024 / 1024 ))
+[ "$free_gb" -gt "$need_gb" ] || { echo "디스크 부족: 여유 ${free_gb}GB, 필요 약 ${need_gb}GB" >&2; exit 2; }
+
+docker rm -f "$name" >/dev/null 2>&1 || true
+# 적재 중에만 내구성 설정을 끈다. 커밋할 때 CMD 를 기본값으로 되돌린다.
+docker run -d --name "$name" -e POSTGRES_USER=ccle -e POSTGRES_PASSWORD=ccle -e POSTGRES_DB=postgres \
+  -e PGDATA=/pgseed/data postgres:17 \
+  -c fsync=off -c full_page_writes=off -c synchronous_commit=off \
+  -c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=2GB \
+  -c maintenance_work_mem=1GB > /dev/null
+# init 단계의 임시 서버가 아니라 본 서버가 뜰 때까지 기다린다
+for _ in $(seq 120); do
+  docker logs "$name" 2>&1 | grep -q "PostgreSQL init process complete" \
+    && docker exec "$name" pg_isready -U ccle -d postgres -q && break
+  sleep 1
+done
+
+"$here/load.sh" "$csv" "$name" ccle_seed
+echo "불변식 검증…"
+docker exec -i "$name" psql -U ccle -d ccle_seed -v ON_ERROR_STOP=1 -q < "$here/verify.sql"
+
+docker exec "$name" psql -U ccle -d postgres -qc "CHECKPOINT"
+docker stop "$name" > /dev/null
+docker commit --change 'CMD ["postgres"]' \
+  --change "LABEL ccle.seed.manifest-sha256=$(sha256sum "$csv/manifest.json" | cut -d' ' -f1)" \
+  "$name" "$image" > /dev/null
+docker rm "$name" > /dev/null
+docker image ls "$image" --format '{{.Repository}}:{{.Tag}} {{.Size}}'
