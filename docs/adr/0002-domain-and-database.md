@@ -304,3 +304,4 @@ seller_penalties(id PK, seller_id FK, order_item_id FK, amount bigint, settlemen
 - **항목 순서:** "첫 항목·앞 항목"은 `order_items.id` 순서.
 - **패널티의 정산:** 패널티는 발생 후 처음 마감되는 그 판매자의 주간 정산에 붙는다.
 - **CARRIED 정산:** `paid_at`은 NULL.
+- **정산 시점의 예외(현재 시각 스냅샷):** 마지막 마감 뒤에 분쟁이 기각된 항목은 아직 INCLUDED가 없다(보류만 있다). 마지막 마감 뒤에 분쟁이 인정된 항목은 아직 CLAWBACK이 없다. 둘 다 다음 정산에서 처리된다.

@@ -15,7 +15,7 @@
 
 - **대상:** `clean-code-llm-experiment`, 브랜치 `feat/schema-and-seed-data`(main `62e4e5a`에서 분기)
 - **산출물:**
-  1. `docker/init/02-schema.sql`: ADR-0002 §6의 테이블 19개 DDL(PK·FK·UNIQUE·CHECK·인덱스). `ccle_god`·`ccle_layered`에 같은 스키마.
+  1. `docker/init/02-schema.sql`: ADR-0002 §6·§9의 테이블 22개 DDL(§6 21개 + §9.1 bid_events — 초안의 19는 오기)(PK·FK·UNIQUE·CHECK·인덱스). `ccle_god`·`ccle_layered`에 같은 스키마.
   2. 합성 데이터 생성기 `tools/seedgen/`: 시드 고정, ADR-0002 절차를 시간순으로 시뮬레이션해 상태가 일관된 CSV를 만든다(입찰→체결→결제→발송·검수→확정→정산, 취소·만료·분쟁·포인트 적립/사용/복구/소멸 포함).
   3. 적재 스크립트: `COPY`로 CSV 적재 → 시퀀스 보정 → `ANALYZE`.
   4. 불변식 검증 SQL `tools/seedgen/verify.sql`: ADR-0002 §6.1의 9개 + 행 수·합계 리포트.
