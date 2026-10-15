@@ -180,8 +180,12 @@ class PaymentTest {
         assertTrue(Db.earnOfItem(Db.orderItems(orderId)[0].id).isEmpty(), "거절이면 적립 예정 없음")
 
         // 기한 안이면 새 키로 다시 결제할 수 있다
-        val retry = Flow.pay(buyer, trades, 0).assertStatus(201)
+        val retryKey = Flow.newKey()
+        val retry = Flow.pay(buyer, trades, 0, retryKey).assertStatus(201)
         assertEquals("PAID", retry.text("status"))
+        val retryOrder = Db.order(retry.long("orderId"))
+        assertEquals(Table8.C.cardAmount, retryOrder.cardAmount)
+        assertEquals(listOf(retryOrder.cardAmount), pg.approvalAmounts(retryKey), "PG가 받은 amount = 새 주문 card_amount")
         assertEquals("PAID", Db.trade(trades[0]).status)
         assertEquals(listOf("PAYMENT_FAILED", "PAID"), Db.orderItemsOfTrade(trades[0]).map { it.status })
     }
@@ -321,8 +325,12 @@ class PaymentTest {
         assertEquals(1_000L, Db.ledgerEntry(bundle.earnId).remaining)
         assertEquals(1_000L, Db.balance(buyer)!!.available)
 
-        val retry = Flow.pay(buyer, trades, 1_000).assertStatus(201)
+        val retryKey = Flow.newKey()
+        val retry = Flow.pay(buyer, trades, 1_000, retryKey).assertStatus(201)
         assertEquals("PAID", retry.text("status"))
+        val retryOrder = Db.order(retry.long("orderId"))
+        assertEquals(Table8.B.cardAmount, retryOrder.cardAmount)
+        assertEquals(listOf(retryOrder.cardAmount), pg.approvalAmounts(retryKey), "PG가 받은 amount = 새 주문 card_amount")
     }
 
     @Test
@@ -333,6 +341,7 @@ class PaymentTest {
         Flow.pgOutcome(key, FakePg.Outcome.TIMEOUT_APPROVED)
         val orderId = Flow.pay(buyer, trades, 0, key).assertStatus(201).long("orderId")
         assertEquals("UNKNOWN", Db.order(orderId).status)
+        assertEquals(listOf(Table8.C.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
 
         Flow.pgInquiryTimeout(key)
         Flow.advance(Duration.ofMinutes(1))
@@ -347,7 +356,9 @@ class PaymentTest {
     fun `주문 조회 - 구매자 200 같은 모양, 남의 주문 403, 없는 주문 404, 헤더 없음 401`() {
         val buyer = Db.createUser()
         val trades = tradesFor(buyer, Table8.C)
-        val created = Flow.pay(buyer, trades, 0).assertStatus(201)
+        val key = Flow.newKey()
+        val created = Flow.pay(buyer, trades, 0, key).assertStatus(201)
+        assertEquals(listOf(Table8.C.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
         val orderId = created.long("orderId")
 
         val r = Api.get("/orders/$orderId", buyer).assertStatus(200)

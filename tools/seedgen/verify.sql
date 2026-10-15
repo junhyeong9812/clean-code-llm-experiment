@@ -519,11 +519,16 @@ SELECT 'trade_price_time_priority', count(*) FROM v_match m
                        ELSE (-z.price, z.created_at, z.bid_id) < (-m.maker_price, m.maker_created, m.maker_id) END)
 UNION ALL -- [§4.1] 호가창은 어느 순간에도 교차하지 않는다: 입찰이 ACTIVE가 되는 순간(등록·복구) 반대편에 교차하는
           -- 다른 사용자의 체결 가능한(만료 시각 전) ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다.
-          -- 예외: 그 구간이 같은 시각의 체결로 끝났고 이 입찰이 그 체결의 테이커다(등록·복구 즉시 체결).
-          --       테이커로 판정하므로 동시 요청의 이벤트가 사이에 끼어도 된다
+          -- 예외: 그 구간이 같은 시각의 체결로 끝났고 이 입찰이 그 체결의 테이커이며, 등록(복구)과 체결 사이에
+          --       같은 사이즈의 다른 이벤트가 없다(등록·복구 즉시 체결). 같은 사이즈 안의 이벤트 id 순서는 실제 처리
+          --       순서다(ADR-0003 §3.3 사이즈 단위 직렬화). 다른 사이즈의 이벤트는 사이에 끼어도 된다
 SELECT 'book_never_crossed', count(*) FROM v_act x
  WHERE NOT EXISTS (SELECT 1 FROM v_match m
-                   WHERE m.taker_id = x.bid_id AND x.e_eid IN (m.m_eid, m.m_eid2) AND m.m_at = x.s_at)
+                   WHERE m.taker_id = x.bid_id AND x.e_eid IN (m.m_eid, m.m_eid2) AND m.m_at = x.s_at
+                     AND NOT EXISTS (SELECT 1 FROM bid_events be JOIN bids bb ON bb.id = be.bid_id
+                                     WHERE be.id > x.s_eid AND be.id < x.e_eid
+                                       AND bb.product_size_id = x.product_size_id
+                                       AND be.trade_id IS DISTINCT FROM m.trade_id))
    AND EXISTS (SELECT 1 FROM v_act z
                WHERE z.product_size_id = x.product_size_id AND z.side <> x.side
                  AND z.s_eid < x.s_eid AND (z.e_eid IS NULL OR z.e_eid > x.s_eid)

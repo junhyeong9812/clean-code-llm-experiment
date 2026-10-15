@@ -70,7 +70,13 @@ object Flow {
             put("tradeIds", tradeIds)
             if (pointToUse != null) put("pointToUse", pointToUse)
         }
-        return Api.post("/orders", body, user, key)
+        val r = Api.post("/orders", body, user, key)
+        // 새 주문(201)이면 PG는 그 키로 승인 요청 1건을 card_amount로 받았어야 한다(§5.1·§6).
+        // 모든 결제 경로에 같은 단언을 건다. 200(멱등 재요청)·오류 응답은 PG를 부르지 않으므로 여기서 보지 않는다.
+        if (r.status == 201 && key != null) {
+            assertEquals(listOf(r.long("cardAmount")), PgClient.suite.approvalAmounts(key), "PG가 받은 amount = card_amount: $r")
+        }
+        return r
     }
 
     /** 가짜 PG에 그 멱등 키의 결과를 정한다(HTTP 제어, §6). */

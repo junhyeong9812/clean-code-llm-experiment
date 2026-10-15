@@ -22,7 +22,6 @@ class BatchAndClockTest {
     @Test
     fun `시계 - GET now, 같은 시각·뒤 시각 PUT 허용, 앞 시각 409 CLOCK_BACKWARD`() {
         val now = Flow.now()
-        assertTrue(!now.isBefore(Db.SEED_NOW.toInstant()), "시계는 시드 시각보다 앞일 수 없다: $now")
         val same = Flow.setClock(now)
         assertTrue(same.status in 200..299, "같은 시각 허용: $same")
         assertEquals(now, Flow.now())

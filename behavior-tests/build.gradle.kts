@@ -21,6 +21,17 @@ dependencies {
 
 // 테스트는 직렬로 돈다(ADR-0003 §11, 명세 §2): 포크 1개, JUnit 병렬 끔.
 // 실행 결과는 앱·DB 상태에 달려 있으므로 캐시하지 않는다.
+// 환경이 명시됐을 때만 돈다: 루트 `./gradlew test`·`build`에서 env 없이 돌다 실패해
+// god·layered 단위 테스트 결과를 가리지 않게 한다. 판정은 명시적 env로만 한다(코드의 기본값은 보지 않는다).
+// run.sh는 env를 모두 넘기므로 영향이 없다.
+fun Test.requireEnv(name: String) {
+    onlyIf("env $name 가 설정됨") {
+        val set = !System.getenv(name).isNullOrBlank()
+        if (!set) logger.lifecycle("[behavior-tests] $path 건너뜀: env $name 가 없다(행위 테스트 환경 미설정)")
+        set
+    }
+}
+
 fun Test.behaviorDefaults() {
     maxParallelForks = 1
     systemProperty("junit.jupiter.execution.parallel.enabled", "false")
@@ -40,6 +51,7 @@ val infraTest by tasks.registering(Test::class) {
     classpath = testSourceSet.runtimeClasspath
     useJUnitPlatform { includeTags("infra") }
     behaviorDefaults()
+    requireEnv("DB_URL")      // DB만 쓴다
 }
 
 val contractTest by tasks.registering(Test::class) {
@@ -49,6 +61,7 @@ val contractTest by tasks.registering(Test::class) {
     classpath = testSourceSet.runtimeClasspath
     useJUnitPlatform { includeTags("contract") }
     behaviorDefaults()
+    requireEnv("BASE_URL")    // 앱 대상(DB_URL도 함께 넘겨야 기본값이 아닌 DB를 본다)
     mustRunAfter(infraTest)
 }
 

@@ -33,6 +33,7 @@ echo "불변식 검증…"
 docker exec -i "$name" psql -U ccle -d ccle_seed -v ON_ERROR_STOP=1 -q < "$here/verify.sql"
 
 docker exec "$name" psql -U ccle -d postgres -qc "CHECKPOINT"
+old_id=$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || true)   # 같은 태그의 지금 이미지(라벨 도입 전 빌드도 지우기 위해)
 docker stop "$name" > /dev/null
 docker commit --change 'CMD ["postgres"]' \
   --change "LABEL ccle.seed.manifest-sha256=$(sha256sum "$csv/manifest.json" | cut -d' ' -f1)" \
@@ -42,8 +43,8 @@ docker rm "$name" > /dev/null
 # 시드 이미지는 태그(규모)마다 하나만 둔다: 같은 태그로 다시 빌드하면 이전 빌드가 dangling 이 되므로 그것을 지운다.
 # 다른 태그(예: 테스트용 1k, 과제용 500k)는 남긴다. 쓰는 컨테이너가 있으면 지우지 않고 알린다.
 new_id=$(docker image inspect -f '{{.Id}}' "$image")
-for id in $(docker image ls -q --no-trunc -f dangling=true -f "label=ccle.seed.tag=$tag"); do
-  [ "$id" = "$new_id" ] && continue
+for id in $(printf '%s\n' $old_id $(docker image ls -q --no-trunc -f dangling=true -f "label=ccle.seed.tag=$tag") | sort -u); do
+  [ -z "$id" ] || [ "$id" = "$new_id" ] && continue
   if [ -n "$(docker ps -aq -f ancestor="$id")" ]; then echo "남김(사용 중인 컨테이너 있음): $id" >&2; continue; fi
   docker image rm -f "$id" > /dev/null && echo "지움: 이전 시드 이미지 $id"
 done
