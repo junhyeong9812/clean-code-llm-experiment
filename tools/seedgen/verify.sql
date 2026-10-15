@@ -136,6 +136,7 @@ FROM (SELECT bid_id, to_status, id AS s_eid, lead(id) OVER (PARTITION BY bid_id 
 JOIN bids b ON b.id = x.bid_id
 WHERE x.to_status = 'ACTIVE';
 CREATE INDEX ON v_act (bid_id);
+CREATE INDEX ON v_act (product_size_id, side, s_eid);
 ANALYZE v_act;
 
 -- 체결별 매칭 순간(MATCHED 이벤트 id), 테이커(ACTIVE 구간이 더 늦게 시작한 쪽)와 메이커
@@ -512,6 +513,21 @@ SELECT 'trade_price_time_priority', count(*) FROM v_match m
                  AND CASE m.taker_side
                        WHEN 'BUY'  THEN (z.price, z.created_at, z.bid_id) < (m.maker_price, m.maker_created, m.maker_id)
                        ELSE (-z.price, z.created_at, z.bid_id) < (-m.maker_price, m.maker_created, m.maker_id) END)
+UNION ALL -- [§4.1] 호가창은 어느 순간에도 교차하지 않는다: 입찰이 ACTIVE가 되는 순간(등록·복구) 반대편에 교차하는
+          -- 다른 사용자의 ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다. 바로 체결된 테이커 순간(구간이 MATCHED 이벤트 2개 안에 끝남)은 제외
+SELECT 'book_never_crossed', count(*) FROM v_act x
+ WHERE NOT (x.e_eid IS NOT NULL AND x.e_eid - x.s_eid <= 2
+            AND EXISTS (SELECT 1 FROM bid_events be WHERE be.id = x.e_eid AND be.to_status = 'MATCHED'))
+   AND EXISTS (SELECT 1 FROM v_act z
+               WHERE z.product_size_id = x.product_size_id AND z.side <> x.side
+                 AND z.s_eid < x.s_eid AND (z.e_eid IS NULL OR z.e_eid > x.s_eid)
+                 AND z.user_id <> x.user_id
+                 AND CASE x.side WHEN 'BUY' THEN x.price >= z.price ELSE x.price <= z.price END)
+UNION ALL -- 데이터가 비어 있어 검사들이 빈 집합으로 통과하는 것을 막는다
+SELECT 'data_not_empty', (SELECT count(*) FROM (VALUES
+         ((SELECT count(*) FROM trades)), ((SELECT count(*) FROM orders)), ((SELECT count(*) FROM order_items)),
+         ((SELECT count(*) FROM bids)), ((SELECT count(*) FROM point_ledger)), ((SELECT count(*) FROM settlements))) v(n)
+       WHERE n = 0)
 UNION ALL -- 체결마다 매칭 순간·테이커·메이커가 정해져야 한다(위 검사가 빈 집합으로 통과하지 않게)
 SELECT 'trade_match_resolved', (SELECT count(*) FROM trades) - (SELECT count(*) FROM v_match)
 UNION ALL -- [§4.1] 호가 교차 없음: 같은 사이즈의 ACTIVE 구매 최고가 < ACTIVE 판매 최저가 (자기 체결 금지 쌍은 예외)

@@ -905,8 +905,12 @@ class Gen:
                 continue
             else:
                 items[obj["id"]] = obj
-        for bid_id in sorted(self.active):           # 호가창에 걸린 ACTIVE 입찰
-            self.write_bid(self.active[bid_id])
+        for bid_id in sorted(self.active):           # 호가창에 걸린 입찰: 현재 시각에 정확히 만료되는 것은 만료로
+            bid = self.active[bid_id]
+            if bid["expires"] <= NOW:
+                bid["status"] = "ACTIVE"
+                self.bid_event(bid, "ACTIVE", "EXPIRED", None, bid["expires"])
+            self.write_bid(bid)
         for tr in trades.values():
             if tr["status"] == "AWAITING_PAYMENT":
                 self.write_trade(tr)
