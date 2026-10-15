@@ -135,10 +135,16 @@ CREATE TEMP TABLE v_result ON COMMIT DROP AS
 
 -- [§6.1-9 FK, §6.1-6 §9.1] constraints.sql의 FK 34개(검증됨)·부분 UNIQUE 3개가 실제로 걸려 있나
 SELECT 'schema_constraints_present' AS check_name,
-       (34 - (SELECT count(*) FROM pg_constraint
-              WHERE contype = 'f' AND convalidated AND connamespace = 'public'::regnamespace))
-     + (3 - (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'
-             AND indexname IN ('trades_live_buy_bid_key','trades_live_sell_bid_key','order_items_live_trade_key')))
+       (abs(34 - (SELECT count(*) FROM pg_constraint
+                  WHERE contype = 'f' AND convalidated AND connamespace = 'public'::regnamespace))
+      + abs(3 - (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'
+                 AND indexname IN ('trades_live_buy_bid_key','trades_live_sell_bid_key','order_items_live_trade_key')))
+      -- 불변식 1·7을 맡은 CHECK가 걸려 있나(정의 문자열로 확인)
+      + abs(1 - (SELECT count(*) FROM pg_constraint WHERE contype = 'c' AND conrelid = 'orders'::regclass
+                 AND pg_get_constraintdef(oid) LIKE '%item_total + buyer_fee_total%'))
+      + abs(2 - (SELECT count(*) FROM pg_constraint WHERE contype = 'c' AND conrelid = 'settlements'::regclass
+                 AND (pg_get_constraintdef(oid) LIKE '%net = (((gross - fee_total) - penalty_total) + carry_in)%'
+                      OR pg_get_constraintdef(oid) LIKE '%payout = GREATEST(net%'))))
        ::bigint AS violations
 
 ---------------- 주문·항목 금액 (§5.1·§6.1-2·§9.2) ----------------
@@ -184,10 +190,10 @@ SELECT 'order_status_vs_items', count(*) FROM v_ord
        (status IN ('PENDING','PAYING','UNKNOWN') AND n_awaiting <> n)
     OR (status = 'FAILED' AND n_failed <> n)
     OR (is_paid AND n_awaiting + n_failed > 0)
-    OR (status = 'PAID' AND n_cancel > 0)
+    OR (status = 'PAID' AND n_refunded > 0)
     OR (status = 'PARTIALLY_CANCELLED' AND NOT (n_refunded BETWEEN 1 AND n - 1))
     OR (status = 'CANCELLED' AND n_refunded <> n)
-    OR (n_cancel > 0 AND status NOT IN ('PARTIALLY_CANCELLED','CANCELLED')))
+    OR (n_refunded > 0 AND status NOT IN ('PARTIALLY_CANCELLED','CANCELLED')))
 UNION ALL -- 주문 paid_at ↔ 상태, paid_at ≥ created_at
 SELECT 'order_paid_at', count(*) FROM v_ord
  WHERE is_paid <> (paid_at IS NOT NULL) OR paid_at < created_at
@@ -204,7 +210,7 @@ SELECT 'trade_status_vs_items', count(*) FROM trades t
  WHERE (t.status = 'PAID') <> coalesce(x.has_paid, false)
 
 ---------------- 항목 상태-시각 (§4.4) ----------------
-UNION ALL -- 상태별 필수/금지 시각 (REFUNDED_AFTER_CONFIRM의 cancelled_at은 ADR 미정 → 검사 안 함)
+UNION ALL -- 상태별 필수/금지 시각 (§9.5: REFUNDED_AFTER_CONFIRM의 cancelled_at = 분쟁 인정 시각)
 SELECT 'item_status_timestamps', count(*) FROM v_oi
  WHERE CASE status
    WHEN 'AWAITING_PAYMENT'  THEN num_nonnulls(paid_at, shipped_at, inspected_at, delivered_at, confirmed_at, cancelled_at) <> 0
@@ -216,7 +222,9 @@ SELECT 'item_status_timestamps', count(*) FROM v_oi
    WHEN 'DELIVERED'         THEN num_nulls(paid_at, shipped_at, inspected_at, delivered_at) <> 0 OR num_nonnulls(confirmed_at, cancelled_at) <> 0
    WHEN 'CONFIRMED'         THEN num_nulls(paid_at, shipped_at, inspected_at, delivered_at, confirmed_at) <> 0 OR cancelled_at IS NOT NULL
    WHEN 'DISPUTED'          THEN num_nulls(paid_at, shipped_at, inspected_at, delivered_at, confirmed_at) <> 0 OR cancelled_at IS NOT NULL
-   WHEN 'REFUNDED_AFTER_CONFIRM' THEN num_nulls(paid_at, shipped_at, inspected_at, delivered_at, confirmed_at) <> 0
+   WHEN 'REFUNDED_AFTER_CONFIRM' THEN num_nulls(paid_at, shipped_at, inspected_at, delivered_at, confirmed_at, cancelled_at) <> 0
+        OR NOT EXISTS (SELECT 1 FROM disputes d WHERE d.order_item_id = v_oi.id AND d.status = 'ACCEPTED'
+                       AND d.resolved_at = v_oi.cancelled_at)
    WHEN 'CANCELLED_BY_BUYER' THEN num_nulls(paid_at, cancelled_at) <> 0 OR num_nonnulls(shipped_at, inspected_at, delivered_at, confirmed_at) <> 0
    WHEN 'CANCELLED_SELLER_FAULT' THEN num_nulls(paid_at, cancelled_at) <> 0 OR num_nonnulls(delivered_at, confirmed_at) <> 0
                                       OR (shipped_at IS NULL) <> (inspected_at IS NULL)
@@ -267,6 +275,14 @@ SELECT 'refund_status_match', count(*) FROM v_oi i LEFT JOIN v_ref_item r ON r.o
 UNION ALL -- [§9.2] 항목 환불액 = 체결가 + 구매 수수료 + 이 환불에 실린 배송비, buyer_fee_amount = 항목 구매 수수료
 SELECT 'refund_item_amount', count(*) FROM v_oi i JOIN v_ref_item r ON r.order_item_id = i.id
  WHERE r.card + r.point <> i.price + i.buyer_fee + r.ship OR r.fee <> i.buyer_fee
+UNION ALL -- [§9.2] 항목별 카드 환불 = 카드 몫 − (첫 항목이면 배송비 카드 부분) + (이 환불이 배송비를 포함하면 배송비 카드 부분). 항목당 환불 1건
+SELECT 'refund_item_card_point', count(*) FROM v_oi i
+ JOIN v_ref_item r ON r.order_item_id = i.id
+ JOIN (SELECT order_id, o_ship - least(o_ship - (o_ship * card_share) / b, point_share) AS ship_card
+       FROM v_oi WHERE rn = 1) s ON s.order_id = i.order_id
+ WHERE r.n <> 1
+    OR r.card <> i.card_share - CASE WHEN i.rn = 1 THEN s.ship_card ELSE 0 END
+                              + CASE WHEN r.ship > 0 THEN s.ship_card ELSE 0 END
 UNION ALL -- [§6.1-3] 주문별 Σ환불(card+point) ≤ 결제액, 모든 항목 환불이면 정확히 같음
 SELECT 'order_refund_total', count(*) FROM v_ord o
  JOIN (SELECT i.order_id, sum(r.card) AS card, sum(r.point) AS point, sum(r.ship) AS ship
@@ -302,16 +318,23 @@ SELECT 'refund_card_vs_pg_cancel', count(*) FROM (
   WHERE a.c IS DISTINCT FROM b.c) x
 
 ---------------- PG (§4.3·§6.1-9) ----------------
-UNION ALL -- PAID 이상 주문: 승인된 APPROVE 정확히 1건, 금액 = card_amount. 그 외 주문: 승인된 APPROVE 없음
+UNION ALL -- [§9.5] PAID 이상 주문: 승인 정확히 1건(APPROVE 승인, 또는 앞선 APPROVE UNKNOWN 뒤 INQUIRY 승인), 금액 = card_amount
 SELECT 'pg_approve_per_order', count(*) FROM v_ord o
- LEFT JOIN (SELECT order_id, count(*) AS n, sum(amount) AS amt FROM pg_transactions
-            WHERE kind IN ('APPROVE','INQUIRY') AND status = 'APPROVED' GROUP BY order_id) p ON p.order_id = o.id
+ LEFT JOIN (SELECT p.order_id, count(*) AS n, sum(p.amount) AS amt FROM pg_transactions p
+            WHERE p.status = 'APPROVED'
+              AND (p.kind = 'APPROVE'
+                   OR (p.kind = 'INQUIRY' AND EXISTS (SELECT 1 FROM pg_transactions u WHERE u.order_id = p.order_id
+                       AND u.kind = 'APPROVE' AND u.status = 'UNKNOWN' AND u.requested_at <= p.requested_at)))
+            GROUP BY p.order_id) p ON p.order_id = o.id
  WHERE (o.is_paid AND (p.n IS DISTINCT FROM 1 OR p.amt IS DISTINCT FROM o.card_amount))
     OR (NOT o.is_paid AND p.n IS NOT NULL)
 UNION ALL -- [§6.1-9·§9.5] 결제 이후 항목에는 그 주문의 승인(APPROVE 승인 또는 UNKNOWN 뒤 INQUIRY 승인)이 있음
 SELECT 'paid_item_has_approved_pg', count(*) FROM v_oi i
  WHERE i.is_paid AND NOT EXISTS (SELECT 1 FROM pg_transactions p
-                                  WHERE p.order_id = i.order_id AND p.kind IN ('APPROVE','INQUIRY') AND p.status = 'APPROVED')
+                                  WHERE p.order_id = i.order_id AND p.status = 'APPROVED'
+                                    AND (p.kind = 'APPROVE' OR (p.kind = 'INQUIRY' AND EXISTS (
+                                         SELECT 1 FROM pg_transactions u WHERE u.order_id = p.order_id
+                                           AND u.kind = 'APPROVE' AND u.status = 'UNKNOWN'))))
 
 ---------------- 포인트 (§4.5·§5.2·§6.1-4·5·§9.2) ----------------
 UNION ALL -- [§6.1-4] point_balances = 원장 합 (행 없는 사용자는 원장 합이 둘 다 0)
@@ -323,11 +346,11 @@ SELECT 'point_balance_cache', count(*) FROM (
                     sum(amount)    FILTER (WHERE status = 'PENDING')   AS pend
              FROM v_led WHERE kind = 'EARN' GROUP BY user_id) l ON l.user_id = pb.user_id
   WHERE coalesce(pb.available, 0) <> coalesce(l.avail, 0) OR coalesce(pb.pending, 0) <> coalesce(l.pend, 0)) x
-UNION ALL -- [§9.2] 비-EARN 항목의 배분 합 = 그 금액 (USE RELEASED는 0 또는 금액 — ADR 모호점 참조)
+UNION ALL -- [§9.2·§9.5] 비-EARN 항목의 배분 합 = 그 금액, RELEASED USE는 배분 없음
 SELECT 'ledger_allocation_sum', count(*) FROM v_led l
  LEFT JOIN (SELECT entry_id, sum(amount) AS s FROM point_allocations GROUP BY entry_id) a ON a.entry_id = l.id
  WHERE l.kind <> 'EARN'
-   AND CASE WHEN l.kind = 'USE' AND l.status = 'RELEASED' THEN coalesce(a.s, 0) NOT IN (0, l.amount)
+   AND CASE WHEN l.kind = 'USE' AND l.status = 'RELEASED' THEN coalesce(a.s, 0) <> 0
             ELSE coalesce(a.s, 0) <> l.amount END
 UNION ALL -- [§9.2] AVAILABLE EARN remaining = amount − Σ(USE(RELEASED 제외)·EXPIRE·REVOKE) + Σ(RESTORE)
 SELECT 'earn_remaining_formula', count(*) FROM v_led l
@@ -393,6 +416,9 @@ SELECT 'earn_vs_item_status', count(*) FROM (
   UNION ALL
   SELECT order_item_id FROM v_led WHERE kind = 'EARN' AND order_item_id IS NOT NULL
   GROUP BY order_item_id HAVING count(*) > 1) x
+UNION ALL -- [§5.2] AVAILABLE 적립의 만료 = 구매 확정 + 1년(시각 기준)
+SELECT 'earn_expiry_one_year', count(*) FROM v_led e JOIN v_oi i ON i.id = e.order_item_id
+ WHERE e.kind = 'EARN' AND e.status = 'AVAILABLE' AND e.expires_at IS DISTINCT FROM i.confirmed_at + interval '365 days'
 UNION ALL -- [§5.2·§9.2] 적립액 ∈ {floor(기준 × 등급률)}; 기준 = floor(카드 몫 × 체결가 / b_i). 최저율로도 ≥1이면 EARN 필수
 SELECT 'earn_amount_rate', count(*) FROM (
   SELECT i.id, (i.card_share * i.price) / i.b AS base, e.amount
@@ -487,6 +513,8 @@ UNION ALL -- [§5.4·§9.3] 정산 주는 월요일 시작, PAID 정산의 paid_
 SELECT 'settlement_period_and_paid_at', count(*) FROM v_set
  WHERE extract(isodow FROM period_start) <> 1
     OR (status = 'PAID' AND paid_at IS DISTINCT FROM ((period_start + 9)::timestamp AT TIME ZONE 'Asia/Seoul'))
+UNION ALL -- [§9.5] CARRIED 정산은 paid_at NULL
+SELECT 'settlement_carried_unpaid', count(*) FROM v_set WHERE status = 'CARRIED' AND paid_at IS NOT NULL
 UNION ALL -- [§5.4·§9.3] 정산 행 금액: INCLUDED = (체결가, floor(체결가 × 카테고리율)), CLAWBACK = 그 음수
 SELECT 'settlement_item_amounts', count(*) FROM settlement_items si JOIN v_oi i ON i.id = si.order_item_id
  WHERE (si.status = 'INCLUDED' AND (si.amount <> i.price OR si.fee <> floor(i.price * i.sale_fee_rate)))
@@ -507,7 +535,7 @@ SELECT 'settlement_inv8', count(*) FROM v_oi i
    -- 어떤 항목도 INCLUDED ≤ 1, CLAWBACK ≤ INCLUDED
    OR coalesce(x.n_inc, 0) > 1 OR coalesce(x.n_claw, 0) > coalesce(x.n_inc, 0)
    -- 마감 전 확정된 CONFIRMED: INCLUDED 1, CLAWBACK 0
-   --   (예외: 보류(HELD)됐다가 마지막 마감 뒤에 기각된 항목은 아직 INCLUDED 0 — ADR 모호점 참조)
+   --   (예외: 보류(HELD)됐다가 마지막 마감 뒤에 기각된 항목은 아직 INCLUDED 0 — ADR §9.5)
    OR (i.status = 'CONFIRMED' AND i.confirmed_at < g.last_cutoff
        AND NOT (coalesce(x.n_inc, 0) = 1 AND coalesce(x.n_claw, 0) = 0)
        AND NOT (coalesce(x.n_inc, 0) = 0 AND coalesce(x.n_held, 0) > 0
@@ -518,7 +546,9 @@ SELECT 'settlement_inv8', count(*) FROM v_oi i
    -- DISPUTED: CLAWBACK 없음
    OR (i.status = 'DISPUTED' AND coalesce(x.n_claw, 0) <> 0)
    -- REFUNDED_AFTER_CONFIRM: INCLUDED 수 = CLAWBACK 수 (0 또는 1)
-   OR (i.status = 'REFUNDED_AFTER_CONFIRM' AND coalesce(x.n_inc, 0) <> coalesce(x.n_claw, 0))
+   --   (예외: 마지막 마감 뒤 인정된 건은 회수가 아직 없다 — INCLUDED 1, CLAWBACK 0 — ADR §9.5)
+   OR (i.status = 'REFUNDED_AFTER_CONFIRM' AND coalesce(x.n_inc, 0) <> coalesce(x.n_claw, 0)
+       AND NOT (coalesce(x.n_inc, 0) = 1 AND coalesce(x.n_claw, 0) = 0 AND i.cancelled_at >= g.last_cutoff))
 UNION ALL -- [§5.4] 패널티: 판매자 귀책 취소 항목마다 정확히 1건, 금액 floor(체결가 × 10%), 판매자 = 체결 판매자
 SELECT 'penalty_per_seller_fault', count(*) FROM v_oi i
  LEFT JOIN (SELECT order_item_id, count(*) AS n, min(amount) AS amt, min(seller_id) AS s1, max(seller_id) AS s2

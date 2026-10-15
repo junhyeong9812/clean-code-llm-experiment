@@ -17,6 +17,7 @@ import heapq
 import json
 import os
 import random
+import shutil
 import time
 from bisect import bisect_right, insort
 from collections import deque
@@ -178,7 +179,7 @@ class Gen:
             for s in sizes:
                 sid = self.nid("product_sizes")
                 self.row("product_sizes", sid, pid, s)
-                self.size_ref.append(r1000(market * r.uniform(0.9, 1.15)))
+                self.size_ref.append(max(30_000, r1000(market * r.uniform(0.9, 1.15))))
                 self.size_cat.append(ci)
                 ids.append(sid)
             self.prod_sizes.append(ids)
@@ -240,21 +241,23 @@ class Gen:
         self.write_bid(bid)
 
     def unmatched_bids(self, day_start):
-        r = self.rng
         for _ in range(self.poisson(2300 * self.scale)):
-            t = day_start + r.randrange(DAY)
-            size = self.pick_size()
-            ref = self.size_ref[size]
-            if r.random() < 0.5:
-                u = self.pick_buyer(t)
-                side, price = "BUY", r1000(ref * r.uniform(0.6, 0.85))
-            else:
-                u = self.pick_seller(t)
-                side, price = "SELL", r1000(ref * r.uniform(1.12, 1.5))
-            if u is None:
-                continue
-            bid = self.new_bid(u, size, side, price, t, r.choice((30, 60, 90)))
-            self.close_unmatched(bid, t)
+            self.push(day_start + self.rng.randrange(DAY), P_EVENT, "spawn_bid", None)
+
+    def ev_spawn_bid(self, t, _):
+        r = self.rng
+        size = self.pick_size()
+        ref = self.size_ref[size]
+        if r.random() < 0.5:
+            u = self.pick_buyer(t)
+            side, price = "BUY", r1000(ref * r.uniform(0.6, 0.85))
+        else:
+            u = self.pick_seller(t)
+            side, price = "SELL", r1000(ref * r.uniform(1.12, 1.5))
+        if u is None:
+            return
+        bid = self.new_bid(u, size, side, price, t, r.choice((30, 60, 90)))
+        self.close_unmatched(bid, t)
 
     def poisson(self, lam):
         # 큰 λ 는 정규 근사
@@ -267,19 +270,24 @@ class Gen:
         weekday = time.gmtime(day_start + KST).tm_wday
         wk = 1.15 if weekday >= 5 else 0.94
         for _ in range(self.poisson(4110 * self.scale * growth * wk)):
-            t0 = day_start + r.randrange(DAY - HOUR)
-            buyer = self.pick_buyer(t0 - 21 * DAY)
-            if buyer is None or self.restricted(self.purch_restr, buyer, t0):
-                continue
-            n = r.choices((1, 2, 3, 4), (60, 25, 10, 5))[0]
-            trades, t = [], t0
-            for _ in range(n):
-                tr = self.new_trade(buyer, t, None)
-                if tr:
-                    trades.append(tr)
-                t += r.randrange(30, 5 * MIN)
-            if trades:
-                self.begin_payment(buyer, trades)
+            self.push(day_start + r.randrange(DAY), P_EVENT, "spawn_session", None)
+
+    def ev_spawn_session(self, t0, _):
+        r = self.rng
+        buyer = self.pick_buyer(t0 - 21 * DAY)
+        if buyer is None or self.restricted(self.purch_restr, buyer, t0):
+            return
+        n = r.choices((1, 2, 3, 4), (60, 25, 10, 5))[0]
+        trades, t = [], t0
+        for _ in range(n):
+            if t >= NOW:                    # 현재 시각 직전 세션: 결제 전 상태로 남는다
+                break
+            tr = self.new_trade(buyer, t, None)
+            if tr:
+                trades.append(tr)
+            t += r.randrange(30, 5 * MIN)
+        if trades:
+            self.begin_payment(buyer, trades)
 
     def new_trade(self, buyer, t, restored_sell):
         """체결 1건. restored_sell 이 있으면 그 판매 입찰(복구된)이 maker."""
@@ -384,7 +392,7 @@ class Gen:
         if outcome < 0.03:
             self.pg(o, "APPROVE", card, "DECLINED", t, resp)
             self.pay_failed(o, resp, use_entry)
-            if r.random() < 0.7 and resp + 3 * MIN < sess["due"]:
+            if r.random() < 0.7 and resp + 5 * MIN < sess["due"]:
                 self.push(resp + r.randrange(MIN, 3 * MIN), P_EVENT, "pay_attempt", sess)
         elif outcome < 0.04:
             self.pg(o, "APPROVE", card, "UNKNOWN", t, None)
@@ -658,7 +666,8 @@ class Gen:
                 lot["remaining"] -= x
                 need -= x
                 allocs.append([lot, x, 0])
-        assert need == 0, "포인트 부족"
+        if need:
+            raise RuntimeError(f"포인트 부족: user {u}, 부족 {need}")
         self.bal_touched[u] = t
 
     def release_points(self, o, t):
@@ -692,7 +701,8 @@ class Gen:
                 expired.append((lot, y))
             else:
                 lot["remaining"] += y
-        assert need == 0, "복구 대상 부족"
+        if need:
+            raise RuntimeError(f"복구 대상 부족: order {o['id']}, 부족 {need}")
         for lot, y in expired:
             eid = self.nid("point_ledger")
             self.row("point_ledger", eid, u, "EXPIRE", "DONE", y, None, None, None, None, ts(t))
@@ -843,7 +853,7 @@ class Gen:
                     trades[tr["id"]] = tr
             elif kind == "rematch":
                 self.write_bid(obj)          # 복구되어 ACTIVE 인 판매 입찰
-            elif kind in ("grade", "settle"):
+            elif kind in ("grade", "settle", "spawn_bid", "spawn_session"):
                 continue
             else:
                 items[obj["id"]] = obj
@@ -880,6 +890,13 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "manifest.json").unlink(missing_ok=True)      # 실패한 실행이 옛 manifest 와 섞이지 않게
+    need = int(a.users * 11_000 * 1.3)                    # 1천 명 실측 CSV 11MB, 30% 여유
+    free = shutil.disk_usage(out).free
+    if free < need:
+        raise SystemExit(f"디스크 부족: 여유 {free >> 30}GB, 필요 약 {need >> 30}GB")
     t0 = time.time()
     g = Gen(a.users, a.seed, a.out)
     g.run()
@@ -891,9 +908,9 @@ def main():
                 h.update(chunk)
         sums[name] = h.hexdigest()
     manifest = {"seed": a.seed, "users": a.users, "start": ts(START), "now": ts(NOW),
-                "rows": g.counts, "sha256": sums, "seconds": round(time.time() - t0, 1)}
+                "rows": g.counts, "sha256": sums}
     (Path(a.out) / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n")
-    print(json.dumps({"rows": g.counts, "seconds": manifest["seconds"]}, ensure_ascii=False))
+    print(json.dumps({"rows": g.counts, "seconds": round(time.time() - t0, 1)}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

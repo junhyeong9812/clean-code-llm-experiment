@@ -9,6 +9,26 @@ psql() { docker exec -i "$container" psql -U ccle -v ON_ERROR_STOP=1 -q "$@"; }
 
 case "$db" in ccle_god|ccle_layered|ccle|postgres) echo "개발 DB($db)에는 적재하지 않는다" >&2; exit 2;; esac
 [ -f "$csv/manifest.json" ] || { echo "manifest.json 없음: $csv" >&2; exit 2; }
+# CSV가 manifest 와 바이트 단위로 같은지(손상·부분 생성·다른 시드 섞임 차단)
+python3 - "$csv" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+d = Path(sys.argv[1]); m = json.loads((d / "manifest.json").read_text()); bad = []
+for t, want in m["sha256"].items():
+    h = hashlib.sha256()
+    with open(d / f"{t}.csv", "rb") as f:
+        for c in iter(lambda: f.read(1 << 20), b""):
+            h.update(c)
+    if h.hexdigest() != want:
+        bad.append(t)
+if bad:
+    sys.exit("sha256 불일치: " + ", ".join(bad))
+PY
+root_dir=$(docker info -f '{{.DockerRootDir}}')
+[ -n "$root_dir" ] || { echo "도커 data-root 를 알 수 없음" >&2; exit 2; }
+need_gb=$(( $(du -sk "$csv" | cut -f1) * 4 / 1024 / 1024 + 1 ))   # DB ≈ CSV×3.1(1천 명 실측)
+free_gb=$(( $(df -Pk "$root_dir" | awk 'NR==2{print $4}') / 1024 / 1024 ))
+[ "$free_gb" -gt "$need_gb" ] || { echo "디스크 부족: 여유 ${free_gb}GB, 필요 약 ${need_gb}GB" >&2; exit 2; }
 
 psql -d postgres -c "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db OWNER ccle"
 psql -d "$db" < "$root/docker/schema/tables.sql"
@@ -32,5 +52,6 @@ for t in $tables; do
     psql -d "$db" -Atc "SELECT setval(pg_get_serial_sequence('$t', 'id'), coalesce((SELECT max(id) FROM $t), 0) + 1, false)" > /dev/null;;
   esac
 done
-psql -d "$db" -c "ANALYZE"
+# 실행 컨테이너에서 autovacuum 이 대형 테이블을 다시 쓰지 않게(오버레이 copy-up 방지) 적재 직후 얼린다
+psql -d "$db" -c "VACUUM (FREEZE, ANALYZE)"
 echo "적재 완료: $db"

@@ -8,13 +8,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 name=ccle-seed-build
 image=ccle-postgres-seed:$tag
 
+root_dir=$(docker info -f '{{.DockerRootDir}}')
+[ -n "$root_dir" ] || { echo "도커 data-root 를 알 수 없음" >&2; exit 2; }
 need_gb=$(( $(du -sk "$csv" | cut -f1) * 7 / 1024 / 1024 + 2 ))   # DB ≈ CSV×3.1(1천 명 실측), 커밋 순간 컨테이너+이미지 두 벌
-free_gb=$(( $(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2{print $4}' || df -Pk / | awk 'NR==2{print $4}') / 1024 / 1024 ))
+free_gb=$(( $(df -Pk "$root_dir" | awk 'NR==2{print $4}') / 1024 / 1024 ))
 [ "$free_gb" -gt "$need_gb" ] || { echo "디스크 부족: 여유 ${free_gb}GB, 필요 약 ${need_gb}GB" >&2; exit 2; }
 
 docker rm -f "$name" >/dev/null 2>&1 || true
 # 적재 중에만 내구성 설정을 끈다. 커밋할 때 CMD 를 기본값으로 되돌린다.
-docker run -d --name "$name" -e POSTGRES_USER=ccle -e POSTGRES_PASSWORD=ccle -e POSTGRES_DB=postgres \
+docker run -d --name "$name" --shm-size=1g -e POSTGRES_USER=ccle -e POSTGRES_PASSWORD=ccle -e POSTGRES_DB=postgres \
   -e PGDATA=/pgseed/data postgres:17 \
   -c fsync=off -c full_page_writes=off -c synchronous_commit=off \
   -c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=2GB \
@@ -36,4 +38,11 @@ docker commit --change 'CMD ["postgres"]' \
   --change "LABEL ccle.seed.manifest-sha256=$(sha256sum "$csv/manifest.json" | cut -d' ' -f1)" \
   "$name" "$image" > /dev/null
 docker rm "$name" > /dev/null
+# 시드 이미지는 하나만 둔다: 다른 태그·이전 빌드(dangling)를 지운다. 쓰는 컨테이너가 있으면 지우지 않고 알린다.
+new_id=$(docker image inspect -f '{{.Id}}' "$image")
+for id in $(docker image ls -q --no-trunc ccle-postgres-seed) $(docker image ls -q --no-trunc -f dangling=true -f label=ccle.seed.manifest-sha256); do
+  [ "$id" = "$new_id" ] && continue
+  if [ -n "$(docker ps -aq -f ancestor="$id")" ]; then echo "남김(사용 중인 컨테이너 있음): $id" >&2; continue; fi
+  docker image rm -f "$id" > /dev/null && echo "지움: 이전 시드 이미지 $id"
+done
 docker image ls "$image" --format '{{.Repository}}:{{.Tag}} {{.Size}}'
