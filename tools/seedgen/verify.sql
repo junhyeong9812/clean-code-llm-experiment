@@ -131,8 +131,8 @@ ANALYZE v_be;
 
 -- 입찰의 ACTIVE 구간(이벤트 id 기준 — 이벤트 id는 처리 순서라 같은 초 안의 선후도 구분한다)
 CREATE TEMP TABLE v_act ON COMMIT DROP AS
-SELECT x.bid_id, x.s_eid, x.e_eid, b.side, b.price, b.created_at, b.user_id, b.product_size_id
-FROM (SELECT bid_id, to_status, id AS s_eid, lead(id) OVER (PARTITION BY bid_id ORDER BY id) AS e_eid
+SELECT x.bid_id, x.s_eid, x.e_eid, x.s_at, b.side, b.price, b.created_at, b.expires_at, b.user_id, b.product_size_id
+FROM (SELECT bid_id, to_status, id AS s_eid, created_at AS s_at, lead(id) OVER (PARTITION BY bid_id ORDER BY id) AS e_eid
       FROM bid_events) x
 JOIN bids b ON b.id = x.bid_id
 WHERE x.to_status = 'ACTIVE';
@@ -142,7 +142,8 @@ ANALYZE v_act;
 
 -- 체결별 매칭 순간(MATCHED 이벤트 id), 테이커(ACTIVE 구간이 더 늦게 시작한 쪽)와 메이커
 CREATE TEMP TABLE v_match ON COMMIT DROP AS
-SELECT t.id AS trade_id, t.product_size_id, me.eid AS m_eid,
+SELECT t.id AS trade_id, t.product_size_id, me.eid AS m_eid, me.eid2 AS m_eid2, t.matched_at AS m_at,
+       CASE WHEN ba.s_eid > sa.s_eid THEN ba.bid_id ELSE sa.bid_id END AS taker_id,
        CASE WHEN ba.s_eid > sa.s_eid THEN 'BUY' ELSE 'SELL' END AS taker_side,
        CASE WHEN ba.s_eid > sa.s_eid THEN ba.user_id ELSE sa.user_id END AS taker_user,
        CASE WHEN ba.s_eid > sa.s_eid THEN sa.bid_id ELSE ba.bid_id END AS maker_id,
@@ -153,6 +154,7 @@ JOIN (SELECT trade_id, min(id) AS eid, max(id) AS eid2 FROM bid_events WHERE to_
   ON me.trade_id = t.id
 JOIN v_act ba ON ba.bid_id = t.buy_bid_id  AND ba.e_eid IN (me.eid, me.eid2)
 JOIN v_act sa ON sa.bid_id = t.sell_bid_id AND sa.e_eid IN (me.eid, me.eid2);
+CREATE INDEX ON v_match (taker_id);
 ANALYZE v_match;
 
 ------------------------------------------------------------------------------------------
@@ -511,19 +513,22 @@ SELECT 'trade_price_time_priority', count(*) FROM v_match m
                  AND z.side = CASE m.taker_side WHEN 'BUY' THEN 'SELL' ELSE 'BUY' END
                  AND z.s_eid < m.m_eid AND (z.e_eid IS NULL OR z.e_eid > m.m_eid)
                  AND z.bid_id <> m.maker_id AND z.user_id <> m.taker_user
+                 AND z.expires_at > m.m_at   -- 만료 시각이 지난 ACTIVE 입찰은 매칭 후보가 아니다(ADR-0003 §3.3)
                  AND CASE m.taker_side
                        WHEN 'BUY'  THEN (z.price, z.created_at, z.bid_id) < (m.maker_price, m.maker_created, m.maker_id)
                        ELSE (-z.price, z.created_at, z.bid_id) < (-m.maker_price, m.maker_created, m.maker_id) END)
 UNION ALL -- [§4.1] 호가창은 어느 순간에도 교차하지 않는다: 입찰이 ACTIVE가 되는 순간(등록·복구) 반대편에 교차하는
-          -- 다른 사용자의 ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다. 바로 체결된 테이커 순간(같은 시각, 전역 이벤트 2개 안에 MATCHED)은 제외
+          -- 다른 사용자의 체결 가능한(만료 시각 전) ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다.
+          -- 예외: 그 구간이 같은 시각의 체결로 끝났고 이 입찰이 그 체결의 테이커다(등록·복구 즉시 체결).
+          --       테이커로 판정하므로 동시 요청의 이벤트가 사이에 끼어도 된다
 SELECT 'book_never_crossed', count(*) FROM v_act x
- WHERE NOT (x.e_eid IS NOT NULL AND x.e_eid - x.s_eid <= 2
-            AND EXISTS (SELECT 1 FROM bid_events be JOIN bid_events bs ON bs.id = x.s_eid
-                        WHERE be.id = x.e_eid AND be.to_status = 'MATCHED' AND be.created_at = bs.created_at))
+ WHERE NOT EXISTS (SELECT 1 FROM v_match m
+                   WHERE m.taker_id = x.bid_id AND x.e_eid IN (m.m_eid, m.m_eid2) AND m.m_at = x.s_at)
    AND EXISTS (SELECT 1 FROM v_act z
                WHERE z.product_size_id = x.product_size_id AND z.side <> x.side
                  AND z.s_eid < x.s_eid AND (z.e_eid IS NULL OR z.e_eid > x.s_eid)
                  AND z.user_id <> x.user_id
+                 AND z.expires_at > x.s_at
                  AND CASE x.side WHEN 'BUY' THEN x.price >= z.price ELSE x.price <= z.price END)
 UNION ALL -- 데이터가 비어 있어 검사들이 빈 집합으로 통과하는 것을 막는다
 SELECT 'data_not_empty', (SELECT count(*) FROM (VALUES
@@ -541,7 +546,12 @@ SELECT 'active_book_no_cross', count(*) FROM (
         HAVING max(price) FILTER (WHERE side = 'BUY') >= min(price) FILTER (WHERE side = 'SELL')) c
   JOIN bids bb ON bb.product_size_id = c.product_size_id AND bb.status = 'ACTIVE' AND bb.side = 'BUY'
   JOIN bids sb ON sb.product_size_id = c.product_size_id AND sb.status = 'ACTIVE' AND sb.side = 'SELL'
-              AND bb.price >= sb.price AND bb.user_id <> sb.user_id) x
+              AND bb.price >= sb.price AND bb.user_id <> sb.user_id
+  -- 지금의 ACTIVE 구간 시작: 나중에 ACTIVE가 된 쪽이 들어온 순간 먼저 있던 쪽이 이미 만료 시각을 지났으면
+  -- 교차가 아니다(만료 배치 전의 ACTIVE 입찰은 매칭 후보가 아니다 — ADR-0003 §3.3)
+  JOIN v_act ab ON ab.bid_id = bb.id AND ab.e_eid IS NULL
+  JOIN v_act asl ON asl.bid_id = sb.id AND asl.e_eid IS NULL
+  WHERE CASE WHEN ab.s_eid > asl.s_eid THEN sb.expires_at > ab.s_at ELSE bb.expires_at > asl.s_at END) x
 
 ---------------- 정산 (§5.4·§6.1-8·§9.3) ----------------
 UNION ALL -- [§9.3] carry_in = 같은 판매자 직전 정산 carry_out (첫 정산 0)

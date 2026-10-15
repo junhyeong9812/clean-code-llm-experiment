@@ -4,7 +4,7 @@ import com.ccle.behavior.pg.FakePg
 import com.ccle.behavior.support.Api
 import com.ccle.behavior.support.ContractTest
 import com.ccle.behavior.support.Db
-import com.ccle.behavior.support.FakePgExtension
+import com.ccle.behavior.support.PgClient
 import com.ccle.behavior.support.Flow
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 @ContractTest
 class PaymentTest {
     private val day = Duration.ofDays(1)
-    private val pg get() = FakePgExtension.pg
+    private val pg get() = PgClient.suite
 
     @Test
     fun `승인 - 예 A(두 항목, 포인트 5,000) 금액·항목 순서·행 전체`() {
@@ -49,11 +49,12 @@ class PaymentTest {
         assertEquals("APPROVE", tx.kind)
         assertEquals(Table8.A.cardAmount, tx.amount)
         assertEquals("APPROVED", tx.status)
-        assertEquals(pg.record(key)?.pgTxId, tx.pgTxId)
+        assertNotNull(tx.pgTxId)
+        assertEquals(pg.pgTxId(key), tx.pgTxId)
         assertEquals(key, tx.idempotencyKey)
         assertEquals(now, tx.requestedAt)
         assertEquals(now, tx.respondedAt)
-        assertEquals(listOf(FakePg.ApprovalRequest(key, Table8.A.cardAmount)), pg.approvalRequests(key))
+        assertEquals(listOf(Table8.A.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
 
         // 포인트: USE CONFIRMED + 배분 + 묶음 차감
         val use = Db.useEntries(orderId).single()
@@ -98,8 +99,10 @@ class PaymentTest {
         val bundle = Db.createPointBundle(buyer, 1_000, now.minus(day))
         val trades = tradesFor(buyer, Table8.B)
 
-        val r = Flow.pay(buyer, trades, 1_000).assertStatus(201)
+        val key = Flow.newKey()
+        val r = Flow.pay(buyer, trades, 1_000, key).assertStatus(201)
         assertOrderBody(r, Table8.B, trades, status = "PAID", itemStatus = "PAID")
+        assertEquals(listOf(Table8.B.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
         val orderId = r.long("orderId")
         val items = Db.orderItems(orderId)
         assertOrderRows(Db.order(orderId), items, Table8.B, trades)
@@ -118,8 +121,10 @@ class PaymentTest {
         val trades = tradesFor(buyer, Table8.C)
         assertNull(Db.balance(buyer))
 
-        val r = Flow.pay(buyer, trades, 0).assertStatus(201)
+        val key = Flow.newKey()
+        val r = Flow.pay(buyer, trades, 0, key).assertStatus(201)
         assertOrderBody(r, Table8.C, trades, status = "PAID", itemStatus = "PAID")
+        assertEquals(listOf(Table8.C.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
         val orderId = r.long("orderId")
         val items = Db.orderItems(orderId)
         assertOrderRows(Db.order(orderId), items, Table8.C, trades)
@@ -135,8 +140,10 @@ class PaymentTest {
     fun `승인 - 예 D(항목 합 100,000 → 배송비 0, pointToUse 생략 = 0)`() {
         val buyer = Db.createUser()
         val trades = tradesFor(buyer, Table8.D)
-        val r = Flow.pay(buyer, trades, pointToUse = null).assertStatus(201)
+        val key = Flow.newKey()
+        val r = Flow.pay(buyer, trades, pointToUse = null, key = key).assertStatus(201)
         assertOrderBody(r, Table8.D, trades, status = "PAID", itemStatus = "PAID")
+        assertEquals(listOf(Table8.D.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
         val orderId = r.long("orderId")
         val items = Db.orderItems(orderId)
         assertOrderRows(Db.order(orderId), items, Table8.D, trades)
@@ -154,6 +161,7 @@ class PaymentTest {
 
         val r = Flow.pay(buyer, trades, 0, key).assertStatus(201)
         assertOrderBody(r, Table8.C, trades, status = "FAILED", itemStatus = "PAYMENT_FAILED")
+        assertEquals(listOf(Table8.C.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
         val orderId = r.long("orderId")
         val order = Db.order(orderId)
         assertEquals("FAILED", order.status)
@@ -189,6 +197,7 @@ class PaymentTest {
 
         val r = Flow.pay(buyer, trades, 1_000, key).assertStatus(201)
         assertOrderBody(r, Table8.B, trades, status = "FAILED", itemStatus = "PAYMENT_FAILED")
+        assertEquals(listOf(Table8.B.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
         val orderId = r.long("orderId")
         val use = Db.useEntries(orderId).single()
         assertEquals("RELEASED", use.status)
@@ -211,6 +220,7 @@ class PaymentTest {
 
         val r = Flow.pay(buyer, trades, 1_000, key).assertStatus(201)
         assertOrderBody(r, Table8.B, trades, status = "UNKNOWN", itemStatus = "AWAITING_PAYMENT")
+        assertEquals(listOf(Table8.B.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
         val orderId = r.long("orderId")
         assertEquals("UNKNOWN", Db.order(orderId).status)
         assertNull(Db.order(orderId).paidAt)
@@ -238,7 +248,7 @@ class PaymentTest {
         val again = Flow.pay(buyer, trades, 1_000, key).assertStatus(200)
         assertEquals(orderId, again.long("orderId"))
         assertEquals("UNKNOWN", again.text("status"))
-        assertEquals(1, pg.approvalRequests(key).size)
+        assertEquals(1, pg.approvalCount(key))
 
         // 재조회 배치
         val later = Flow.advance(Duration.ofMinutes(5))
@@ -255,7 +265,7 @@ class PaymentTest {
         assertEquals(key, inquiry.idempotencyKey)
         assertEquals(later, inquiry.requestedAt)
         assertEquals(later, inquiry.respondedAt)
-        assertEquals(pg.record(key)?.pgTxId, inquiry.pgTxId)
+        assertEquals(pg.pgTxId(key), inquiry.pgTxId)
         assertEquals("CONFIRMED", Db.ledgerEntry(use.id).status)
         assertEquals(1_000L, Db.allocations(use.id).sumOf { it.amount })
         val earn = Db.earnOfItem(Db.orderItems(orderId)[0].id).single()
@@ -268,7 +278,7 @@ class PaymentTest {
         val retry = Flow.pay(buyer, trades, 1_000, key).assertStatus(200)
         assertEquals(orderId, retry.long("orderId"))
         assertOrderBody(retry, Table8.B, trades, status = "PAID", itemStatus = "PAID")
-        assertEquals(1, pg.approvalRequests(key).size)
+        assertEquals(1, pg.approvalCount(key))
         assertEquals(2, Db.pgTransactions(orderId).size)
     }
 
@@ -283,6 +293,7 @@ class PaymentTest {
 
         val r = Flow.pay(buyer, trades, 1_000, key).assertStatus(201)
         assertEquals("UNKNOWN", r.text("status"))
+        assertEquals(listOf(Table8.B.cardAmount), pg.approvalAmounts(key), "PG가 받은 amount = card_amount")
         val orderId = r.long("orderId")
         val approve = Db.pgTransactions(orderId).single()
         assertEquals("UNKNOWN", approve.status)

@@ -10,6 +10,8 @@ object Env {
     val dbUrl: String = env("DB_URL", "jdbc:postgresql://127.0.0.1:15434/ccle_seed")
     val dbUser: String = env("DB_USER", "ccle")
     val dbPassword: String = env("DB_PASSWORD", "ccle")
+    /** PG_EXTERNAL=1이면 가짜 PG를 띄우지 않고 이미 떠 있는 127.0.0.1:PG_PORT에 붙는다(run.sh가 앱보다 먼저 띄운다). */
+    val pgExternal: Boolean = env("PG_EXTERNAL", "0") == "1"
     val pgPort: Int = env("PG_PORT", FakePg.DEFAULT_PORT.toString()).toInt()
     /** TIMEOUT 계열 지연. 앱의 PG_TIMEOUT_MS(기본 2000)보다 커야 한다. */
     val pgDelayMs: Long = env("PG_DELAY_MS", FakePg.DEFAULT_DELAY_MS.toString()).toLong()

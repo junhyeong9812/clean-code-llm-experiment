@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicLong
  * 테스트 → PG
  *  - POST /_control/outcomes {"idempotencyKey","outcome"}: APPROVE | DECLINE | TIMEOUT_APPROVED | TIMEOUT_NOT_RECEIVED.
  *    지정이 없는 키는 APPROVE.
+ *  - GET  /_control/requests/{idempotencyKey} → {"approvals": n, "inquiries": m, "amounts": [...], "record": {"pgTxId","status"}|null}
+ *    (ADR 밖 보조 조회: 별도 프로세스로 띄운 PG의 카운터를 테스트가 HTTP로 단언한다)
  *  - POST /_control/inquiry-outcomes {"idempotencyKey","outcome": "TIMEOUT"} (ADR 밖 보조 제어):
  *    그 키의 재조회(GET)를 delayMs 뒤에 응답한다. ADR-0003 §7 pg-inquiry의 "응답 없음" 경로를 만들기 위해서다.
  *
@@ -32,7 +34,7 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
     data class Record(val pgTxId: String, val status: String)
 
     /** 받은 승인 요청 1건(테스트가 "PG 호출 없음"·금액을 단언하는 데 쓴다). */
-    data class ApprovalRequest(val idempotencyKey: String, val amount: Long?)
+    data class ApprovalRequest(val idempotencyKey: String, val amount: Long)
 
     private val mapper = jacksonObjectMapper()
     private val outcomes = ConcurrentHashMap<String, Outcome>()
@@ -82,6 +84,7 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
             method == "GET" && path.startsWith("/approvals/") -> inquire(ex, path.removePrefix("/approvals/"))
             method == "POST" && path == "/_control/outcomes" -> controlOutcome(ex)
             method == "POST" && path == "/_control/inquiry-outcomes" -> controlInquiry(ex)
+            method == "GET" && path.startsWith("/_control/requests/") -> controlRequests(ex, path.removePrefix("/_control/requests/"))
             else -> send(ex, 404, mapOf("error" to "no route $method $path"))
         }
     }
@@ -92,9 +95,11 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
     private fun approve(ex: HttpExchange) {
         val body = readJson(ex)
         val key = body?.get("idempotencyKey")?.takeIf { it.isTextual }?.asText()
-        if (key.isNullOrEmpty()) return send(ex, 400, mapOf("error" to "idempotencyKey required"))
-        val amount = body.get("amount")?.takeIf { it.isIntegralNumber }?.asLong()
-        approvalRequests += ApprovalRequest(key, amount)
+        val amountNode = body?.get("amount")
+        if (key.isNullOrEmpty() || amountNode == null || !amountNode.isIntegralNumber) {
+            return send(ex, 400, mapOf("error" to "idempotencyKey(문자열)와 amount(정수) 필요"))
+        }
+        approvalRequests += ApprovalRequest(key, amountNode.asLong())
 
         records[key]?.let { return send(ex, 200, it.toBody()) }
 
@@ -116,8 +121,7 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
     private fun recordOnce(key: String, status: String): Record =
         records.computeIfAbsent(key) { Record("fakepg-${seq.incrementAndGet()}-${System.nanoTime()}", status) }
 
-    private fun inquire(ex: HttpExchange, rawKey: String) {
-        val key = java.net.URLDecoder.decode(rawKey, Charsets.UTF_8)
+    private fun inquire(ex: HttpExchange, key: String) {
         inquiryRequests += key
         if (key in inquiryTimeouts) Thread.sleep(delayMs)
         val rec = records[key] ?: return send(ex, 404, mapOf("error" to "not found"))
@@ -131,6 +135,17 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
         if (key.isNullOrEmpty() || outcome == null) return send(ex, 400, mapOf("error" to "idempotencyKey and outcome required"))
         outcomes[key] = outcome
         send(ex, 200, mapOf("idempotencyKey" to key, "outcome" to outcome.name))
+    }
+
+    /** 그 키로 받은 요청 요약: 승인 요청 수·재조회 수·받은 금액(순서대로)·현재 기록. */
+    private fun controlRequests(ex: HttpExchange, key: String) {
+        val approvals = approvalRequests(key)
+        send(ex, 200, mapOf(
+            "approvals" to approvals.size,
+            "inquiries" to inquiryCount(key),
+            "amounts" to approvals.map { it.amount },
+            "record" to records[key]?.toBody(),
+        ))
     }
 
     private fun controlInquiry(ex: HttpExchange) {
@@ -163,12 +178,14 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
     }
 }
 
-/** 단독 실행: env PG_PORT(기본 15480), PG_DELAY_MS(기본 3000). */
+/** 단독 실행: env PG_PORT(기본 15480), PG_DELAY_MS(기본 3000). 준비되면 stdout에 `fake-pg ready <port>` 1줄. */
 fun main() {
     val port = System.getenv("PG_PORT")?.toInt() ?: FakePg.DEFAULT_PORT
     val delay = System.getenv("PG_DELAY_MS")?.toLong() ?: FakePg.DEFAULT_DELAY_MS
     val pg = FakePg(port, delay).start()
     Runtime.getRuntime().addShutdownHook(Thread { pg.close() })
-    println("fake PG listening on ${pg.url} (timeout delay ${delay}ms)")
+    // run.sh가 이 줄로 준비 완료를 판정한다
+    println("fake-pg ready ${pg.boundPort}")
+    System.out.flush()
     Thread.currentThread().join()
 }

@@ -4,7 +4,7 @@ import com.ccle.behavior.pg.FakePg
 import com.ccle.behavior.support.Api
 import com.ccle.behavior.support.ContractTest
 import com.ccle.behavior.support.Db
-import com.ccle.behavior.support.FakePgExtension
+import com.ccle.behavior.support.PgClient
 import com.ccle.behavior.support.Flow
 import com.ccle.behavior.support.Resp
 import org.junit.jupiter.api.Test
@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
 /** ADR-0003 §5.1 멱등·결제 가능 체결·요청 검증, §2 판정 순서. */
 @ContractTest
 class IdempotencyAndPayabilityTest {
-    private val pg get() = FakePgExtension.pg
+    private val pg get() = PgClient.suite
 
     // ---- 멱등 ----
 
@@ -36,7 +36,7 @@ class IdempotencyAndPayabilityTest {
         assertEquals(1, Db.ordersByKey(key).size)
         assertEquals(1, Db.orderItemsOfTrade(trades[0]).size)
         assertEquals(1, Db.pgTransactions(orderId).size)
-        assertEquals(1, pg.approvalRequests(key).size)
+        assertEquals(1, pg.approvalCount(key))
         assertEquals(1, Db.earnOfItem(Db.orderItems(orderId)[0].id).size)
     }
 
@@ -51,7 +51,7 @@ class IdempotencyAndPayabilityTest {
 
         assertEquals(orderId, Flow.pay(buyer, listOf(t2, t1), null, key).assertStatus(200).long("orderId"))
         assertEquals(1, Db.ordersByKey(key).size)
-        assertEquals(1, pg.approvalRequests(key).size)
+        assertEquals(1, pg.approvalCount(key))
     }
 
     @Test
@@ -70,7 +70,7 @@ class IdempotencyAndPayabilityTest {
         Flow.pay(buyer, listOf(t1), 1_000, key).assertError(409, "IDEMPOTENCY_KEY_REUSED")
         assertEquals(listOf(orderId), Db.ordersByKey(key).map { it.id })
         assertEquals("AWAITING_PAYMENT", Db.trade(t2).status)
-        assertEquals(1, pg.approvalRequests(key).size)
+        assertEquals(1, pg.approvalCount(key))
     }
 
     @Test
@@ -100,7 +100,7 @@ class IdempotencyAndPayabilityTest {
         val again = Flow.pay(buyer, trades, 0, key).assertStatus(200)
         assertEquals(orderId, again.long("orderId"))
         assertEquals("FAILED", again.text("status"))
-        assertEquals(1, pg.approvalRequests(key).size)
+        assertEquals(1, pg.approvalCount(key))
         assertEquals(1, Db.pgTransactions(orderId).size)
         assertEquals(1, Db.orderItemsOfTrade(trades[0]).size)
     }
@@ -125,7 +125,7 @@ class IdempotencyAndPayabilityTest {
         assertEquals(1, rs.map { it.long("orderId") }.toSet().size)
         assertEquals(1, Db.ordersByKey(key).size)
         assertEquals(1, Db.orderItemsOfTrade(trades[0]).size)
-        assertEquals(1, pg.approvalRequests(key).size)
+        assertEquals(1, pg.approvalCount(key))
     }
 
     // ---- 결제 가능 체결 ----

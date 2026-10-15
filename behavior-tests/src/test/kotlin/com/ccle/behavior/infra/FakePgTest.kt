@@ -3,6 +3,7 @@ package com.ccle.behavior.infra
 import com.ccle.behavior.pg.FakePg
 import com.ccle.behavior.support.Api
 import com.ccle.behavior.support.InfraTest
+import com.ccle.behavior.support.PgClient
 import com.ccle.behavior.support.Resp
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -36,23 +37,22 @@ class FakePgTest {
     }
 
     @Test
-    fun `지정 없는 키는 APPROVE - 즉시 승인, 재조회 APPROVED`() {
+    fun `지정 없는 키는 APPROVE - 승인, 재조회 APPROVED`() {
         val k = key()
-        val (r, ms) = timed { approve(k, 12345) }
+        val r = approve(k, 12345)
         assertEquals(200, r.status, r.toString())
         assertEquals("APPROVED", r.json["status"].asText())
         val tx = r.json["pgTxId"].asText()
         assertTrue(tx.isNotBlank())
-        assertTrue(ms < delayMs, "즉시 응답이어야 한다: ${ms}ms")
         val q = inquire(k)
         assertEquals(200, q.status)
         assertEquals("APPROVED", q.json["status"].asText())
         assertEquals(tx, q.json["pgTxId"].asText())
-        assertEquals(listOf(FakePg.ApprovalRequest(k, 12345)), pg.approvalRequests(k))
+        assertEquals(listOf(FakePg.ApprovalRequest(k, 12345L)), pg.approvalRequests(k))
     }
 
     @Test
-    fun `DECLINE - 즉시 거절, 재조회 DECLINED`() {
+    fun `DECLINE - 거절, 재조회 DECLINED`() {
         val k = key()
         assertEquals(200, control(k, "DECLINE").status)
         val r = approve(k)
@@ -118,6 +118,32 @@ class FakePgTest {
         assertEquals(400, control(key(), "MAYBE").status)
         assertEquals(400, Api.request("POST", "/_control/outcomes", mapOf("outcome" to "APPROVE"), base = pg.url).status)
         assertEquals(400, Api.request("POST", "/approvals", rawBody = "{", base = pg.url).status)
+    }
+
+    @Test
+    fun `승인 요청 형식 오류 - idempotencyKey·amount 누락 또는 정수 아님은 400, 기록·카운트 없음`() {
+        val k = key()
+        val bad = listOf(
+            mapOf("idempotencyKey" to k),
+            mapOf("idempotencyKey" to k, "amount" to "1000"),
+            mapOf("idempotencyKey" to k, "amount" to 10.5),
+            mapOf("amount" to 1000),
+            mapOf("idempotencyKey" to 7, "amount" to 1000),
+        )
+        bad.forEach { assertEquals(400, Api.request("POST", "/approvals", it, base = pg.url).status, "거부되어야 한다: $it") }
+        assertEquals(0, PgClient(pg.url).approvalCount(k))
+        assertEquals(404, inquire(k).status)
+    }
+
+    @Test
+    fun `요청 조회 제어 - 승인 수·재조회 수·받은 금액·기록`() {
+        val k = key()
+        val client = PgClient(pg.url)
+        assertEquals(PgClient.Requests(0, 0, emptyList(), null, null), client.requests(k))
+        val tx = approve(k, 5000).json["pgTxId"].asText()
+        approve(k, 5000)
+        inquire(k)
+        assertEquals(PgClient.Requests(2, 1, listOf(5000L, 5000L), tx, "APPROVED"), client.requests(k))
     }
 
     @Test

@@ -5,6 +5,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -34,7 +35,8 @@ object Flow {
         return t
     }
 
-    fun iso(t: Instant): String = OffsetDateTime.ofInstant(t, KST).toString()
+    /** 초를 항상 출력한다(OffsetDateTime.toString()은 초가 0이면 초를 뺀다). */
+    fun iso(t: Instant): String = OffsetDateTime.ofInstant(t, KST).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
     // ---- 입찰 (§3) ----
     fun bid(user: Long, size: Long, side: String, price: Long, validDays: Int = 30): Resp =

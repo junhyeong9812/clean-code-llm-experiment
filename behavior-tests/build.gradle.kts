@@ -31,15 +31,10 @@ fun Test.behaviorDefaults() {
     }
 }
 
-tasks.test {
-    useJUnitPlatform()  // infra + contract 둘 다
-    behaviorDefaults()
-}
-
 val testSourceSet = sourceSets["test"]
 
 val infraTest by tasks.registering(Test::class) {
-    description = "가짜 PG·DB 도우미 자체 테스트 (태그 infra)"
+    description = "가짜 PG·DB 도우미 자체 테스트 + verify.sql(시드·도우미 행) (태그 infra)"
     group = "verification"
     testClassesDirs = testSourceSet.output.classesDirs
     classpath = testSourceSet.runtimeClasspath
@@ -54,12 +49,33 @@ val contractTest by tasks.registering(Test::class) {
     classpath = testSourceSet.runtimeClasspath
     useJUnitPlatform { includeTags("contract") }
     behaviorDefaults()
+    mustRunAfter(infraTest)
 }
 
-// 가짜 PG만 따로 띄운다: ./gradlew :behavior-tests:fakePg  (env PG_PORT, PG_DELAY_MS)
+// 기본 test = infraTest 다음 contractTest. test 자신은 테스트를 돌리지 않는다
+// (섞어 돌리면 VerifySqlTest의 판정 대상이 실행 순서에 따라 바뀌므로).
+tasks.test {
+    dependsOn(infraTest, contractTest)
+    enabled = false
+}
+
+// 가짜 PG만 따로 띄운다: ./gradlew :behavior-tests:fakePg  (env PG_PORT, PG_DELAY_MS). 준비되면 "fake-pg ready <port>"
 val fakePg by tasks.registering(JavaExec::class) {
     description = "가짜 PG 서버를 단독 실행 (ADR-0003 §6)"
     group = "application"
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.ccle.behavior.pg.FakePgKt")
+}
+
+// run.sh용: gradle 없이 java로 가짜 PG를 띄울 클래스패스를 파일로 쓴다(build/fake-pg.classpath).
+//   java -cp "$(cat behavior-tests/build/fake-pg.classpath)" com.ccle.behavior.pg.FakePgKt
+val fakePgClasspath by tasks.registering {
+    description = "가짜 PG 실행 클래스패스를 build/fake-pg.classpath에 쓴다"
+    group = "application"
+    val cp = sourceSets["main"].runtimeClasspath
+    val out = layout.buildDirectory.file("fake-pg.classpath")
+    dependsOn(tasks.named("classes"))
+    inputs.files(cp)
+    outputs.file(out)
+    doLast { out.get().asFile.writeText(cp.files.joinToString(File.pathSeparator) { it.absolutePath }) }
 }

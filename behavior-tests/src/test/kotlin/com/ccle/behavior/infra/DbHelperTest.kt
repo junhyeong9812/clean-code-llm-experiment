@@ -5,6 +5,7 @@ import com.ccle.behavior.support.InfraTest
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -72,7 +73,8 @@ class DbHelperTest {
 
     @Test
     fun `포인트 묶음 - 마지막 정산 마감 전 확정 시각은 거부(verify settlement_inv8)`() {
-        val cutoff = Db.lastSettlementCutoff() ?: return
+        val cutoff = Db.lastSettlementCutoff()
+        assertNotNull(cutoff, "시드에 주간 정산이 있어야 한다(이 검사의 전제)")
         val user = Db.createUser()
         val err = runCatching { Db.createPointBundle(user, 1000, cutoff.minusSeconds(1)) }.exceptionOrNull()
         assertTrue(err is IllegalArgumentException, "거부되어야 한다: $err")
