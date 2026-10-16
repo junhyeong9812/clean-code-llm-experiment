@@ -525,19 +525,28 @@ UNION ALL -- [§4.1] 호가창은 어느 순간에도 교차하지 않는다: �
           -- 예외: 그 구간이 같은 시각의 체결로 끝났고 이 입찰이 그 체결의 테이커이며, 등록(복구)과 체결 이벤트 2행 사이에
           --       같은 사이즈의 다른 이벤트가 없다(등록·복구 즉시 체결). 같은 사이즈 안의 이벤트 id 순서는 실제 처리
           --       순서다(ADR-0003 §3.3 사이즈 단위 직렬화). 다른 사이즈의 이벤트는 사이에 끼어도 된다
-SELECT 'book_never_crossed', count(*) FROM v_act x
- WHERE NOT EXISTS (SELECT 1 FROM v_match m
-                   WHERE m.taker_id = x.bid_id AND x.e_eid IN (m.m_eid, m.m_eid2) AND m.m_at = x.s_at
-                     AND NOT EXISTS (SELECT 1 FROM bid_events be JOIN bids bb ON bb.id = be.bid_id
-                                     WHERE be.id > x.s_eid AND be.id < m.m_eid2   -- 등록 ~ 그 체결의 마지막 MATCHED
-                                       AND bb.product_size_id = x.product_size_id
-                                       AND be.trade_id IS DISTINCT FROM m.trade_id))
-   AND EXISTS (SELECT 1 FROM v_act z
-               WHERE z.product_size_id = x.product_size_id AND z.side <> x.side
-                 AND z.s_eid < x.s_eid AND (z.e_eid IS NULL OR z.e_eid > x.s_eid)
-                 AND z.user_id <> x.user_id
-                 AND z.expires_at > x.s_at
-                 AND CASE x.side WHEN 'BUY' THEN x.price >= z.price ELSE x.price <= z.price END)
+SELECT 'book_never_crossed', count(*) FROM (
+  -- 즉시 체결된 테이커 순간을 먼저 걸러 낸 뒤(MATERIALIZED로 순서 고정) 남은 구간만 교차를 확인한다.
+  -- 순서를 플래너에 맡기면 1,300만 구간 전부에 교차 확인을 먼저 돌려 본 규모에서 끝나지 않는다(실측: 50만 시드 60분 초과)
+  WITH cand AS MATERIALIZED (
+    SELECT x.* FROM v_act x
+     WHERE NOT EXISTS (SELECT 1 FROM v_match m
+                       WHERE m.taker_id = x.bid_id AND x.e_eid IN (m.m_eid, m.m_eid2) AND m.m_at = x.s_at
+                         -- 등록 ~ 그 체결의 마지막 MATCHED 사이 이벤트를 id 범위(PK)로 먼저 훑고 사이즈는 행마다 확인한다.
+                         -- 같은 시각 안의 범위라 짧다(사이즈 → 입찰 → 이벤트 순은 테이커마다 입찰 수백 개를 훑는다)
+                         AND NOT EXISTS (SELECT 1 FROM bid_events be
+                                         WHERE be.id > x.s_eid AND be.id < m.m_eid2
+                                           AND be.trade_id IS DISTINCT FROM m.trade_id
+                                           AND (SELECT bb.product_size_id FROM bids bb WHERE bb.id = be.bid_id)
+                                               = x.product_size_id)))
+  SELECT 1 FROM cand x
+   WHERE EXISTS (SELECT 1 FROM v_act z
+                 WHERE z.product_size_id = x.product_size_id
+                   AND z.side = CASE x.side WHEN 'BUY' THEN 'SELL' ELSE 'BUY' END   -- 반대편(등식이라 해시 키에 들어간다)
+                   AND z.s_eid < x.s_eid AND (z.e_eid IS NULL OR z.e_eid > x.s_eid)
+                   AND z.user_id <> x.user_id
+                   AND z.expires_at > x.s_at
+                   AND CASE x.side WHEN 'BUY' THEN x.price >= z.price ELSE x.price <= z.price END)) bnc
 UNION ALL -- 데이터가 비어 있어 검사들이 빈 집합으로 통과하는 것을 막는다
 SELECT 'data_not_empty', (SELECT count(*) FROM (VALUES
          ((SELECT count(*) FROM trades)), ((SELECT count(*) FROM orders)), ((SELECT count(*) FROM order_items)),
