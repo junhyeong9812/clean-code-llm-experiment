@@ -32,6 +32,11 @@
 | 2026-10-15 | 회귀: 1k·2만 verify 76개 위반 0, run.sh god 113초·layered 115초: infra 18 통과·contract 117 실패(116 HTTP 404, 1 code 없음)·verify 0. 500k 이미지는 옛 verify(75개)로 빌드 → 새 verify를 500k 컨테이너에 백그라운드 실행 | |
 | 2026-10-15 | 사용자: "타깃 재점검 1회 후 종료". codex post-fix(3회차 수정 hunk만): 1차 bwrap 오류 → 재시도 2건(E1·E2) | 워커 수정: 축약 호출·infraTest DB_URL 확인표 전부 기대대로 |
 | 2026-10-15 | run.sh god 117초·layered 110초: infra 18 통과, contract 117 실패, verify 76개 위반 0 | |
+| 2026-10-16 | 500k 새 verify가 13시간 넘게 v_result에서 끝나지 않음 → 취소. EXPLAIN: book_never_crossed 테이커 예외가 사이즈→입찰(약 219)→이벤트로 풀려 테이커 490만 건마다 수백 회 조회, 교차 EXISTS가 1,300만 구간 전부에 먼저 실행 | 실측 id 간격(테이커 ACTIVE→마지막 MATCHED) 중앙값 2·최대 291 |
+| 2026-10-16 | 1차 수정(사이 이벤트를 PK 범위 구동) → 단독 실행 60분 제한 초과. 2% 표본 분해: 교차 46초·예외 10초·옛 검사 39초 → 결합 순서가 원인 | |
+| 2026-10-16 | 2차 수정: 예외를 MATERIALIZED CTE로 먼저 거름, 반대편을 등식(side CHECK BUY·SELL)으로 해시 키에 포함 → 500k 단독 28분·위반 0. 반증 12종 결과 수정 전과 동일(falsify3=falsify5), run.sh god 132초: contract 117 실패·verify 76 위반 0 | 커밋 fix(verify) |
+| 2026-10-16 | 500k 전체 verify 재실행: 1회차는 호스트 메모리 부족(다른 프로젝트 ES 재시작 루프)으로 셸이 중단 → 남은 백엔드 취소. 컨테이너 안 분리 실행으로 재실행 | 76개 위반 0, 4,377초(73분 — 이전 75개 83분) |
+
 ## 리뷰 ledger
 
 | id | source | 근거 | 내용 | disposition | status |
@@ -96,4 +101,174 @@
 
 ## 생략한 검증
 
+- 없음. 긴급 수정이 아니며 §4 안전선과 높음 stakes 리뷰를 수행했다. 리뷰는 3루프 상한에서 종료했다(사용자 결정 "타깃 재점검 1회 후 종료", 재점검 2건은 수정·검증).
+
 ## 완료 요약
+
+### 결론
+
+ADR-0003(HTTP API 계약 1단계: 입찰·체결·결제)을 검증하는 블랙박스 행위 테스트 모듈 `behavior-tests`를 추가했다. 계약 테스트 117개, 인프라 테스트 18개, 가짜 PG로 구성된다. `tools/behavior/run.sh <god|layered>` 하나로 1k 시드 DB → 가짜 PG → 앱 → 테스트 → `verify.sql` 순서로 실행된다. 명세의 끝의 정의를 두 앱 모두에서 충족했다. 아직 구현이 없는 god·layered에서 인프라 18개는 통과하고, 계약 117개는 전부 실패하며 실패 원인은 엔드포인트 없음(404) 류다(1건은 404 응답에 `code`가 없어 실패). verify 76개 검사에서 위반은 0이다. 리뷰 중에 `verify.sql` 호가 이력·교차 검사의 결함 두 가지가 드러났다. 하나는 만료 시각을 무시한 것이고, 다른 하나는 이벤트 id 간격 ≤2로 "등록 즉시 체결"을 판정한 것이다. 사용자 재합의 2회(verify 수정 범위 포함, ADR-0003 §3.3에 사이즈 단위 직렬화 추가)를 거쳐 고쳤다. 반증 표본 12종에서 정상 5종은 위반 0, 결함 7종은 모두 검출됐다. 이전 verify는 정상 표본 3종을 위반으로 잘못 판정했다(1판 표본 기준). 리뷰는 듀얼 루프 3회를 돈 뒤 사용자 지시로 타깃 post-fix 재점검 1회를 하고 종료했다.
+
+기준: main `19d74d8`(ADR-0003 채택) → HEAD `ffd3523`, 브랜치 `feat/behavior-tests-stage1`. docs를 뺀 변경은 24개 파일, +3338/−13이다.
+
+### 산출물
+
+| 파일 | 역할 |
+|---|---|
+| `behavior-tests/build.gradle.kts` | 모듈 정의. `infraTest`(태그 infra)·`contractTest`(태그 contract)를 직렬로 실행하고, `test` = infraTest 다음 contractTest. `BEHAVIOR_TESTS=1` opt-in이 없으면 루트 집계에서는 건너뛰고, 직접 호출(축약 포함)하면 실패시킨다. 가짜 PG 클래스패스 태스크도 여기 있다 |
+| `behavior-tests/src/main/.../pg/FakePg.kt` | 가짜 PG(JDK 내장 HTTP 서버, ADR-0003 §6). 멱등 키별로 결과를 제어하고, amount가 없으면 400. 보조 제어 `_control/inquiry-outcomes`(ADR 밖, 재조회 응답 없음 경로용) |
+| `behavior-tests/src/test/.../contract/*Test.kt` (8개 클래스) + `Amounts.kt` | ADR-0003 계약 테스트 117개: 입찰 등록, 체결, 결제, 포인트, 멱등·결제 가능 여부, 제한·동시성, 배치·시계, 체결 조회·오류. 금액 기대값은 ADR-0003 §8 표 기준 |
+| `behavior-tests/src/test/.../infra/` (`DbHelperTest`·`FakePgTest`·`VerifySqlTest`) | 인프라 자체 테스트 18개: 가짜 PG, DB 도우미, 시드와 도우미 행에 대한 verify.sql |
+| `behavior-tests/src/test/.../support/` (`Api`·`Db`·`Env`·`Flow`·`FakePgExtension`) | HTTP 클라이언트, DB 직접 조회·INSERT 도우미, env(`BASE_URL`·`DB_URL`·`PG_URL`·`BATCH_TIMEOUT_MS` 등), 공통 흐름(결제 201마다 PG 수신 금액 = cardAmount 단언), 가짜 PG 연결 |
+| `tools/behavior/run.sh` | 1회 실행 스크립트. 포트 사전 검사 → 1k 시드 컨테이너 → 가짜 PG(별도 프로세스, 앱보다 먼저) → 앱 jar → health 확인 → gradle → verify.sql(실패하면 종료 코드 3) → 정리 |
+| `tools/seedgen/verify.sql` | 호가 이력·교차 검사 3곳(`book_never_crossed`·`active_book_no_cross`·`trade_price_time_priority`)과 보조 뷰(`v_act`·`v_match`)에 만료 조건과 사이즈 단위 직렬화 전제를 반영했다. 검사 `bid_restore_within_validity`를 새로 추가해 총 76개 |
+| `tools/seedgen/build-image.sh` | 시드 이미지를 규모 태그마다 1개 유지한다(`LABEL ccle.seed.tag`). 같은 태그의 이전 빌드만 지우고, 다른 태그가 붙어 있거나 사용 중인 이미지는 남긴다 |
+| `build.gradle.kts`·`settings.gradle.kts` | 루트 Spring 설정은 god·layered에만 적용(`configure(listOf(...))`), `behavior-tests` include |
+| `docs/adr/0003-http-api-stage1.md` (docs) | §3.3 사이즈 단위 직렬화, §7 payment-due 이벤트 순서와 INQUIRY `pg_tx_id` 규칙, §8 금액 예시의 floor 값 정정 |
+
+### 핵심 diff
+
+**1. `verify.sql` `book_never_crossed`: 등록 즉시 체결 예외와 만료 조건**
+
+before (`19d74d8:tools/seedgen/verify.sql:517-527`):
+
+```sql
+UNION ALL -- [§4.1] 호가창은 어느 순간에도 교차하지 않는다: 입찰이 ACTIVE가 되는 순간(등록·복구) 반대편에 교차하는
+          -- 다른 사용자의 ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다. 바로 체결된 테이커 순간(같은 시각, 전역 이벤트 2개 안에 MATCHED)은 제외
+SELECT 'book_never_crossed', count(*) FROM v_act x
+ WHERE NOT (x.e_eid IS NOT NULL AND x.e_eid - x.s_eid <= 2
+            AND EXISTS (SELECT 1 FROM bid_events be JOIN bid_events bs ON bs.id = x.s_eid
+                        WHERE be.id = x.e_eid AND be.to_status = 'MATCHED' AND be.created_at = bs.created_at))
+   AND EXISTS (SELECT 1 FROM v_act z
+               WHERE z.product_size_id = x.product_size_id AND z.side <> x.side
+                 AND z.s_eid < x.s_eid AND (z.e_eid IS NULL OR z.e_eid > x.s_eid)
+                 AND z.user_id <> x.user_id
+                 AND CASE x.side WHEN 'BUY' THEN x.price >= z.price ELSE x.price <= z.price END)
+```
+
+after (`tools/seedgen/verify.sql:523-549`):
+
+```sql
+UNION ALL -- [§4.1] 호가창은 어느 순간에도 교차하지 않는다: 입찰이 ACTIVE가 되는 순간(등록·복구) 반대편에 교차하는
+          -- 다른 사용자의 체결 가능한(만료 시각 전) ACTIVE 입찰이 있으면 그 자리에서 체결됐어야 한다.
+          -- 예외: 그 구간이 같은 시각의 체결로 끝났고 이 입찰이 그 체결의 테이커이며, 등록(복구)과 체결 이벤트 2행 사이에
+          --       같은 사이즈의 다른 이벤트가 없다(등록·복구 즉시 체결). 같은 사이즈 안의 이벤트 id 순서는 실제 처리
+          --       순서다(ADR-0003 §3.3 사이즈 단위 직렬화). 다른 사이즈의 이벤트는 사이에 끼어도 된다
+SELECT 'book_never_crossed', count(*) FROM (
+  -- 즉시 체결된 테이커 순간을 먼저 걸러 낸 뒤(MATERIALIZED로 순서 고정) 남은 구간만 교차를 확인한다.
+  -- 순서를 플래너에 맡기면 1,300만 구간 전부에 교차 확인을 먼저 돌려 본 규모에서 끝나지 않는다(실측: 50만 시드 60분 초과)
+  WITH cand AS MATERIALIZED (
+    SELECT x.* FROM v_act x
+     WHERE NOT EXISTS (SELECT 1 FROM v_match m
+                       WHERE m.taker_id = x.bid_id AND x.e_eid IN (m.m_eid, m.m_eid2) AND m.m_at = x.s_at
+                         -- 등록 ~ 그 체결의 마지막 MATCHED 사이 이벤트를 id 범위(PK)로 먼저 훑고 사이즈는 행마다 확인한다.
+                         -- 같은 시각 안의 범위라 짧다(사이즈 → 입찰 → 이벤트 순은 테이커마다 입찰 수백 개를 훑는다)
+                         AND NOT EXISTS (SELECT 1 FROM bid_events be
+                                         WHERE be.id > x.s_eid AND be.id < m.m_eid2
+                                           AND be.trade_id IS DISTINCT FROM m.trade_id
+                                           AND (SELECT bb.product_size_id FROM bids bb WHERE bb.id = be.bid_id)
+                                               = x.product_size_id)))
+  SELECT 1 FROM cand x
+   WHERE EXISTS (SELECT 1 FROM v_act z
+                 WHERE z.product_size_id = x.product_size_id
+                   AND z.side = CASE x.side WHEN 'BUY' THEN 'SELL' ELSE 'BUY' END   -- 반대편(등식이라 해시 키에 들어간다)
+                   AND z.s_eid < x.s_eid AND (z.e_eid IS NULL OR z.e_eid > x.s_eid)
+                   AND z.user_id <> x.user_id
+                   AND z.expires_at > x.s_at
+                   AND CASE x.side WHEN 'BUY' THEN x.price >= z.price ELSE x.price <= z.price END)) bnc
+```
+
+이전에는 전역 이벤트 id 간격 ≤2로 판정해서, 동시 요청이 사이에 끼면 정상인 경우도 위반으로 잡았다. 이제는 테이커인지, 같은 시각인지, 같은 사이즈의 다른 이벤트가 없는지로 판정하고, 만료 시각이 지난 상대 입찰은 제외한다. 50만 규모에서 끝나도록, 예외는 MATERIALIZED CTE로 먼저 거르고, 사이 이벤트는 id 범위(PK)로 훑으며, 반대편은 등식으로 해시한다(교차 검사 28분).
+
+**2. `behavior-tests/build.gradle.kts`: opt-in 판정 핵심부** (`behavior-tests/build.gradle.kts:76-94`, 신규 파일)
+
+```kotlin
+gradle.taskGraph.whenReady {
+    val direct = directlyRequested(this)
+    if (!behaviorOptIn && direct.isNotEmpty()) {
+        throw GradleException(
+            "행위 테스트 ${direct}를 직접 호출했지만 env BEHAVIOR_TESTS=1 이 없다. " +
+                "건너뛰면 0건 성공으로 보이므로 실패시킨다. tools/behavior/run.sh 를 쓰거나 " +
+                "BEHAVIOR_TESTS=1 BASE_URL=... DB_URL=... 로 호출하라."
+        )
+    }
+    if (behaviorOptIn && hasTask("${project.path}:infraTest") && System.getenv("DB_URL").isNullOrBlank()) {
+        throw GradleException("infraTest에는 env DB_URL 이 명시돼야 한다(코드 기본 주소로 붙어 픽스처 행을 쓰지 않게).")
+    }
+    if (behaviorOptIn && hasTask("${project.path}:contractTest")) {
+        val missing = listOf("BASE_URL", "DB_URL").filter { System.getenv(it).isNullOrBlank() }
+        if (missing.isNotEmpty()) {
+            throw GradleException("contractTest에는 env $missing 가 명시돼야 한다(코드 기본값으로 엉뚱한 앱·DB를 보지 않게).")
+        }
+    }
+}
+```
+
+`directlyRequested`(같은 파일 49-67행)는 요청 문자열을 Gradle 축약 규칙(camelCase·하이픈 접두, 예: `cT`·`contractT`)으로 해석한 뒤, 실제 태스크 그래프에 있는 태스크만 남긴다(E1). infraTest도 DB_URL을 요구하게 한 것은 E2다.
+
+**3. `tools/behavior/run.sh`: 가짜 PG → 앱 기동** (`tools/behavior/run.sh:35-53`, 신규 파일)
+
+```bash
+# 가짜 PG: 앱보다 먼저 띄운다(앱이 기동 중 PG에 붙어도 되게)
+"$JAVA_HOME/bin/java" -cp "$(cat behavior-tests/build/fake-pg.classpath)" com.ccle.behavior.pg.FakePgKt > "$logs/fake-pg.log" 2>&1 &
+pg_pid=$!
+for _ in $(seq 100); do
+  grep -q "fake-pg ready" "$logs/fake-pg.log" && break
+  kill -0 "$pg_pid" 2>/dev/null || { echo "가짜 PG 기동 실패: $logs/fake-pg.log" >&2; exit 2; }
+  sleep 0.2
+done
+grep -q "fake-pg ready" "$logs/fake-pg.log" || { echo "가짜 PG 대기 시간 초과" >&2; exit 2; }
+
+"$JAVA_HOME/bin/java" -jar "$app/build/libs/$app-0.0.1.jar" > "$logs/app-$app.log" 2>&1 &
+app_pid=$!
+ready=
+for _ in $(seq 120); do
+  kill -0 "$app_pid" 2>/dev/null || { echo "앱 기동 실패: $logs/app-$app.log" >&2; exit 2; }
+  curl -sf "$BASE_URL/actuator/health" > /dev/null && { ready=1; break; }
+  sleep 0.5
+done
+[ -n "$ready" ] && kill -0 "$app_pid" 2>/dev/null || { echo "앱 health 대기 시간 초과: $logs/app-$app.log" >&2; exit 2; }
+```
+
+**4. ADR-0003 §3.3: 사이즈 단위 직렬화 조항** (`docs/adr/0003-http-api-stage1.md:69`, 추가된 줄. 재합의 2)
+
+```markdown
+- **사이즈 단위 직렬화:** 한 사이즈의 입찰 상태를 바꾸는 처리(등록·즉시 주문·취소·체결, 배치의 만료·복구·재매칭)는 그 `product_sizes` 행을 잠근(`SELECT … FOR UPDATE`) 트랜잭션 안에서 하고, 잠금은 커밋까지 유지한다. `bid_events` 행은 잠근 뒤에 쓴다. 그래서 **같은 사이즈 안에서는 `bid_events.id` 순서가 실제 처리 순서**다. `verify.sql`의 호가 이력 검사(무교차·가격·시간 우선)가 이 순서에 기댄다. 등록이 교차하면 그 등록 이벤트 바로 뒤에 체결 이벤트 2행이 오고, 그 사이에 같은 사이즈의 다른 이벤트는 없다.
+```
+
+### 검증 결과
+
+| 항목 | 결과 |
+|---|---|
+| `run.sh god` (최종) | 117초. infra 18 통과, contract 117 실패(엔드포인트 없음 404 류, 1건은 404 응답에 `code` 없음), verify 76개 위반 0 |
+| `run.sh layered` (최종) | 110초. 결과는 god과 같다 |
+| 실행 시간 추이 (god/layered) | 첫 실행 94/88초 → 루프1 뒤 96/98 → 루프2 뒤 109/95 → 루프3 뒤 113/115 → 최종 117/110. 가정 1("실행당 1분 안팎")은 부분 충족 — 실측 약 1.5~2분(빌드·앱 기동 포함). 실행이 직렬이고 과제당 1회라 허용 |
+| 그린 위장 반증 (테스트 워커) | 고정 응답 스텁에서 그린 위장 11개 발견 → 라우트 대조 요청을 추가해 0개. 시계 ISO 형식 1개는 200 스텁에서 통과(형식만 보는 테스트) |
+| verify 반증 표본 (3판, 12종) | 정상 5종 위반 0, 결함 7종 검출(체결 이벤트 사이 끼어듦, 만료 뒤 복구 포함). 1판(5종)에서 이전 verify는 정상 3종을 모두 위반으로 판정했다 |
+| 시드 회귀 | 1k·2만 verify 76개 위반 0(2만 이미지는 확인 뒤 삭제) |
+| opt-in 경로 | env 없이 루트 build 하면 건너뜀, 직접 호출하면 실패, opt-in만 있고 BASE_URL이 없으면 실패. 축약 호출과 infraTest DB_URL 확인표는 모두 기대대로 |
+| 앱 없이 실행 | infraTest 18 green, contract 117 red. PG_EXTERNAL에서 PG가 꺼지면 8개 클래스 모두 명시적으로 실패 |
+| build-image 태그 | 1k 재빌드 시 같은 태그의 이전 빌드만 지우고 500k는 유지 |
+| 정리 | 가짜 PG 프로세스 잔존 0 |
+
+### 리뷰 요약
+
+| 단계 | 형태 | 지적 | 채택 | 기각 |
+|---|---|---|---|---|
+| A: ADR-0003 (설계 문서) | 설계 선검증 + 듀얼 1패스 + codex 감사·재점검 | 26 | 26 | 0 |
+| B: 테스트 코드 루프 1 | Opus ∥ codex | 14 | 13 | 1 (B14 고정 포트: 동시 실행 금지가 의도) |
+| C: 루프 2 | 루프 1 감사 ∥ Opus ∥ codex | 7 | 7 | 0 |
+| D: 루프 3 | 루프 2 감사 ∥ Opus ∥ codex | 8 | 7 | 1 (D4 다른 시드 태그 정리: 정리 단위는 전체 태그) |
+| E: post-fix 재점검 | codex, 3회차 수정 hunk만 | 2 | 2 | 0 |
+
+- 루프 2에서 verify의 이벤트 순서 문제가 같은 검사에 대한 세 번째 수정이 됐다. 그래서 core §3 정지 규칙을 적용해, 검사를 더 다듬는 대신 그 전제(사이즈 단위 직렬화)를 계약으로 결정했다(C1, 사용자 재합의 2).
+- 루프 3에서도 새로 채택한 지적이 있어 종료 조건을 채우지 못했다(review unresolved). 사용자 지시("타깃 재점검 1회 후 종료")에 따라 post-fix 재점검 E1·E2를 반영하고 종료했다.
+- 시크릿 스캔에서는 개발 기본 비밀번호 `ccle` 2건이 잡혔으나 공개 기본값이라 오탐이다.
+
+### 남은 한계
+
+- **CLOCK_START 제약:** 포인트 묶음 도우미는 확정 시각이 마지막 정산 마감(시드 09-28) 뒤여야 한다. CLOCK_START가 약 09-30보다 이르면 포인트 테스트 준비가 실패한다. 테스트 고정 데이터의 제약이며, run.sh는 CLOCK_START를 쓰지 않는다.
+- **500k 시드 이미지:** 옛 verify(75개)로 빌드한 이미지지만, 새 verify(76개)를 그 컨테이너에 따로 돌려 위반 0을 확인했다(73분). 처음 넣은 테이커 예외는 이 규모에서 13시간 넘게 끝나지 않아 실행 순서를 고쳤다(fix(verify) 커밋).
+- **리뷰 종료 조건 미충족:** 3루프 상한에서 종료했다(위 리뷰 요약 참고).
+- **ADR 밖 보조 제어:** 가짜 PG의 `_control/inquiry-outcomes`는 ADR-0003 밖에 있는 테스트 전용 제어다.
+- **계약 테스트는 아직 전부 red:** 두 앱에 도메인 구현이 없기 때문에 의도한 상태다(다음 작업: NEXT.md N1 갓 클래스). 테스트가 green이 될 수 있는지, 즉 계약의 결정성(명세 가정 2)은 구현이 들어온 뒤에야 실증된다.

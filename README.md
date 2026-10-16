@@ -22,7 +22,7 @@
   - 갓 클래스(절차지향)를 먼저 만들고, 그것을 레이어드로 분리하며 도메인을 끌어낸다. 두 모듈은 같은 HTTP 행위 테스트를 통과해야 한다.
 - **DB:** 실제 PostgreSQL(같은 PC의 도커). 합성 데이터(사용자 50만, 거래 약 500만)를 CSV로 만들어 적재하고, 데이터 상태까지 검증한다.
 
-결정 기록: [ADR-0001 기본 세팅](docs/adr/0001-base-setup.md) · [ADR-0002 도메인 절차·규칙과 DB 설계](docs/adr/0002-domain-and-database.md)
+결정 기록: [ADR-0001 기본 세팅](docs/adr/0001-base-setup.md) · [ADR-0002 도메인 절차·규칙과 DB 설계](docs/adr/0002-domain-and-database.md) · [ADR-0003 HTTP API 계약 1단계](docs/adr/0003-http-api-stage1.md)
 
 ## 실행
 
@@ -36,6 +36,16 @@ curl localhost:8081/actuator/health
 
 - 스키마(`docker/schema/`)는 빈 볼륨에서만 init으로 걸린다. 스키마가 바뀌면 `docker compose -f docker/compose.yml down -v` 뒤 다시 올린다.
 
+### 행위 테스트
+
+```bash
+tools/behavior/run.sh god        # 1천 명 시드 DB → 가짜 PG → 앱 → infraTest·contractTest → verify.sql → 정리
+tools/behavior/run.sh layered
+```
+
+- 같은 테스트(`behavior-tests/`)가 두 앱에 돈다. 계약은 ADR-0003, 금액 기대값은 그 §8 표.
+- 루트 `./gradlew build`는 행위 테스트를 건너뛴다. 직접 돌릴 때는 `BEHAVIOR_TESTS=1`과 `BASE_URL`·`DB_URL`이 필요하다(run.sh가 넘긴다).
+
 ### 합성 데이터와 시드 이미지
 
 ```bash
@@ -44,7 +54,7 @@ tools/seedgen/build-image.sh ~/ccle-csv/500k 500k-s42                    # 적�
 tools/seedgen/run-db.sh 500k-s42 ccle-run-001 15433                      # 실행 1회용 DB, DB_URL 출력
 ```
 
-- 시드 이미지에는 DB `ccle_seed` 하나만 있다. 실행마다 컨테이너를 따로 띄우고, 앱은 `DB_URL`로 그 컨테이너에 붙는다.
+- 시드 이미지는 태그(규모)마다 하나씩 둔다(테스트용 `1k-s42`, 과제용 `500k-s42`). 이미지 안에는 DB `ccle_seed` 하나만 있다. 실행마다 컨테이너를 따로 띄우고, 앱은 `DB_URL`로 그 컨테이너에 붙는다.
 - `verify.sql`은 ADR-0002의 불변식(§6.1·§9)을 검사하고, 위반이 있으면 실패한다.
 - 실행 컨테이너는 처음 건드린 테이블 파일을 쓰기층에 통째로 복사한다(최대 약 14GB). 실행이 끝나면 `docker rm -f <이름>`으로 바로 지운다. 규모 실측은 [ADR-0002 §7](docs/adr/0002-domain-and-database.md).
 
@@ -55,5 +65,5 @@ tools/seedgen/run-db.sh 500k-s42 ccle-run-001 15433                      # 실�
 | 1. 기본 세팅(두 서버 + 도커 PostgreSQL) | 완료 — ADR-0001 |
 | 2. 도메인·절차 정의와 DB 설계 | 완료 — ADR-0002 |
 | 3. DDL 확정 → 합성 데이터 생성·적재·검증 | 완료 — 사용자 50만, 불변식 75개 위반 0, 시드 이미지 16.6GB |
-| 4. 행위 테스트 → 갓 클래스 → 레이어드 분리 | 다음 |
+| 4. 행위 테스트 → 갓 클래스 → 레이어드 분리 | 진행 — 행위 테스트 1단계 완료(ADR-0003, 계약 117), 다음 갓 클래스 |
 | 5. 과제·판정·러너 → 실행·분석 | |
