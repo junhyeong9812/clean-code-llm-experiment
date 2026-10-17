@@ -1,10 +1,8 @@
 package com.ccle.god
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
-import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
@@ -13,15 +11,12 @@ import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
 import java.time.Duration
 
-/**
- * PG가 돌려준 승인 기록(ADR-0003 §6). status는 PG 값 그대로(APPROVED|DECLINED).
- * 재조회에서 PG가 404(승인 요청이 기록되지 않음)를 주면 status = NOT_FOUND. 해석은 Marketplace가 한다.
- */
-data class PgReply(val status: String, val pgTxId: String?)
+/** PG HTTP 응답 그대로(상태 코드, 본문). */
+data class PgResponse(val status: Int, val body: String)
 
 /**
- * PG HTTP 호출만 한다(ADR-0003 §6). 결과 해석·재시도·상태 반영은 Marketplace에 있다.
- * 응답 없음(PG_TIMEOUT_MS 초과·연결 실패·200이 아닌 응답·읽을 수 없는 본문)은 null.
+ * PG HTTP 호출만 한다(ADR-0003 §6). 응답을 그대로 돌려주고, 타임아웃·연결 실패 등은 예외를 그대로 던진다.
+ * 결과 해석(200의 status·404·그 밖의 코드·예외 = 응답 없음)과 재시도·상태 반영은 Marketplace에 있다.
  */
 @Component
 class PgClient(
@@ -29,55 +24,36 @@ class PgClient(
     @Value("\${PG_TIMEOUT_MS:2000}") timeoutMs: Long,
     private val json: ObjectMapper,
 ) {
-    private val log = LoggerFactory.getLogger(PgClient::class.java)
     private val baseUrl = pgUrl.trimEnd('/')
-    private val timeout = Duration.ofMillis(timeoutMs)
+
+    /** 요청 하나의 타임아웃. 연결에도 같은 값을 쓰므로 호출 하나는 최대 약 2배까지 걸릴 수 있다. */
+    val timeout: Duration = Duration.ofMillis(timeoutMs)
+
     private val http = HttpClient.newBuilder()
         .version(HttpClient.Version.HTTP_1_1)
         .connectTimeout(timeout)
         .build()
 
     /** 승인 요청: `POST {PG_URL}/approvals {"idempotencyKey","amount"}`. */
-    fun approve(idempotencyKey: String, amount: Long): PgReply? {
+    fun postApproval(idempotencyKey: String, amount: Long): PgResponse {
         val body = json.writeValueAsString(mapOf("idempotencyKey" to idempotencyKey, "amount" to amount))
         val request = HttpRequest.newBuilder(URI.create("$baseUrl/approvals"))
             .timeout(timeout)
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(body))
             .build()
-        return send(request, "승인 $idempotencyKey")
+        val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+        return PgResponse(response.statusCode(), response.body() ?: "")
     }
 
-    /** 재조회: `GET {PG_URL}/approvals/{idempotencyKey}`. 404면 NOT_FOUND. */
-    fun inquire(idempotencyKey: String): PgReply? {
+    /** 재조회: `GET {PG_URL}/approvals/{idempotencyKey}`. */
+    fun getApproval(idempotencyKey: String): PgResponse {
         val path = URLEncoder.encode(idempotencyKey, StandardCharsets.UTF_8).replace("+", "%20")
         val request = HttpRequest.newBuilder(URI.create("$baseUrl/approvals/$path"))
             .timeout(timeout)
             .GET()
             .build()
-        return send(request, "재조회 $idempotencyKey")
-    }
-
-    private fun send(request: HttpRequest, what: String): PgReply? {
-        val response = try {
-            http.send(request, HttpResponse.BodyHandlers.ofString())
-        } catch (e: IOException) {
-            // 타임아웃(HttpTimeoutException)·연결 실패
-            log.warn("PG 응답 없음({}): {}", what, e.toString())
-            return null
-        }
-        if (response.statusCode() == 404 && request.method() == "GET") return PgReply("NOT_FOUND", null)
-        if (response.statusCode() != 200) {
-            log.warn("PG 응답 없음({}): HTTP {}", what, response.statusCode())
-            return null
-        }
-        return try {
-            val node = json.readTree(response.body())
-            val status = node.path("status").asText(null) ?: throw IOException("status 없음")
-            PgReply(status, node.path("pgTxId").asText(null))
-        } catch (e: IOException) {
-            log.warn("PG 응답을 읽을 수 없음({}): {} — 응답 없음으로 본다", what, response.body())
-            null
-        }
+        val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+        return PgResponse(response.statusCode(), response.body() ?: "")
     }
 }

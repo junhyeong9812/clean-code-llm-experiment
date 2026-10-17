@@ -22,12 +22,14 @@ import com.ccle.god.web.OrderView
 import com.ccle.god.web.PaymentResult
 import com.ccle.god.web.PointsView
 import com.ccle.god.web.TradeView
+import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
 import jakarta.persistence.PersistenceException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionTemplate
+import java.math.BigInteger
 import java.time.Duration
 import java.time.Instant
 
@@ -45,6 +47,7 @@ class Marketplace(
     private val clock: FrozenClock,
     private val tx: TransactionTemplate,
     private val pg: PgClient,
+    private val json: ObjectMapper,
 ) {
     private val log = LoggerFactory.getLogger(Marketplace::class.java)
 
@@ -316,39 +319,126 @@ class Marketplace(
         }
         val orderId = created.first
         val cardAmount = created.second
-            ?: return PaymentResult(created = false, order = orderView(orderId))
+        if (cardAmount == null) {
+            // 같은 키의 기존 주문. 이긴 요청이 아직 PG를 기다리는 중(PAYING)이면 결과를 쓸 때까지 기다린다(ADR-0003 §9의 7)
+            waitWhilePaying(orderId)
+            return PaymentResult(created = false, order = orderView(orderId))
+        }
 
         // PG 호출 중에는 트랜잭션·잠금을 잡지 않는다
-        val reply = pg.approve(idempotencyKey, cardAmount)
-        tx.execute {
-            val status = when (reply?.status) {
-                "APPROVED" -> "APPROVED"
-                "DECLINED" -> "DECLINED"
-                null -> "UNKNOWN"
-                else -> {
-                    log.warn("PG가 알 수 없는 상태를 돌려줌: {} — 응답 없음으로 본다", reply)
-                    "UNKNOWN"
+        val (status, pgTxId) = pgResult(callPg("승인 $idempotencyKey") { pg.postApproval(idempotencyKey, cardAmount) }, inquiry = false)
+        try {
+            tx.execute {
+                em.persist(
+                    PgTransaction(
+                        orderId = orderId,
+                        kind = "APPROVE",
+                        amount = cardAmount,
+                        status = status,
+                        pgTxId = pgTxId,
+                        idempotencyKey = idempotencyKey,
+                        requestedAt = now,
+                        respondedAt = if (status == "UNKNOWN") null else now,
+                    ),
+                )
+                when (status) {
+                    "APPROVED" -> approveOrder(orderId, paidAt = now, now = now)
+                    "DECLINED" -> declineOrder(orderId, now)
+                    else -> em.find(PurchaseOrder::class.java, orderId).status = "UNKNOWN"
                 }
             }
-            em.persist(
-                PgTransaction(
-                    orderId = orderId,
-                    kind = "APPROVE",
-                    amount = cardAmount,
-                    status = status,
-                    pgTxId = if (status == "APPROVED") reply!!.pgTxId else null,
-                    idempotencyKey = idempotencyKey,
-                    requestedAt = now,
-                    respondedAt = if (status == "UNKNOWN") null else now,
-                ),
-            )
-            when (status) {
-                "APPROVED" -> approveOrder(orderId, paidAt = now, now = now)
-                "DECLINED" -> declineOrder(orderId, now)
-                else -> em.find(PurchaseOrder::class.java, orderId).status = "UNKNOWN"
+        } catch (e: Exception) {
+            // 결과 반영이 실패하면 응답 없음(UNKNOWN)으로라도 남긴다. 확정은 pg-inquiry가 한다.
+            // 이것도 실패하면 주문은 PAYING으로 남고 다음 기동 때 UNKNOWN으로 바뀐다
+            log.error("결제 결과 반영 실패({} {}), UNKNOWN 기록을 다시 시도한다", orderId, status, e)
+            try {
+                tx.execute {
+                    em.persist(
+                        PgTransaction(
+                            orderId = orderId,
+                            kind = "APPROVE",
+                            amount = cardAmount,
+                            status = "UNKNOWN",
+                            pgTxId = null,
+                            idempotencyKey = idempotencyKey,
+                            requestedAt = now,
+                            respondedAt = null,
+                        ),
+                    )
+                    em.find(PurchaseOrder::class.java, orderId).status = "UNKNOWN"
+                }
+            } catch (again: Exception) {
+                log.error("UNKNOWN 기록도 실패: 주문 {}는 PAYING으로 남고 다음 기동 때 UNKNOWN으로 바뀐다", orderId, again)
             }
         }
         return PaymentResult(created = true, order = orderView(orderId))
+    }
+
+    /**
+     * 같은 키의 진 요청: 주문이 PAYING인 동안 기다린다. DB 잠금은 잡지 않고 짧게 다시 읽는다.
+     * 이긴 요청은 PG 호출(연결 + 응답, 각각 PG 타임아웃) 뒤 바로 결과를 쓰므로 상한 = PG 타임아웃 × 2 + 5초.
+     * 상한을 넘는 것은 버그이므로 warn을 남기고 그 시점의 상태를 돌려준다.
+     */
+    private fun waitWhilePaying(orderId: Long) {
+        // 경과 시간 측정용(업무 시각 아님)
+        val deadline = System.nanoTime() + pg.timeout.multipliedBy(2).plusSeconds(5).toNanos()
+        while (em.find(PurchaseOrder::class.java, orderId).status == "PAYING") {
+            if (System.nanoTime() > deadline) {
+                log.warn("주문 {}가 대기 상한을 넘어서도 PAYING이다 — 현재 상태를 돌려준다", orderId)
+                return
+            }
+            try {
+                Thread.sleep(50)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+    }
+
+    /** PG 호출. 어떤 예외든 응답 없음(null)으로 본다(ADR-0003 §9의 7). 인터럽트는 플래그를 되살린다. */
+    private fun callPg(what: String, call: () -> PgResponse): PgResponse? =
+        try {
+            call()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            log.warn("PG 응답 없음({}): 인터럽트", what)
+            null
+        } catch (e: Exception) {
+            log.warn("PG 응답 없음({}): {}", what, e.toString())
+            null
+        }
+
+    /**
+     * PG 응답 해석(ADR-0003 §5.1·§6·§7) → (APPROVED|DECLINED|UNKNOWN, pg_tx_id).
+     * 응답 없음·200이 아닌 코드·읽을 수 없는 본문·알 수 없는 status는 UNKNOWN. 재조회의 404(승인 요청이 기록되지 않음)는 DECLINED.
+     * pg_tx_id는 승인일 때만 PG 값.
+     */
+    private fun pgResult(response: PgResponse?, inquiry: Boolean): Pair<String, String?> {
+        if (response == null) return "UNKNOWN" to null
+        if (inquiry && response.status == 404) return "DECLINED" to null
+        if (response.status != 200) {
+            log.warn("PG 응답 없음으로 본다: HTTP {}", response.status)
+            return "UNKNOWN" to null
+        }
+        val node = try {
+            json.readTree(response.body)
+        } catch (e: Exception) {
+            log.warn("PG 응답 본문을 읽을 수 없다: {}", response.body)
+            return "UNKNOWN" to null
+        }
+        val pgTxId = node?.path("pgTxId")?.takeIf { it.isTextual }?.asText()
+        return when (node?.path("status")?.asText()) {
+            "APPROVED" -> if (pgTxId != null) "APPROVED" to pgTxId else {
+                log.warn("PG 승인 응답에 pgTxId가 없다: {}", response.body)
+                "UNKNOWN" to null
+            }
+            "DECLINED" -> "DECLINED" to null
+            else -> {
+                log.warn("PG가 알 수 없는 상태를 돌려줌: {}", response.body)
+                "UNKNOWN" to null
+            }
+        }
     }
 
     /**
@@ -391,12 +481,13 @@ class Marketplace(
             throw ApiException(HttpStatus.CONFLICT, "TRADE_NOT_PAYABLE", "결제 중이거나 결제된 체결이 있다")
         }
 
-        // 금액(ADR-0002 §5.1·§9.2). 항목은 tradeId 오름차순 = order_items.id 순서
-        val fees = trades.map { maxOf(it.price * 3 / 100, 1_000L) }
-        val itemTotal = trades.sumOf { it.price }
-        val feeTotal = fees.sum()
+        // 금액(ADR-0002 §5.1·§9.2). 항목은 tradeId 오름차순 = order_items.id 순서.
+        // 곱셈의 중간값은 mulDiv로 넘치지 않게 계산하고, 합계는 addExact로 넘치면 오류가 드러나게 한다
+        val fees = trades.map { maxOf(mulDiv(it.price, 3, 100), 1_000L) }
+        val itemTotal = trades.fold(0L) { sum, t -> Math.addExact(sum, t.price) }
+        val feeTotal = fees.fold(0L) { sum, fee -> Math.addExact(sum, fee) }
         val shippingFee = if (itemTotal >= 100_000) 0L else 3_000L
-        val total = itemTotal + feeTotal + shippingFee
+        val total = Math.addExact(Math.addExact(itemTotal, feeTotal), shippingFee)
 
         // 포인트 규칙(§5.2): 0이거나, 1,000 이상·10의 배수·총액 절반 이하·사용 가능액 이하
         if (point != 0L) {
@@ -410,8 +501,8 @@ class Marketplace(
 
         // 항목 몫: 기준액 b_i = 체결가 + 수수료 (+ 배송비, 첫 항목만). 카드 몫 = floor(카드 × b_i / 총액),
         // 남은 원은 앞 항목부터 1원씩(기준액을 넘지 않게). 포인트 몫 = b_i − 카드 몫
-        val bases = trades.indices.map { i -> trades[i].price + fees[i] + (if (i == 0) shippingFee else 0L) }
-        val cardShares = bases.map { Math.multiplyExact(cardAmount, it) / total }.toMutableList()
+        val bases = trades.indices.map { i -> trades[i].price + fees[i] + (if (i == 0) shippingFee else 0L) } // 각각 ≤ total
+        val cardShares = bases.map { mulDiv(cardAmount, it, total) }.toMutableList()
         var left = cardAmount - cardShares.sum()
         while (left > 0) {
             for (i in cardShares.indices) {
@@ -452,6 +543,10 @@ class Marketplace(
         return order.id!! to cardAmount
     }
 
+    /** floor(a × b ÷ c). 금액은 모두 0 이상이다. 중간 곱은 BigInteger로 계산하고, 결과가 Long을 넘으면 ArithmeticException. */
+    private fun mulDiv(a: Long, b: Long, c: Long): Long =
+        BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(c)).longValueExact()
+
     private fun pointRule(message: String): Nothing =
         throw ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "POINT_RULE_VIOLATION", message)
 
@@ -484,8 +579,8 @@ class Marketplace(
             item.status = "PAID"
             item.paidAt = paidAt
             em.find(Trade::class.java, item.tradeId).status = "PAID"
-            val base = item.price + item.buyerFee + item.shippingShare
-            val earn = Math.multiplyExact(item.cardShare, item.price) / base * ratePermille / 1000
+            val base = Math.addExact(Math.addExact(item.price, item.buyerFee), item.shippingShare)
+            val earn = mulDiv(mulDiv(item.cardShare, item.price, base), ratePermille, 1000)
             if (earn > 0) {
                 em.persist(
                     PointLedgerEntry(
@@ -500,7 +595,7 @@ class Marketplace(
                         createdAt = paidAt,
                     ),
                 )
-                pendingAdded += earn
+                pendingAdded = Math.addExact(pendingAdded, earn)
             }
         }
         useEntryOf(orderId)?.status = "CONFIRMED"
@@ -628,8 +723,8 @@ class Marketplace(
         if (balance == null) {
             em.persist(PointBalance(userId = userId, available = availableDelta, pending = pendingDelta, updatedAt = now))
         } else {
-            balance.available += availableDelta
-            balance.pending += pendingDelta
+            balance.available = Math.addExact(balance.available, availableDelta)
+            balance.pending = Math.addExact(balance.pending, pendingDelta)
             balance.updatedAt = now
         }
     }
@@ -649,7 +744,7 @@ class Marketplace(
     /** `POST /admin/batches/{name}`: 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수. 알 수 없는 이름은 400. */
     fun runBatch(name: String): Int {
         val now = clock.now()
-        val started = System.nanoTime()
+        val started = System.nanoTime() // 소요 시간 로그용(업무 시각 아님)
         val processed = when (name) {
             "bid-expiry" -> expireBids(now)
             "payment-due" -> expireUnpaidTrades(now)
@@ -660,14 +755,33 @@ class Marketplace(
         return processed
     }
 
-    /** bid-expiry: ACTIVE이고 expires_at ≤ 현재인 입찰을 id 순으로 EXPIRED. 입찰마다 그 사이즈를 잠근 트랜잭션 하나. */
-    private fun expireBids(now: Instant): Int {
-        val targets = em.createNativeQuery(
-            "SELECT id FROM bids WHERE status = 'ACTIVE' AND expires_at <= :now ORDER BY id",
-        ).setParameter("now", now).resultList.map { (it as Number).toLong() }
+    /**
+     * 배치 대상 id를 id 순 키셋 페이지(500개씩)로 읽어 하나씩 처리한다. 반환 = handle이 true를 돌려준 수.
+     * 배치를 시작할 때의 최대 id까지만 본다: 실행 중에 새로 생긴 행(재매칭 체결·새 주문 등)은 다음 실행의 대상이다.
+     * condition은 별칭 t로 쓴 WHERE 조건, params는 그 조건의 이름 붙은 파라미터.
+     */
+    private fun forEachTarget(table: String, condition: String, params: Map<String, Any>, handle: (Long) -> Boolean): Int {
+        val upTo = (em.createNativeQuery("SELECT coalesce(max(id), 0) FROM $table").singleResult as Number).toLong()
+        var after = 0L
         var processed = 0
-        for (bidId in targets) {
-            val changed = tx.execute {
+        while (true) {
+            val query = em.createNativeQuery(
+                "SELECT t.id FROM $table t WHERE ($condition) AND t.id > :after AND t.id <= :upTo ORDER BY t.id LIMIT 500",
+            ).setParameter("after", after).setParameter("upTo", upTo)
+            params.forEach { (name, value) -> query.setParameter(name, value) }
+            val ids = query.resultList.map { (it as Number).toLong() }
+            if (ids.isEmpty()) return processed
+            for (id in ids) {
+                if (handle(id)) processed++
+            }
+            after = ids.last()
+        }
+    }
+
+    /** bid-expiry: ACTIVE이고 expires_at ≤ 현재인 입찰을 id 순으로 EXPIRED. 입찰마다 그 사이즈를 잠근 트랜잭션 하나. */
+    private fun expireBids(now: Instant): Int =
+        forEachTarget("bids", "t.status = 'ACTIVE' AND t.expires_at <= :now", mapOf("now" to now)) { bidId ->
+            tx.execute {
                 val bid = em.find(Bid::class.java, bidId)
                 lockProductSize(bid.productSizeId)
                 em.refresh(bid)
@@ -680,29 +794,22 @@ class Marketplace(
                     true
                 }
             }!!
-            if (changed) processed++
         }
-        return processed
-    }
 
     /**
      * payment-due: AWAITING_PAYMENT이고 payment_due_at ≤ 현재인 체결 중 결과가 정해지지 않은 주문(UNKNOWN·PAYING)이 없는 것을
      * id 순으로 만료한다. 체결 1건 = 그 사이즈를 잠근 트랜잭션 하나(§3.3).
+     * UNKNOWN·PAYING 주문의 항목은 모두 AWAITING_PAYMENT이므로(verify order_status_vs_items) 항목 조건
+     * status <> 'PAYMENT_FAILED'를 붙여도 뜻은 같고, 부분 인덱스 order_items_live_trade_key를 탄다.
      */
-    private fun expireUnpaidTrades(now: Instant): Int {
-        val targets = em.createNativeQuery(
-            "SELECT t.id FROM trades t" +
-                " WHERE t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now" +
+    private fun expireUnpaidTrades(now: Instant): Int =
+        forEachTarget(
+            "trades",
+            "t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now" +
                 " AND NOT EXISTS (SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id" +
-                "                 WHERE i.trade_id = t.id AND o.status IN ('UNKNOWN', 'PAYING'))" +
-                " ORDER BY t.id",
-        ).setParameter("now", now).resultList.map { (it as Number).toLong() }
-        var processed = 0
-        for (tradeId in targets) {
-            if (tx.execute { expireUnpaidTrade(tradeId, now) }!!) processed++
-        }
-        return processed
-    }
+                "                 WHERE i.trade_id = t.id AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING'))",
+            mapOf("now" to now),
+        ) { tradeId -> tx.execute { expireUnpaidTrade(tradeId, now) }!! }
 
     /**
      * 체결 1건 만료(§7). 잠금 순서: 사이즈 → 구매자. 구매자 행을 잠그면 그 구매자의 결제(구매자 잠금 안에서 PAYING 주문을 만든다)와
@@ -715,11 +822,13 @@ class Marketplace(
         em.refresh(trade)
         val undecidedOrders = em.createNativeQuery(
             "SELECT count(*) FROM order_items i JOIN orders o ON o.id = i.order_id" +
-                " WHERE i.trade_id = :trade AND o.status IN ('UNKNOWN', 'PAYING')",
+                " WHERE i.trade_id = :trade AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING')",
         ).setParameter("trade", tradeId).singleResult as Number
         if (trade.status != "AWAITING_PAYMENT" || trade.paymentDueAt.isAfter(now) || undecidedOrders.toLong() > 0) return false
 
+        // 만료를 바로 DB에 반영한다: 아래 재매칭이 같은 판매 입찰로 새 체결을 넣을 때 부분 UNIQUE(trades_live_sell_bid_key)에 걸리지 않게
         trade.status = "PAYMENT_EXPIRED"
+        em.flush()
 
         // 구매 경고 1행. 최근 30일 안이면서 마지막 제한이 걸린 시각(restricted_until − 7일) 뒤의 경고가 3건 이상이면 7일 구매 제한
         em.persist(BuyerWarning(userId = trade.buyerId, tradeId = tradeId, createdAt = now))
@@ -756,54 +865,72 @@ class Marketplace(
      * pg-inquiry: UNKNOWN 주문을 id 순으로 PG에 다시 묻는다. PG 호출 중에는 트랜잭션·잠금을 잡지 않는다.
      * 승인 → §5.1 승인 처리(paid_at = APPROVE 행의 requested_at), 404·거절 → 거절 처리, 응답 없음 → 행 없이 UNKNOWN 유지.
      */
-    private fun inquireUnknownOrders(now: Instant): Int {
-        val targets = em.createQuery("SELECT o FROM PurchaseOrder o WHERE o.status = 'UNKNOWN' ORDER BY o.id", PurchaseOrder::class.java)
-            .resultList
-        var processed = 0
-        for (target in targets) {
-            val key = target.idempotencyKey
-            val reply = pg.inquire(key)
-            val status = when (reply?.status) {
-                "APPROVED" -> "APPROVED"
-                "DECLINED", "NOT_FOUND" -> "DECLINED"
-                null -> null
-                else -> {
-                    log.warn("PG 재조회가 알 수 없는 상태를 돌려줌: {} — 응답 없음으로 본다", reply)
-                    null
-                }
+    private fun inquireUnknownOrders(now: Instant): Int =
+        forEachTarget("orders", "t.status = 'UNKNOWN'", emptyMap()) { orderId ->
+            val key = em.find(PurchaseOrder::class.java, orderId).idempotencyKey
+            val (status, pgTxId) = pgResult(callPg("재조회 $key") { pg.getApproval(key) }, inquiry = true)
+            if (status == "UNKNOWN") {
+                false
+            } else {
+                tx.execute {
+                    val order = em.find(PurchaseOrder::class.java, orderId)
+                    lockUser(order.buyerId)
+                    em.refresh(order)
+                    // 다른 재조회가 먼저 확정했으면 건너뛴다
+                    if (order.status != "UNKNOWN") return@execute false
+                    em.persist(
+                        PgTransaction(
+                            orderId = orderId,
+                            kind = "INQUIRY",
+                            amount = order.cardAmount,
+                            status = status,
+                            pgTxId = pgTxId,
+                            idempotencyKey = key,
+                            requestedAt = now,
+                            respondedAt = now,
+                        ),
+                    )
+                    if (status == "APPROVED") {
+                        val requestedAt = em.createQuery(
+                            "SELECT p.requestedAt FROM PgTransaction p WHERE p.orderId = :order AND p.kind = 'APPROVE'",
+                            Instant::class.java,
+                        ).setParameter("order", orderId).singleResult
+                        approveOrder(orderId, paidAt = requestedAt, now = now)
+                    } else {
+                        declineOrder(orderId, now)
+                    }
+                    true
+                }!!
             }
-            if (status == null) continue
-            val changed = tx.execute {
-                lockUser(target.buyerId)
-                val order = em.find(PurchaseOrder::class.java, target.id)
-                em.refresh(order)
-                // 다른 재조회가 먼저 확정했으면 건너뛴다
-                if (order.status != "UNKNOWN") return@execute false
+        }
+
+    // ---- 기동 (ADR-0003 §9의 7) ----
+
+    /**
+     * 기동 시 전환: 남아 있는 PAYING 주문(직전 프로세스가 PG 호출 전후에 죽어 결과를 쓰지 못한 것)을 UNKNOWN으로 바꾸고
+     * 주문마다 APPROVE UNKNOWN 1행(requested_at = 주문 created_at)을 쓴다. 이후 확정은 pg-inquiry가 한다.
+     * 앱이 요청을 받기 전에 부른다(StartupRecovery). 앱 인스턴스는 하나라고 전제한다.
+     */
+    fun convertStalePayingOrders() {
+        val converted = forEachTarget("orders", "t.status = 'PAYING'", emptyMap()) { orderId ->
+            tx.execute {
+                val order = em.find(PurchaseOrder::class.java, orderId)
                 em.persist(
                     PgTransaction(
-                        orderId = order.id!!,
-                        kind = "INQUIRY",
+                        orderId = orderId,
+                        kind = "APPROVE",
                         amount = order.cardAmount,
-                        status = status,
-                        pgTxId = if (status == "APPROVED") reply!!.pgTxId else null,
-                        idempotencyKey = key,
-                        requestedAt = now,
-                        respondedAt = now,
+                        status = "UNKNOWN",
+                        pgTxId = null,
+                        idempotencyKey = order.idempotencyKey,
+                        requestedAt = order.createdAt,
+                        respondedAt = null,
                     ),
                 )
-                if (status == "APPROVED") {
-                    val requestedAt = em.createQuery(
-                        "SELECT p.requestedAt FROM PgTransaction p WHERE p.orderId = :order AND p.kind = 'APPROVE'",
-                        Instant::class.java,
-                    ).setParameter("order", order.id).singleResult
-                    approveOrder(order.id!!, paidAt = requestedAt, now = now)
-                } else {
-                    declineOrder(order.id!!, now)
-                }
+                order.status = "UNKNOWN"
                 true
             }!!
-            if (changed) processed++
         }
-        return processed
+        if (converted > 0) log.warn("기동 시 PAYING 주문 {}건을 UNKNOWN으로 바꿨다(확정은 pg-inquiry)", converted)
     }
 }

@@ -32,7 +32,8 @@ private fun unexpected(what: String, cause: Throwable?): ResponseEntity<ErrorBod
 
 /** Spring MVC가 낸 HTTP 상태를 계약의 code로 바꾼다. */
 private fun fromStatus(status: Int, message: String, cause: Throwable?): ResponseEntity<ErrorBody> = when {
-    status == 404 -> ResponseEntity.status(404).body(ErrorBody("NOT_FOUND", message))
+    // 라우트 없음은 도메인의 NOT_FOUND(없는 입찰·체결·주문·사이즈)와 구분한다(ADR-0003 §2)
+    status == 404 -> ResponseEntity.status(404).body(ErrorBody("NO_ROUTE", message))
     status == 405 -> ResponseEntity.status(405).body(ErrorBody("METHOD_NOT_ALLOWED", message))
     // JSON 파싱 실패·타입 불일치·필수 파라미터 누락·지원하지 않는 Content-Type 등: 요청 형식 오류
     status in 400..499 -> ResponseEntity.status(400).body(ErrorBody("INVALID_REQUEST", message))

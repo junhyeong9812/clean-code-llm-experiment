@@ -1,12 +1,10 @@
 package com.ccle.god.entity
 
-import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
 import jakarta.persistence.Table
-import java.math.BigDecimal
 import java.time.Instant
 
 // 1단계(ADR-0003)가 쓰는 테이블의 행 매핑. 스키마는 docker/schema/tables.sql 이 정본이고 앱은 validate만 한다.
@@ -24,28 +22,6 @@ class User(
     var purchaseRestrictedUntil: Instant? = null,
     var saleRestrictedUntil: Instant? = null,
     var createdAt: Instant,
-)
-
-@Entity
-@Table(name = "categories")
-class Category(
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    var id: Long? = null,
-    var name: String,
-    @Column(precision = 5, scale = 4)
-    var saleFeeRate: BigDecimal,
-)
-
-@Entity
-@Table(name = "products")
-class Product(
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    var id: Long? = null,
-    var categoryId: Long,
-    var brand: String,
-    var name: String,
-    var modelNo: String,
-    var releasePrice: Long,
 )
 
 @Entity
