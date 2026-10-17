@@ -7,16 +7,8 @@ import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
-
-// 응답 시각은 KST 오프셋을 붙인 ISO-8601(초는 0이어도 쓴다). ADR-0003 §2.
-private val KST: ZoneOffset = ZoneOffset.ofHours(9)
-
-fun iso(t: Instant): String = OffsetDateTime.ofInstant(t, KST).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
 /** 관리 엔드포인트(ADR-0003 §7, 헤더 불필요). */
 @RestController
