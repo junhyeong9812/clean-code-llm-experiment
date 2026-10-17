@@ -25,9 +25,11 @@ import com.ccle.god.web.TradeView
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
 import jakarta.persistence.PersistenceException
+import org.hibernate.exception.ConstraintViolationException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
+import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.support.TransactionTemplate
 import java.math.BigInteger
 import java.time.Duration
@@ -50,6 +52,12 @@ class Marketplace(
     private val json: ObjectMapper,
 ) {
     private val log = LoggerFactory.getLogger(Marketplace::class.java)
+
+    /** 한 스냅샷에서 여러 행을 읽는 조회용(orderView). */
+    private val snapshotTx = TransactionTemplate(tx.transactionManager!!).apply {
+        isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
+        isReadOnly = true
+    }
 
     // ---- 공통 ----
 
@@ -312,8 +320,11 @@ class Marketplace(
         val created = try {
             tx.execute { createOrder(userId, idempotencyKey, tradeIds, point, now) }!!
         } catch (e: PersistenceException) {
-            // 다른 구매자가 같은 키로 동시에 주문을 만들어 orders_idempotency_key_key에 걸린 경우.
-            // (같은 구매자의 요청은 사용자 행 잠금으로 줄을 서므로 여기 오지 않는다.) 다시 하면 멱등 키 조회에서 판정된다.
+            // 다른 구매자가 같은 키로 동시에 주문을 만들어 orders_idempotency_key_key에 걸린 경우만 다시 한다
+            // (같은 구매자의 요청은 사용자 행 잠금으로 줄을 서므로 여기 오지 않는다). 다시 하면 멱등 키 조회에서 판정된다.
+            // 주문 INSERT는 persist 시점(IDENTITY)에 실행되고 UNIQUE는 즉시 검사되므로 위반은 커밋이 아니라 여기서 올라온다.
+            // 그 밖의 PersistenceException은 다시 하지 않고 그대로 올린다
+            if (!isIdempotencyKeyConflict(e)) throw e
             log.info("주문 생성 충돌, 멱등 키로 다시 조회: {} ({})", idempotencyKey, e.toString())
             tx.execute { createOrder(userId, idempotencyKey, tradeIds, point, now) }!!
         }
@@ -388,6 +399,9 @@ class Marketplace(
         }
         return PaymentResult(created = true, order = view)
     }
+
+    private fun isIdempotencyKeyConflict(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.any { it is ConstraintViolationException && it.constraintName == "orders_idempotency_key_key" }
 
     private fun approveRowCount(orderId: Long): Long =
         em.createQuery("SELECT count(p) FROM PgTransaction p WHERE p.orderId = :order AND p.kind = 'APPROVE'", Long::class.javaObjectType)
@@ -647,8 +661,15 @@ class Marketplace(
         return orderView(orderId)
     }
 
-    /** §5.1 응답 모양. 항목은 order_items.id 순서(= tradeId 오름차순). */
-    private fun orderView(orderId: Long): OrderView {
+    /**
+     * §5.1 응답 모양. 항목은 order_items.id 순서(= tradeId 오름차순).
+     * 주문과 항목을 한 스냅샷에서 읽는다(읽기 전용 REPEATABLE READ 트랜잭션). READ COMMITTED는 문장마다 스냅샷이 바뀌어
+     * 그 사이 pg-inquiry 승인이 커밋되면 {주문 UNKNOWN, 항목 PAID} 같은 조합을 읽을 수 있다.
+     * 트랜잭션 밖에서 부른다(결제 결과 확인·같은 키 대기·주문 조회).
+     */
+    private fun orderView(orderId: Long): OrderView = snapshotTx.execute { readOrderView(orderId) }!!
+
+    private fun readOrderView(orderId: Long): OrderView {
         val order = em.find(PurchaseOrder::class.java, orderId)
         return OrderView(
             orderId = order.id!!,
