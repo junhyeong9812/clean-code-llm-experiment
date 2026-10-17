@@ -2,7 +2,13 @@ package com.ccle.god
 
 import com.ccle.god.entity.Bid
 import com.ccle.god.entity.BidEvent
+import com.ccle.god.entity.OrderItem
+import com.ccle.god.entity.PgTransaction
+import com.ccle.god.entity.PointAllocation
+import com.ccle.god.entity.PointBalance
+import com.ccle.god.entity.PointLedgerEntry
 import com.ccle.god.entity.ProductSize
+import com.ccle.god.entity.PurchaseOrder
 import com.ccle.god.entity.Trade
 import com.ccle.god.entity.User
 import com.ccle.god.web.ApiException
@@ -10,8 +16,14 @@ import com.ccle.god.web.BidCancelled
 import com.ccle.god.web.BidPlaced
 import com.ccle.god.web.BidView
 import com.ccle.god.web.BookView
+import com.ccle.god.web.OrderItemView
+import com.ccle.god.web.OrderView
+import com.ccle.god.web.PaymentResult
+import com.ccle.god.web.PointsView
 import com.ccle.god.web.TradeView
 import jakarta.persistence.EntityManager
+import jakarta.persistence.PersistenceException
+import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionTemplate
@@ -31,7 +43,9 @@ class Marketplace(
     private val em: EntityManager,
     private val clock: FrozenClock,
     private val tx: TransactionTemplate,
+    private val pg: PgClient,
 ) {
+    private val log = LoggerFactory.getLogger(Marketplace::class.java)
 
     // ---- 공통 ----
 
@@ -277,7 +291,357 @@ class Marketplace(
 
     // ---- 결제 (§5.1)·주문 조회 (§5.3) ----
 
+    /**
+     * 주문 결제(§5.1). 순서: 요청 검증(400) → [트랜잭션 1] 멱등 키 조회 → 체결 확인(404·403·409) → 금액 → 포인트 규칙(422)
+     * → 주문·항목 생성 + 포인트 예약 → 커밋 → PG 승인 요청(트랜잭션 밖) → [트랜잭션 2] 결과 반영.
+     * 주문 행은 PG 호출 전에 커밋한다. PG가 응답하지 않아도 주문이 남아야 하기 때문이다.
+     */
+    fun payOrder(userId: Long, idempotencyKey: String?, tradeIds: List<Long>?, pointToUse: Long?): PaymentResult {
+        if (idempotencyKey == null) badRequest("Idempotency-Key 헤더가 필요하다")
+        if (idempotencyKey.length !in 1..64) badRequest("Idempotency-Key는 1~64자: ${idempotencyKey.length}자")
+        if (tradeIds == null || tradeIds.isEmpty()) badRequest("tradeIds가 1개 이상 필요하다")
+        if (tradeIds.toSet().size != tradeIds.size) badRequest("tradeIds에 중복이 있다")
+        val point = pointToUse ?: 0L
+        if (point < 0) badRequest("pointToUse는 0 이상: $point")
+
+        val now = clock.now()
+        val created = try {
+            tx.execute { createOrder(userId, idempotencyKey, tradeIds, point, now) }!!
+        } catch (e: PersistenceException) {
+            // 다른 구매자가 같은 키로 동시에 주문을 만들어 orders_idempotency_key_key에 걸린 경우.
+            // (같은 구매자의 요청은 사용자 행 잠금으로 줄을 서므로 여기 오지 않는다.) 다시 하면 멱등 키 조회에서 판정된다.
+            log.info("주문 생성 충돌, 멱등 키로 다시 조회: {} ({})", idempotencyKey, e.toString())
+            tx.execute { createOrder(userId, idempotencyKey, tradeIds, point, now) }!!
+        }
+        val orderId = created.first
+        val cardAmount = created.second
+            ?: return PaymentResult(created = false, order = orderView(orderId))
+
+        // PG 호출 중에는 트랜잭션·잠금을 잡지 않는다
+        val reply = pg.approve(idempotencyKey, cardAmount)
+        tx.execute {
+            val status = when (reply?.status) {
+                "APPROVED" -> "APPROVED"
+                "DECLINED" -> "DECLINED"
+                null -> "UNKNOWN"
+                else -> {
+                    log.warn("PG가 알 수 없는 상태를 돌려줌: {} — 응답 없음으로 본다", reply)
+                    "UNKNOWN"
+                }
+            }
+            em.persist(
+                PgTransaction(
+                    orderId = orderId,
+                    kind = "APPROVE",
+                    amount = cardAmount,
+                    status = status,
+                    pgTxId = if (status == "APPROVED") reply!!.pgTxId else null,
+                    idempotencyKey = idempotencyKey,
+                    requestedAt = now,
+                    respondedAt = if (status == "UNKNOWN") null else now,
+                ),
+            )
+            when (status) {
+                "APPROVED" -> approveOrder(orderId, paidAt = now, now = now)
+                "DECLINED" -> declineOrder(orderId, now)
+                else -> em.find(PurchaseOrder::class.java, orderId).status = "UNKNOWN"
+            }
+        }
+        return PaymentResult(created = true, order = orderView(orderId))
+    }
+
+    /**
+     * 결제 트랜잭션 1. 구매자 행을 잠가 같은 구매자의 결제를 줄 세운다(같은 키 동시 요청, 포인트 동시 사용).
+     * 반환: (주문 id, 새 주문이면 카드 결제액 / 같은 키의 기존 주문이면 null).
+     */
+    private fun createOrder(userId: Long, key: String, tradeIds: List<Long>, point: Long, now: Instant): Pair<Long, Long?> {
+        lockUser(userId)
+
+        // 멱등: 같은 구매자·같은 tradeIds 집합·같은 pointToUse면 그 주문, 아니면 409
+        val existing = em.createQuery("SELECT o FROM PurchaseOrder o WHERE o.idempotencyKey = :key", PurchaseOrder::class.java)
+            .setParameter("key", key)
+            .resultList.firstOrNull()
+        if (existing != null) {
+            val existingTradeIds = em.createQuery("SELECT i.tradeId FROM OrderItem i WHERE i.orderId = :order", Long::class.javaObjectType)
+                .setParameter("order", existing.id)
+                .resultList.toSet()
+            if (existing.buyerId != userId || existingTradeIds != tradeIds.toSet() || existing.pointUsed != point) {
+                throw ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED", "같은 멱등 키에 다른 구매자 또는 다른 요청: $key")
+            }
+            return existing.id!! to null
+        }
+
+        // 체결: 하나라도 없으면 404, 모두 있고 하나라도 남의 것이면 403, 하나라도 결제 불가면 409
+        val trades = em.createQuery("SELECT t FROM Trade t WHERE t.id IN :ids ORDER BY t.id", Trade::class.java)
+            .setParameter("ids", tradeIds)
+            .resultList
+        if (trades.size != tradeIds.size) notFound("없는 체결이 있다: $tradeIds")
+        if (trades.any { it.buyerId != userId }) throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "남이 구매자인 체결이 있다")
+        for (t in trades) {
+            if (t.status != "AWAITING_PAYMENT" || !now.isBefore(t.paymentDueAt)) {
+                throw ApiException(HttpStatus.CONFLICT, "TRADE_NOT_PAYABLE", "결제할 수 없는 체결: ${t.id} (${t.status}, 기한 ${t.paymentDueAt})")
+            }
+        }
+        val liveItems = em.createQuery(
+            "SELECT count(i) FROM OrderItem i WHERE i.tradeId IN :ids AND i.status <> 'PAYMENT_FAILED'",
+            Long::class.javaObjectType,
+        ).setParameter("ids", tradeIds).singleResult
+        if (liveItems > 0) {
+            throw ApiException(HttpStatus.CONFLICT, "TRADE_NOT_PAYABLE", "결제 중이거나 결제된 체결이 있다")
+        }
+
+        // 금액(ADR-0002 §5.1·§9.2). 항목은 tradeId 오름차순 = order_items.id 순서
+        val fees = trades.map { maxOf(it.price * 3 / 100, 1_000L) }
+        val itemTotal = trades.sumOf { it.price }
+        val feeTotal = fees.sum()
+        val shippingFee = if (itemTotal >= 100_000) 0L else 3_000L
+        val total = itemTotal + feeTotal + shippingFee
+
+        // 포인트 규칙(§5.2): 0이거나, 1,000 이상·10의 배수·총액 절반 이하·사용 가능액 이하
+        if (point != 0L) {
+            if (point < 1_000) pointRule("1,000P 이상만 쓸 수 있다: $point")
+            if (point % 10 != 0L) pointRule("10P 단위로만 쓸 수 있다: $point")
+            if (point > total / 2) pointRule("주문 총액의 50%(${total / 2})까지만 쓸 수 있다: $point")
+            val usable = usablePoints(userId, now)
+            if (point > usable) pointRule("사용 가능액($usable)을 넘는다: $point")
+        }
+        val cardAmount = total - point
+
+        // 항목 몫: 기준액 b_i = 체결가 + 수수료 (+ 배송비, 첫 항목만). 카드 몫 = floor(카드 × b_i / 총액),
+        // 남은 원은 앞 항목부터 1원씩(기준액을 넘지 않게). 포인트 몫 = b_i − 카드 몫
+        val bases = trades.indices.map { i -> trades[i].price + fees[i] + (if (i == 0) shippingFee else 0L) }
+        val cardShares = bases.map { Math.multiplyExact(cardAmount, it) / total }.toMutableList()
+        var left = cardAmount - cardShares.sum()
+        while (left > 0) {
+            for (i in cardShares.indices) {
+                if (left > 0 && cardShares[i] < bases[i]) {
+                    cardShares[i] += 1
+                    left -= 1
+                }
+            }
+        }
+
+        val order = PurchaseOrder(
+            buyerId = userId,
+            status = "PAYING",
+            itemTotal = itemTotal,
+            buyerFeeTotal = feeTotal,
+            shippingFee = shippingFee,
+            pointUsed = point,
+            cardAmount = cardAmount,
+            idempotencyKey = key,
+            createdAt = now,
+        )
+        em.persist(order)
+        for (i in trades.indices) {
+            em.persist(
+                OrderItem(
+                    orderId = order.id!!,
+                    tradeId = trades[i].id!!,
+                    price = trades[i].price,
+                    buyerFee = fees[i],
+                    cardShare = cardShares[i],
+                    pointShare = bases[i] - cardShares[i],
+                    shippingShare = if (i == 0) shippingFee else 0L,
+                    status = "AWAITING_PAYMENT",
+                ),
+            )
+        }
+        if (point > 0) reservePoints(userId, order.id!!, point, now)
+        return order.id!! to cardAmount
+    }
+
+    private fun pointRule(message: String): Nothing =
+        throw ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "POINT_RULE_VIOLATION", message)
+
+    /** 구매자 행 잠금. 결제·포인트 잔액을 바꾸는 처리는 이 잠금 뒤에 한다. */
+    private fun lockUser(userId: Long) {
+        em.createNativeQuery("SELECT id FROM users WHERE id = :id FOR UPDATE").setParameter("id", userId).resultList
+    }
+
+    /**
+     * 승인 반영(§5.1 표). 주문·항목 PAID(paid_at), 체결 PAID, USE CONFIRMED, 항목별 EARN PENDING(적립 > 0만), 잔액 pending 증가.
+     * 적립 = floor(floor(카드 몫 × 체결가 ÷ 기준액) × 등급 적립률). paidAt은 PG가 승인한 시각(재조회 승인이면 요청 시각).
+     */
+    private fun approveOrder(orderId: Long, paidAt: Instant, now: Instant) {
+        val order = em.find(PurchaseOrder::class.java, orderId)
+        lockUser(order.buyerId)
+        order.status = "PAID"
+        order.paidAt = paidAt
+
+        // 등급 적립률(ADR-0002 §5.2): BRONZE 1% · SILVER 1.5% · GOLD 2% · VIP 3%
+        val grade = em.find(User::class.java, order.buyerId).grade
+        val ratePermille = when (grade) {
+            "BRONZE" -> 10L
+            "SILVER" -> 15L
+            "GOLD" -> 20L
+            "VIP" -> 30L
+            else -> throw IllegalStateException("알 수 없는 등급: $grade")
+        }
+        var pendingAdded = 0L
+        for (item in orderItems(orderId)) {
+            item.status = "PAID"
+            item.paidAt = paidAt
+            em.find(Trade::class.java, item.tradeId).status = "PAID"
+            val base = item.price + item.buyerFee + item.shippingShare
+            val earn = Math.multiplyExact(item.cardShare, item.price) / base * ratePermille / 1000
+            if (earn > 0) {
+                em.persist(
+                    PointLedgerEntry(
+                        userId = order.buyerId,
+                        kind = "EARN",
+                        status = "PENDING",
+                        amount = earn,
+                        remaining = earn,
+                        expiresAt = null,
+                        orderItemId = item.id,
+                        orderId = null,
+                        createdAt = paidAt,
+                    ),
+                )
+                pendingAdded += earn
+            }
+        }
+        useEntryOf(orderId)?.status = "CONFIRMED"
+        if (pendingAdded > 0) changeBalance(order.buyerId, availableDelta = 0, pendingDelta = pendingAdded, now = now)
+    }
+
+    /** 거절 반영(§5.1 표). 주문 FAILED, 항목 PAYMENT_FAILED, 체결은 그대로, 포인트 예약 해제. */
+    private fun declineOrder(orderId: Long, now: Instant) {
+        val order = em.find(PurchaseOrder::class.java, orderId)
+        lockUser(order.buyerId)
+        order.status = "FAILED"
+        for (item in orderItems(orderId)) item.status = "PAYMENT_FAILED"
+        val use = useEntryOf(orderId) ?: return
+        releasePoints(use, now)
+    }
+
+    private fun orderItems(orderId: Long): List<OrderItem> =
+        em.createQuery("SELECT i FROM OrderItem i WHERE i.orderId = :order ORDER BY i.id", OrderItem::class.java)
+            .setParameter("order", orderId)
+            .resultList
+
+    /** 주문 조회(§5.3). 구매자만. */
+    fun getOrder(userId: Long, orderId: Long): OrderView {
+        val order = em.find(PurchaseOrder::class.java, orderId) ?: notFound("없는 주문: $orderId")
+        if (order.buyerId != userId) throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "남의 주문: $orderId")
+        return orderView(orderId)
+    }
+
+    /** §5.1 응답 모양. 항목은 order_items.id 순서(= tradeId 오름차순). */
+    private fun orderView(orderId: Long): OrderView {
+        val order = em.find(PurchaseOrder::class.java, orderId)
+        return OrderView(
+            orderId = order.id!!,
+            status = order.status,
+            itemTotal = order.itemTotal,
+            buyerFeeTotal = order.buyerFeeTotal,
+            shippingFee = order.shippingFee,
+            pointUsed = order.pointUsed,
+            cardAmount = order.cardAmount,
+            items = orderItems(orderId).map {
+                OrderItemView(
+                    orderItemId = it.id!!,
+                    tradeId = it.tradeId,
+                    status = it.status,
+                    price = it.price,
+                    buyerFee = it.buyerFee,
+                    cardShare = it.cardShare,
+                    pointShare = it.pointShare,
+                    shippingShare = it.shippingShare,
+                )
+            },
+        )
+    }
+
     // ---- 포인트 (§5.2) ----
+
+    /** 사용 가능액 = EARN·AVAILABLE·만료 전 묶음의 remaining 합(예약분은 이미 remaining에서 빠져 있다). */
+    private fun usablePoints(userId: Long, now: Instant): Long {
+        val sum = em.createNativeQuery(
+            "SELECT coalesce(sum(remaining), 0) FROM point_ledger" +
+                " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at > :now",
+        ).setParameter("user", userId).setParameter("now", now).singleResult as Number
+        return sum.toLong()
+    }
+
+    /**
+     * 예약(§5.2·ADR-0002 §9.6): USE RESERVED 1행, 사용 가능 묶음을 (expires_at, id) 순으로 차감해 배분을 쓰고
+     * remaining과 point_balances.available을 줄인다. 구매자 행을 잠근 트랜잭션 안에서 부른다.
+     */
+    private fun reservePoints(userId: Long, orderId: Long, amount: Long, now: Instant) {
+        val use = PointLedgerEntry(
+            userId = userId,
+            kind = "USE",
+            status = "RESERVED",
+            amount = amount,
+            remaining = null,
+            expiresAt = null,
+            orderItemId = null,
+            orderId = orderId,
+            createdAt = now,
+        )
+        em.persist(use)
+        val bundles = em.createNativeQuery(
+            "SELECT * FROM point_ledger" +
+                " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at > :now AND remaining > 0" +
+                " ORDER BY expires_at, id",
+            PointLedgerEntry::class.java,
+        ).setParameter("user", userId).setParameter("now", now).resultList
+        var need = amount
+        for (row in bundles) {
+            if (need == 0L) break
+            val bundle = row as PointLedgerEntry
+            val take = minOf(bundle.remaining!!, need)
+            bundle.remaining = bundle.remaining!! - take
+            need -= take
+            em.persist(PointAllocation(entryId = use.id!!, earnEntryId = bundle.id!!, amount = take))
+        }
+        // 사용 가능액 확인을 같은 잠금 안에서 했으므로 모자랄 수 없다
+        check(need == 0L) { "포인트 부족: user $userId, 부족 $need" }
+        changeBalance(userId, availableDelta = -amount, pendingDelta = 0, now = now)
+    }
+
+    /** 해제(§5.2): USE RELEASED, 그 USE의 배분 행을 지우고 같은 묶음의 remaining·available을 되돌린다. */
+    private fun releasePoints(use: PointLedgerEntry, now: Instant) {
+        use.status = "RELEASED"
+        val allocations = em.createQuery("SELECT a FROM PointAllocation a WHERE a.entryId = :use", PointAllocation::class.java)
+            .setParameter("use", use.id)
+            .resultList
+        for (a in allocations) {
+            val bundle = em.find(PointLedgerEntry::class.java, a.earnEntryId)
+            bundle.remaining = bundle.remaining!! + a.amount
+            em.remove(a)
+        }
+        changeBalance(use.userId, availableDelta = use.amount, pendingDelta = 0, now = now)
+    }
+
+    private fun useEntryOf(orderId: Long): PointLedgerEntry? =
+        em.createQuery("SELECT l FROM PointLedgerEntry l WHERE l.orderId = :order AND l.kind = 'USE'", PointLedgerEntry::class.java)
+            .setParameter("order", orderId)
+            .resultList.firstOrNull()
+
+    /** point_balances 캐시 갱신. 행이 없는 사용자는 처음 바뀔 때 만든다. updated_at = 바꾼 시각. */
+    private fun changeBalance(userId: Long, availableDelta: Long, pendingDelta: Long, now: Instant) {
+        val balance = em.find(PointBalance::class.java, userId)
+        if (balance == null) {
+            em.persist(PointBalance(userId = userId, available = availableDelta, pending = pendingDelta, updatedAt = now))
+        } else {
+            balance.available += availableDelta
+            balance.pending += pendingDelta
+            balance.updatedAt = now
+        }
+    }
+
+    /** `GET /me/points`: available·pending = 캐시(행 없으면 0), usable = 사용 가능액(만료 묶음 제외). */
+    fun getPoints(userId: Long): PointsView {
+        val balance = em.find(PointBalance::class.java, userId)
+        return PointsView(
+            available = balance?.available ?: 0L,
+            pending = balance?.pending ?: 0L,
+            usable = usablePoints(userId, clock.now()),
+        )
+    }
 
     // ---- 배치: bid-expiry·payment-due·pg-inquiry (§7) ----
 }

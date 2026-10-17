@@ -30,3 +30,30 @@ data class TradeView(
     val matchedAt: Instant,
     val paymentDueAt: Instant,
 )
+
+data class OrderItemView(
+    val orderItemId: Long,
+    val tradeId: Long,
+    val status: String,
+    val price: Long,
+    val buyerFee: Long,
+    val cardShare: Long,
+    val pointShare: Long,
+    val shippingShare: Long,
+)
+
+data class OrderView(
+    val orderId: Long,
+    val status: String,
+    val itemTotal: Long,
+    val buyerFeeTotal: Long,
+    val shippingFee: Long,
+    val pointUsed: Long,
+    val cardAmount: Long,
+    val items: List<OrderItemView>,
+)
+
+/** 결제 결과. created = 새 주문(201), 아니면 같은 멱등 키의 기존 주문(200). */
+data class PaymentResult(val created: Boolean, val order: OrderView)
+
+data class PointsView(val available: Long, val pending: Long, val usable: Long)
