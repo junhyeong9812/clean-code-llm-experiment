@@ -3,6 +3,8 @@ package com.ccle.god.web
 import com.ccle.god.Marketplace
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
@@ -29,4 +31,7 @@ class AdminController(private val marketplace: Marketplace) {
         }
         return mapOf("now" to iso(marketplace.moveClock(target)))
     }
+
+    @PostMapping("/batches/{name}")
+    fun runBatch(@PathVariable name: String): Map<String, Int> = mapOf("processed" to marketplace.runBatch(name))
 }

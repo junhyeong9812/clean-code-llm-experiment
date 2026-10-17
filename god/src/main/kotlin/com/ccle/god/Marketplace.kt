@@ -2,6 +2,7 @@ package com.ccle.god
 
 import com.ccle.god.entity.Bid
 import com.ccle.god.entity.BidEvent
+import com.ccle.god.entity.BuyerWarning
 import com.ccle.god.entity.OrderItem
 import com.ccle.god.entity.PgTransaction
 import com.ccle.god.entity.PointAllocation
@@ -644,4 +645,165 @@ class Marketplace(
     }
 
     // ---- 배치: bid-expiry·payment-due·pg-inquiry (§7) ----
+
+    /** `POST /admin/batches/{name}`: 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수. 알 수 없는 이름은 400. */
+    fun runBatch(name: String): Int {
+        val now = clock.now()
+        val started = System.nanoTime()
+        val processed = when (name) {
+            "bid-expiry" -> expireBids(now)
+            "payment-due" -> expireUnpaidTrades(now)
+            "pg-inquiry" -> inquireUnknownOrders(now)
+            else -> badRequest("알 수 없는 배치: $name")
+        }
+        log.info("배치 {} (현재 {}): processed={}, {}ms", name, now, processed, (System.nanoTime() - started) / 1_000_000)
+        return processed
+    }
+
+    /** bid-expiry: ACTIVE이고 expires_at ≤ 현재인 입찰을 id 순으로 EXPIRED. 입찰마다 그 사이즈를 잠근 트랜잭션 하나. */
+    private fun expireBids(now: Instant): Int {
+        val targets = em.createNativeQuery(
+            "SELECT id FROM bids WHERE status = 'ACTIVE' AND expires_at <= :now ORDER BY id",
+        ).setParameter("now", now).resultList.map { (it as Number).toLong() }
+        var processed = 0
+        for (bidId in targets) {
+            val changed = tx.execute {
+                val bid = em.find(Bid::class.java, bidId)
+                lockProductSize(bid.productSizeId)
+                em.refresh(bid)
+                // 잠금을 기다리는 사이에 취소·체결됐으면 건너뛴다
+                if (bid.status != "ACTIVE" || bid.expiresAt.isAfter(now)) {
+                    false
+                } else {
+                    bid.status = "EXPIRED"
+                    em.persist(BidEvent(bidId = bidId, fromStatus = "ACTIVE", toStatus = "EXPIRED", tradeId = null, createdAt = now))
+                    true
+                }
+            }!!
+            if (changed) processed++
+        }
+        return processed
+    }
+
+    /**
+     * payment-due: AWAITING_PAYMENT이고 payment_due_at ≤ 현재인 체결 중 결과가 정해지지 않은 주문(UNKNOWN·PAYING)이 없는 것을
+     * id 순으로 만료한다. 체결 1건 = 그 사이즈를 잠근 트랜잭션 하나(§3.3).
+     */
+    private fun expireUnpaidTrades(now: Instant): Int {
+        val targets = em.createNativeQuery(
+            "SELECT t.id FROM trades t" +
+                " WHERE t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now" +
+                " AND NOT EXISTS (SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id" +
+                "                 WHERE i.trade_id = t.id AND o.status IN ('UNKNOWN', 'PAYING'))" +
+                " ORDER BY t.id",
+        ).setParameter("now", now).resultList.map { (it as Number).toLong() }
+        var processed = 0
+        for (tradeId in targets) {
+            if (tx.execute { expireUnpaidTrade(tradeId, now) }!!) processed++
+        }
+        return processed
+    }
+
+    /**
+     * 체결 1건 만료(§7). 잠금 순서: 사이즈 → 구매자. 구매자 행을 잠그면 그 구매자의 결제(구매자 잠금 안에서 PAYING 주문을 만든다)와
+     * 줄을 서므로, 잠근 뒤 다시 확인한 결과가 결제와 엇갈리지 않는다.
+     */
+    private fun expireUnpaidTrade(tradeId: Long, now: Instant): Boolean {
+        val trade = em.find(Trade::class.java, tradeId)
+        lockProductSize(trade.productSizeId)
+        lockUser(trade.buyerId)
+        em.refresh(trade)
+        val undecidedOrders = em.createNativeQuery(
+            "SELECT count(*) FROM order_items i JOIN orders o ON o.id = i.order_id" +
+                " WHERE i.trade_id = :trade AND o.status IN ('UNKNOWN', 'PAYING')",
+        ).setParameter("trade", tradeId).singleResult as Number
+        if (trade.status != "AWAITING_PAYMENT" || trade.paymentDueAt.isAfter(now) || undecidedOrders.toLong() > 0) return false
+
+        trade.status = "PAYMENT_EXPIRED"
+
+        // 구매 경고 1행. 최근 30일 안이면서 마지막 제한이 걸린 시각(restricted_until − 7일) 뒤의 경고가 3건 이상이면 7일 구매 제한
+        em.persist(BuyerWarning(userId = trade.buyerId, tradeId = tradeId, createdAt = now))
+        val buyer = em.find(User::class.java, trade.buyerId)
+        em.refresh(buyer)
+        val lastRestrictedAt = buyer.purchaseRestrictedUntil?.minus(Duration.ofDays(7))
+        val recentWarnings = em.createQuery(
+            "SELECT w.createdAt FROM BuyerWarning w WHERE w.userId = :user AND w.createdAt > :from",
+            Instant::class.java,
+        ).setParameter("user", trade.buyerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+            .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+        if (recentWarnings >= 3) buyer.purchaseRestrictedUntil = now.plus(Duration.ofDays(7))
+
+        // 구매 입찰 MATCHED → CANCELLED (판매 입찰 이벤트보다 먼저)
+        val buy = em.find(Bid::class.java, trade.buyBidId)
+        buy.status = "CANCELLED"
+        em.persist(BidEvent(bidId = buy.id!!, fromStatus = "MATCHED", toStatus = "CANCELLED", tradeId = tradeId, createdAt = now))
+
+        // 판매 입찰: 유효기간이 지났으면 EXPIRED, 아니면 ACTIVE로 복구(원래 created_at 유지)한 뒤 새 입찰처럼 바로 재매칭
+        val sell = em.find(Bid::class.java, trade.sellBidId)
+        if (!sell.expiresAt.isAfter(now)) {
+            sell.status = "EXPIRED"
+            em.persist(BidEvent(bidId = sell.id!!, fromStatus = "MATCHED", toStatus = "EXPIRED", tradeId = tradeId, createdAt = now))
+        } else {
+            sell.status = "ACTIVE"
+            em.persist(BidEvent(bidId = sell.id!!, fromStatus = "MATCHED", toStatus = "ACTIVE", tradeId = tradeId, createdAt = now))
+            val counter = findBestCounterBid(sell.productSizeId, "SELL", sell.userId, sell.price, now)
+            if (counter != null) matchBids(sell, counter, now)
+        }
+        return true
+    }
+
+    /**
+     * pg-inquiry: UNKNOWN 주문을 id 순으로 PG에 다시 묻는다. PG 호출 중에는 트랜잭션·잠금을 잡지 않는다.
+     * 승인 → §5.1 승인 처리(paid_at = APPROVE 행의 requested_at), 404·거절 → 거절 처리, 응답 없음 → 행 없이 UNKNOWN 유지.
+     */
+    private fun inquireUnknownOrders(now: Instant): Int {
+        val targets = em.createQuery("SELECT o FROM PurchaseOrder o WHERE o.status = 'UNKNOWN' ORDER BY o.id", PurchaseOrder::class.java)
+            .resultList
+        var processed = 0
+        for (target in targets) {
+            val key = target.idempotencyKey
+            val reply = pg.inquire(key)
+            val status = when (reply?.status) {
+                "APPROVED" -> "APPROVED"
+                "DECLINED", "NOT_FOUND" -> "DECLINED"
+                null -> null
+                else -> {
+                    log.warn("PG 재조회가 알 수 없는 상태를 돌려줌: {} — 응답 없음으로 본다", reply)
+                    null
+                }
+            }
+            if (status == null) continue
+            val changed = tx.execute {
+                lockUser(target.buyerId)
+                val order = em.find(PurchaseOrder::class.java, target.id)
+                em.refresh(order)
+                // 다른 재조회가 먼저 확정했으면 건너뛴다
+                if (order.status != "UNKNOWN") return@execute false
+                em.persist(
+                    PgTransaction(
+                        orderId = order.id!!,
+                        kind = "INQUIRY",
+                        amount = order.cardAmount,
+                        status = status,
+                        pgTxId = if (status == "APPROVED") reply!!.pgTxId else null,
+                        idempotencyKey = key,
+                        requestedAt = now,
+                        respondedAt = now,
+                    ),
+                )
+                if (status == "APPROVED") {
+                    val requestedAt = em.createQuery(
+                        "SELECT p.requestedAt FROM PgTransaction p WHERE p.orderId = :order AND p.kind = 'APPROVE'",
+                        Instant::class.java,
+                    ).setParameter("order", order.id).singleResult
+                    approveOrder(order.id!!, paidAt = requestedAt, now = now)
+                } else {
+                    declineOrder(order.id!!, now)
+                }
+                true
+            }!!
+            if (changed) processed++
+        }
+        return processed
+    }
 }

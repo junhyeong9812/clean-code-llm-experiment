@@ -6,12 +6,17 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import java.io.IOException
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 
-/** PG가 돌려준 승인 기록(ADR-0003 §6). status는 PG 값 그대로(APPROVED|DECLINED). 해석은 Marketplace가 한다. */
+/**
+ * PG가 돌려준 승인 기록(ADR-0003 §6). status는 PG 값 그대로(APPROVED|DECLINED).
+ * 재조회에서 PG가 404(승인 요청이 기록되지 않음)를 주면 status = NOT_FOUND. 해석은 Marketplace가 한다.
+ */
 data class PgReply(val status: String, val pgTxId: String?)
 
 /**
@@ -43,6 +48,16 @@ class PgClient(
         return send(request, "승인 $idempotencyKey")
     }
 
+    /** 재조회: `GET {PG_URL}/approvals/{idempotencyKey}`. 404면 NOT_FOUND. */
+    fun inquire(idempotencyKey: String): PgReply? {
+        val path = URLEncoder.encode(idempotencyKey, StandardCharsets.UTF_8).replace("+", "%20")
+        val request = HttpRequest.newBuilder(URI.create("$baseUrl/approvals/$path"))
+            .timeout(timeout)
+            .GET()
+            .build()
+        return send(request, "재조회 $idempotencyKey")
+    }
+
     private fun send(request: HttpRequest, what: String): PgReply? {
         val response = try {
             http.send(request, HttpResponse.BodyHandlers.ofString())
@@ -51,6 +66,7 @@ class PgClient(
             log.warn("PG 응답 없음({}): {}", what, e.toString())
             return null
         }
+        if (response.statusCode() == 404 && request.method() == "GET") return PgReply("NOT_FOUND", null)
         if (response.statusCode() != 200) {
             log.warn("PG 응답 없음({}): HTTP {}", what, response.statusCode())
             return null
