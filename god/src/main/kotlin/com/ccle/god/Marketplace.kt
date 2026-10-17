@@ -321,13 +321,12 @@ class Marketplace(
         val cardAmount = created.second
         if (cardAmount == null) {
             // 같은 키의 기존 주문. 이긴 요청이 아직 PG를 기다리는 중(PAYING)이면 결과를 쓸 때까지 기다린다(ADR-0003 §9의 7)
-            waitWhilePaying(orderId)
-            return PaymentResult(created = false, order = orderView(orderId))
+            return PaymentResult(created = false, order = waitWhilePaying(orderId))
         }
 
         // PG 호출 중에는 트랜잭션·잠금을 잡지 않는다
         val (status, pgTxId) = pgResult(callPg("승인 $idempotencyKey") { pg.postApproval(idempotencyKey, cardAmount) }, inquiry = false)
-        try {
+        val reflected = try {
             tx.execute {
                 em.persist(
                     PgTransaction(
@@ -347,51 +346,75 @@ class Marketplace(
                     else -> em.find(PurchaseOrder::class.java, orderId).status = "UNKNOWN"
                 }
             }
+            true
         } catch (e: Exception) {
-            // 결과 반영이 실패하면 응답 없음(UNKNOWN)으로라도 남긴다. 확정은 pg-inquiry가 한다.
-            // 이것도 실패하면 주문은 PAYING으로 남고 다음 기동 때 UNKNOWN으로 바뀐다
             log.error("결제 결과 반영 실패({} {}), UNKNOWN 기록을 다시 시도한다", orderId, status, e)
+            false
+        }
+        if (!reflected) {
+            // 결과 반영이 실패하면 응답 없음(UNKNOWN)으로라도 남긴다. 확정은 pg-inquiry가 한다.
+            // 단 반영 트랜잭션이 DB에는 커밋됐는데 예외만 받았을 수 있으므로, 잠근 뒤 다시 읽어 아직 PAYING이고
+            // APPROVE 행이 없을 때만 쓴다(결과가 정해진 뒤 1행, §5.1). 이것도 실패하면 PAYING으로 남고 다음 기동 때 전환된다
             try {
                 tx.execute {
-                    em.persist(
-                        PgTransaction(
-                            orderId = orderId,
-                            kind = "APPROVE",
-                            amount = cardAmount,
-                            status = "UNKNOWN",
-                            pgTxId = null,
-                            idempotencyKey = idempotencyKey,
-                            requestedAt = now,
-                            respondedAt = null,
-                        ),
-                    )
-                    em.find(PurchaseOrder::class.java, orderId).status = "UNKNOWN"
+                    val order = em.find(PurchaseOrder::class.java, orderId)
+                    lockUser(order.buyerId)
+                    em.refresh(order)
+                    if (order.status == "PAYING" && approveRowCount(orderId) == 0L) {
+                        em.persist(
+                            PgTransaction(
+                                orderId = orderId,
+                                kind = "APPROVE",
+                                amount = cardAmount,
+                                status = "UNKNOWN",
+                                pgTxId = null,
+                                idempotencyKey = idempotencyKey,
+                                requestedAt = now,
+                                respondedAt = null,
+                            ),
+                        )
+                        order.status = "UNKNOWN"
+                    }
                 }
             } catch (again: Exception) {
-                log.error("UNKNOWN 기록도 실패: 주문 {}는 PAYING으로 남고 다음 기동 때 UNKNOWN으로 바뀐다", orderId, again)
+                log.error("UNKNOWN 기록도 실패: 주문 {}", orderId, again)
             }
         }
-        return PaymentResult(created = true, order = orderView(orderId))
+        // 결과(PAID·FAILED·UNKNOWN)가 영속된 것을 다시 읽어 확인한 뒤에만 201. 확인되지 않으면 계약 밖 오류로 끝낸다
+        // (주문은 PAYING으로 남고 다음 기동 때 UNKNOWN으로 바뀐다, ADR-0003 §9의 7)
+        val view = orderView(orderId)
+        if (view.status == "PAYING") {
+            throw IllegalStateException("주문 $orderId 의 결제 결과를 기록하지 못했다 — PAYING으로 남고 다음 기동 때 UNKNOWN으로 바뀐다")
+        }
+        return PaymentResult(created = true, order = view)
     }
 
+    private fun approveRowCount(orderId: Long): Long =
+        em.createQuery("SELECT count(p) FROM PgTransaction p WHERE p.orderId = :order AND p.kind = 'APPROVE'", Long::class.javaObjectType)
+            .setParameter("order", orderId)
+            .singleResult
+
     /**
-     * 같은 키의 진 요청: 주문이 PAYING인 동안 기다린다. DB 잠금은 잡지 않고 짧게 다시 읽는다.
-     * 이긴 요청은 PG 호출(연결 + 응답, 각각 PG 타임아웃) 뒤 바로 결과를 쓰므로 상한 = PG 타임아웃 × 2 + 5초.
-     * 상한을 넘는 것은 버그이므로 warn을 남기고 그 시점의 상태를 돌려준다.
+     * 같은 키의 진 요청: 주문이 PAYING인 동안 기다렸다가 그 주문의 현재 상태를 돌려준다(ADR-0003 §9의 7).
+     * DB 잠금은 잡지 않고 50ms마다 다시 읽는다(트랜잭션 밖 조회는 매번 커밋된 값을 읽는다).
+     * 상한 근거: 이긴 요청은 주문을 커밋한 뒤 PG를 한 번 부르고(연결 타임아웃 + 응답 타임아웃 = PG 타임아웃 × 2가 최대),
+     * 바로 결과 반영 트랜잭션과 실패 시 재기록 트랜잭션을 돈다. DB 작업 몇 건이므로 여유 10초면 충분하다.
+     * 상한을 넘거나 인터럽트되면 PAYING을 돌려주지 않고 계약 밖 오류로 끝낸다(이긴 요청이 결과를 쓰지 못한 버그·장애).
      */
-    private fun waitWhilePaying(orderId: Long) {
+    private fun waitWhilePaying(orderId: Long): OrderView {
         // 경과 시간 측정용(업무 시각 아님)
-        val deadline = System.nanoTime() + pg.timeout.multipliedBy(2).plusSeconds(5).toNanos()
-        while (em.find(PurchaseOrder::class.java, orderId).status == "PAYING") {
+        val deadline = System.nanoTime() + pg.timeout.multipliedBy(2).plusSeconds(10).toNanos()
+        while (true) {
+            val view = orderView(orderId)
+            if (view.status != "PAYING") return view
             if (System.nanoTime() > deadline) {
-                log.warn("주문 {}가 대기 상한을 넘어서도 PAYING이다 — 현재 상태를 돌려준다", orderId)
-                return
+                throw IllegalStateException("주문 $orderId 가 대기 상한을 넘어서도 PAYING이다")
             }
             try {
                 Thread.sleep(50)
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
-                return
+                throw IllegalStateException("주문 $orderId 의 결과를 기다리다 인터럽트됐다", e)
             }
         }
     }
@@ -915,6 +938,10 @@ class Marketplace(
         val converted = forEachTarget("orders", "t.status = 'PAYING'", emptyMap()) { orderId ->
             tx.execute {
                 val order = em.find(PurchaseOrder::class.java, orderId)
+                lockUser(order.buyerId)
+                em.refresh(order)
+                // 결제 결과 반영과 같은 원리: 잠근 뒤 다시 읽어 아직 PAYING이고 APPROVE 행이 없을 때만 쓴다
+                if (order.status != "PAYING" || approveRowCount(orderId) > 0) return@execute false
                 em.persist(
                     PgTransaction(
                         orderId = orderId,
