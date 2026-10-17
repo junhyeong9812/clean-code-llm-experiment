@@ -136,7 +136,7 @@
 | name | 대상(순서) | 하는 일 |
 |---|---|---|
 | `bid-expiry` | `status = ACTIVE AND expires_at ≤ 현재` 입찰, id 순 | → `EXPIRED`, `bid_events`(`ACTIVE → EXPIRED`, `trade_id` NULL), 이벤트 시각 = 현재 |
-| `payment-due` | `AWAITING_PAYMENT AND payment_due_at ≤ 현재` 체결 중 **UNKNOWN 주문이 없는 것**, id 순 | 체결 → `PAYMENT_EXPIRED`. `buyer_warnings` 1행. 구매 입찰 `MATCHED → CANCELLED`(판매 입찰 이벤트보다 먼저). 판매 입찰은 `expires_at ≤ 현재`면 `MATCHED → EXPIRED`, 아니면 `MATCHED → ACTIVE` 후 §3.3으로 즉시 재매칭(새 입찰처럼 반대편을 찾는다). 이 이벤트들의 `trade_id` = 만료된 체결. 체결 1건의 처리는 그 사이즈를 잠근 트랜잭션 하나다(§3.3) |
+| `payment-due` | `AWAITING_PAYMENT AND payment_due_at ≤ 현재` 체결 중 **UNKNOWN·PAYING 주문이 없는 것**, id 순 (PAYING 제외는 2026-10-17 개정, §9의 6) | 체결 → `PAYMENT_EXPIRED`. `buyer_warnings` 1행. 구매 입찰 `MATCHED → CANCELLED`(판매 입찰 이벤트보다 먼저). 판매 입찰은 `expires_at ≤ 현재`면 `MATCHED → EXPIRED`, 아니면 `MATCHED → ACTIVE` 후 §3.3으로 즉시 재매칭(새 입찰처럼 반대편을 찾는다). 이 이벤트들의 `trade_id` = 만료된 체결. 체결 1건의 처리는 그 사이즈를 잠근 트랜잭션 하나다(§3.3) |
 | `pg-inquiry` | `UNKNOWN` 주문, id 순 | PG 재조회 → `pg_transactions` INQUIRY 1행(`amount = card_amount`, 같은 키, `requested_at`·`responded_at` = 현재, 404는 `DECLINED`, `pg_tx_id`는 APPROVED면 PG 값·DECLINED면 NULL, 응답 없음이면 행을 만들지 않고 주문은 UNKNOWN 유지). APPROVED면 §5.1 승인 처리, DECLINED면 거절 처리 |
 
 - **구매 경고:** 경고 1행(`created_at` = 현재)을 쓴 뒤, 그 구매자의 경고 중 `created_at > 현재 − 30일` 이고 `created_at > coalesce(purchase_restricted_until − 7일, -∞)`(마지막 제한이 걸린 시각 뒤)인 것이 3건 이상이면 `purchase_restricted_until = 현재 + 7일`. 제한을 건 경고는 다음 계산에서 빠지므로 횟수는 다시 센다. **[기본값 — 생성기와 같은 해석]**
@@ -167,6 +167,7 @@
 3. `pg_transactions`는 결과가 정해진 뒤 1행 INSERT(`REQUESTED` 미사용). 재조회 404는 `DECLINED`.
 4. **[ADR-0002 개정 — 합의 필요]** 멱등 재요청은 "첫 결과"가 아니라 그 주문의 현재 상태를 돌려준다. 이유: 첫 응답을 그대로 재현하려면 응답을 저장할 열이 필요한데 스키마에 없다. 새 승인을 만들지 않는다는 §4.3의 뜻은 유지한다. 예: 첫 응답 UNKNOWN → 재조회로 PAID → 같은 키 재요청은 `200`, `status: PAID`.
 5. 주문 상태 `PENDING`은 쓰지 않는다.
+6. **[개정 2026-10-17 — god 구현 중 발견, 사용자 합의]** payment-due는 PAYING 주문(PG 응답 대기 중)이 있는 체결도 만료하지 않는다. 이유: PG 대기 중에 시계가 기한 너머로 옮겨지고 배치가 돌면 체결이 만료되고 판매 입찰이 복구되는데, 그 뒤 승인이 돌아오면 만료된 체결이 PAID가 된다. 결과가 정해지지 않은 결제는 만료시키지 않는다는 UNKNOWN 규칙을 넓힌 것이다. PAYING은 요청 처리 중에만 있는 상태라 테스트(직렬)·verify 결과는 바뀌지 않는다.
 
 ## 10. 1단계 밖 (다음 단계)
 

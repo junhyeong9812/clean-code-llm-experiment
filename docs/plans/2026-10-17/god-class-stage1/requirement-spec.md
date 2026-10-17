@@ -43,6 +43,7 @@
 ## 4. 금지영역 (필수)
 
 - `layered/` 전부, `behavior-tests/`, `tools/`(verify.sql·seedgen·run.sh), `docker/schema/`, ADR-0001~0003 본문 — **수정 금지**. 테스트·verify·ADR이 서로 어긋나 보이면 구현으로 우회하지 않고 멈추고 보고 → 사용자 재합의.
+- **재합의 1 (2026-10-17):** ADR-0003 §7 payment-due 대상에서 PAYING 주문이 있는 체결도 제외(§9의 6 개정). 사용자: "PAYING도 만료에서 제외". 그 외 ADR·테스트·verify 수정 금지는 유지.
 - 루트 `build.gradle.kts`의 공통 의존성 변경 금지(두 앱 같은 의존성 — ADR-0001). god 전용 의존성 추가도 재합의.
 - study-note 읽기·쓰기 금지. main 직접 작업 금지. push·원격 생성은 사용자 확인 후.
 - 테스트 통과를 위한 테스트 전용 분기(테스트 감지·특정 id 하드코딩) 금지.
