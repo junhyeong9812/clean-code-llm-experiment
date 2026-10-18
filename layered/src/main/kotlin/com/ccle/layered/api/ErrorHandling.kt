@@ -27,8 +27,11 @@ data class ErrorBody(val code: String, val message: String)
 private val log = LoggerFactory.getLogger("com.ccle.layered.api.Errors")
 
 private fun statusOf(failure: Failure): HttpStatus = when (failure) {
+    Failure.INVALID_REQUEST -> HttpStatus.BAD_REQUEST
     Failure.UNKNOWN_USER -> HttpStatus.UNAUTHORIZED
-    Failure.CLOCK_BACKWARD -> HttpStatus.CONFLICT
+    Failure.NOT_OWNER, Failure.PURCHASE_RESTRICTED, Failure.SALE_RESTRICTED -> HttpStatus.FORBIDDEN
+    Failure.NOT_FOUND -> HttpStatus.NOT_FOUND
+    Failure.BID_NOT_ACTIVE, Failure.NO_COUNTER_BID, Failure.CLOCK_BACKWARD -> HttpStatus.CONFLICT
 }
 
 /** 계약 밖 상황(버그·예상 못 한 예외)의 응답. 5xx 대신 이 code로 돌려주고, 원인은 로그에 남긴다. */

@@ -1,0 +1,37 @@
+package com.ccle.layered.infra
+
+import com.ccle.layered.domain.Trade
+import com.ccle.layered.domain.TradeFilter
+import com.ccle.layered.domain.TradeRepository
+import jakarta.persistence.EntityManager
+import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.stereotype.Repository
+
+interface TradeJpaRepository : JpaRepository<Trade, Long> {
+    fun findByBuyerIdOrderById(buyerId: Long): List<Trade>
+    fun findByBuyerIdAndStatusOrderById(buyerId: Long, status: String): List<Trade>
+    fun findBySellerIdOrderById(sellerId: Long): List<Trade>
+    fun findBySellerIdAndStatusOrderById(sellerId: Long, status: String): List<Trade>
+}
+
+@Repository
+class JpaTradeRepository(private val jpa: TradeJpaRepository, private val em: EntityManager) : TradeRepository {
+
+    override fun add(trade: Trade) = em.persist(trade)
+
+    override fun liveTradeIdOf(bidId: Long): Long? =
+        (
+            em.createNativeQuery(
+                "SELECT id FROM trades WHERE (buy_bid_id = :bid OR sell_bid_id = :bid) AND status <> 'PAYMENT_EXPIRED'",
+            ).setParameter("bid", bidId).resultList.firstOrNull() as Number?
+            )?.toLong()
+
+    override fun listOf(userId: Long, filter: TradeFilter): List<Trade> {
+        val status = filter.status
+        return if (filter.asBuyer) {
+            if (status == null) jpa.findByBuyerIdOrderById(userId) else jpa.findByBuyerIdAndStatusOrderById(userId, status)
+        } else {
+            if (status == null) jpa.findBySellerIdOrderById(userId) else jpa.findBySellerIdAndStatusOrderById(userId, status)
+        }
+    }
+}
