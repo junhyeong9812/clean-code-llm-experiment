@@ -38,8 +38,6 @@ class BidRequest private constructor(
     val price: Long?,
     val validDays: Long,
 ) {
-    val instant: Boolean get() = price == null
-
     companion object {
         fun of(productSizeId: Long?, side: String?, price: Long?, validDays: Long?, instant: Boolean?): BidRequest {
             if (productSizeId == null) invalidRequest("productSizeId가 필요하다")

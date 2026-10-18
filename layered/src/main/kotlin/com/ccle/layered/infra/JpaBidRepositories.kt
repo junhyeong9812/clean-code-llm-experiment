@@ -9,19 +9,18 @@ import com.ccle.layered.domain.ProductSize
 import com.ccle.layered.domain.ProductSizeRepository
 import com.ccle.layered.domain.notFound
 import jakarta.persistence.EntityManager
-import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
 import java.time.Instant
 
 // 새 행은 Spring Data save(새 엔티티면 persist, 아니면 merge) 대신 em.persist로 넣는다: 늘 persist이고,
 // IDENTITY라 INSERT가 그 자리에서 실행되어 id 순서가 호출 순서와 같다. 바뀐 행은 영속 상태의 변경 감지로 커밋 때 UPDATE된다.
-
-interface ProductSizeJpaRepository : JpaRepository<ProductSize, Long>
+// 조회는 em.find·em.createQuery로 한다(Spring Data 저장소 메서드는 트랜잭션 밖에서 부르면 호출마다 읽기 전용 트랜잭션을 연다.
+// god처럼 트랜잭션 밖에서는 autocommit 1문, 안에서는 그 트랜잭션의 영속성 컨텍스트로 읽는다).
 
 @Repository
-class JpaProductSizeRepository(private val jpa: ProductSizeJpaRepository, private val em: EntityManager) : ProductSizeRepository {
+class JpaProductSizeRepository(private val em: EntityManager) : ProductSizeRepository {
 
-    override fun exists(id: Long): Boolean = jpa.findById(id).isPresent
+    override fun exists(id: Long): Boolean = em.find(ProductSize::class.java, id) != null
 
     override fun lock(id: Long) {
         val rows = em.createNativeQuery("SELECT id FROM product_sizes WHERE id = :id FOR UPDATE")
@@ -31,12 +30,10 @@ class JpaProductSizeRepository(private val jpa: ProductSizeJpaRepository, privat
     }
 }
 
-interface BidJpaRepository : JpaRepository<Bid, Long>
-
 @Repository
-class JpaBidRepository(private val jpa: BidJpaRepository, private val em: EntityManager) : BidRepository {
+class JpaBidRepository(private val em: EntityManager) : BidRepository {
 
-    override fun find(id: Long): Bid? = jpa.findById(id).orElse(null)
+    override fun find(id: Long): Bid? = em.find(Bid::class.java, id)
 
     override fun add(bid: Bid) = em.persist(bid)
 

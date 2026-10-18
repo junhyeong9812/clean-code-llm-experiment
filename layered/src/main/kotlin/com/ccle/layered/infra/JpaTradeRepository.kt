@@ -6,23 +6,17 @@ import com.ccle.layered.domain.Trade
 import com.ccle.layered.domain.TradeFilter
 import com.ccle.layered.domain.TradeRepository
 import jakarta.persistence.EntityManager
-import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
 import java.time.Instant
 
-interface TradeJpaRepository : JpaRepository<Trade, Long> {
-    fun findByBuyerIdOrderById(buyerId: Long): List<Trade>
-    fun findByBuyerIdAndStatusOrderById(buyerId: Long, status: String): List<Trade>
-    fun findBySellerIdOrderById(sellerId: Long): List<Trade>
-    fun findBySellerIdAndStatusOrderById(sellerId: Long, status: String): List<Trade>
-}
-
+// 조회는 em.find·em.createQuery로 한다(Spring Data 저장소 메서드는 트랜잭션 밖에서 부르면 호출마다 읽기 전용 트랜잭션을 연다.
+// god처럼 트랜잭션 밖에서는 autocommit 1문, 안에서는 그 트랜잭션의 영속성 컨텍스트로 읽는다).
 @Repository
-class JpaTradeRepository(private val jpa: TradeJpaRepository, private val em: EntityManager) : TradeRepository {
+class JpaTradeRepository(private val em: EntityManager) : TradeRepository {
 
     override fun add(trade: Trade) = em.persist(trade)
 
-    override fun find(id: Long): Trade? = jpa.findById(id).orElse(null)
+    override fun find(id: Long): Trade? = em.find(Trade::class.java, id)
 
     override fun findAll(ids: List<Long>): List<Trade> =
         em.createQuery("SELECT t FROM Trade t WHERE t.id IN :ids ORDER BY t.id", Trade::class.java)
@@ -41,12 +35,13 @@ class JpaTradeRepository(private val jpa: TradeJpaRepository, private val em: En
     override fun flush() = em.flush()
 
     override fun listOf(userId: Long, filter: TradeFilter): List<Trade> {
-        val status = filter.status
-        return if (filter.asBuyer) {
-            if (status == null) jpa.findByBuyerIdOrderById(userId) else jpa.findByBuyerIdAndStatusOrderById(userId, status)
-        } else {
-            if (status == null) jpa.findBySellerIdOrderById(userId) else jpa.findBySellerIdAndStatusOrderById(userId, status)
-        }
+        val who = if (filter.asBuyer) "t.buyerId" else "t.sellerId"
+        val jpql = "SELECT t FROM Trade t WHERE $who = :user" +
+            (if (filter.status != null) " AND t.status = :status" else "") +
+            " ORDER BY t.id"
+        val query = em.createQuery(jpql, Trade::class.java).setParameter("user", userId)
+        if (filter.status != null) query.setParameter("status", filter.status)
+        return query.resultList
     }
 }
 

@@ -10,16 +10,15 @@ import com.ccle.layered.domain.PurchaseOrder
 import jakarta.persistence.EntityManager
 import jakarta.persistence.PersistenceException
 import org.hibernate.exception.ConstraintViolationException
-import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
 import java.time.Instant
 
-interface PurchaseOrderJpaRepository : JpaRepository<PurchaseOrder, Long>
-
+// 조회는 em.find·em.createQuery로 한다(Spring Data 저장소 메서드는 트랜잭션 밖에서 부르면 호출마다 읽기 전용 트랜잭션을 연다.
+// god처럼 트랜잭션 밖에서는 autocommit 1문, 안에서는 그 트랜잭션의 영속성 컨텍스트로 읽는다).
 @Repository
-class JpaOrderRepository(private val jpa: PurchaseOrderJpaRepository, private val em: EntityManager) : OrderRepository {
+class JpaOrderRepository(private val em: EntityManager) : OrderRepository {
 
-    override fun find(id: Long): PurchaseOrder? = jpa.findById(id).orElse(null)
+    override fun find(id: Long): PurchaseOrder? = em.find(PurchaseOrder::class.java, id)
 
     override fun findByIdempotencyKey(key: String): PurchaseOrder? =
         em.createQuery("SELECT o FROM PurchaseOrder o WHERE o.idempotencyKey = :key", PurchaseOrder::class.java)

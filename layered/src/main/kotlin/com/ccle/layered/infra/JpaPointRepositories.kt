@@ -6,16 +6,16 @@ import com.ccle.layered.domain.PointBalanceRepository
 import com.ccle.layered.domain.PointLedgerEntry
 import com.ccle.layered.domain.PointRepository
 import jakarta.persistence.EntityManager
-import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
 import java.time.Instant
 
-interface PointLedgerJpaRepository : JpaRepository<PointLedgerEntry, Long>
-
+// 조회는 em.find·em.createQuery로 한다(Spring Data 저장소 메서드는 트랜잭션 밖에서 부르면 호출마다 읽기 전용 트랜잭션을 연다.
+// god처럼 트랜잭션 밖에서는 autocommit 1문, 안에서는 그 트랜잭션의 영속성 컨텍스트로 읽는다).
 @Repository
-class JpaPointRepository(private val jpa: PointLedgerJpaRepository, private val em: EntityManager) : PointRepository {
+class JpaPointRepository(private val em: EntityManager) : PointRepository {
 
-    override fun find(entryId: Long): PointLedgerEntry = jpa.findById(entryId).orElseThrow()
+    override fun find(entryId: Long): PointLedgerEntry =
+        em.find(PointLedgerEntry::class.java, entryId) ?: throw IllegalStateException("포인트 행이 없다: $entryId")
 
     override fun add(entry: PointLedgerEntry) = em.persist(entry)
 
@@ -50,13 +50,11 @@ class JpaPointRepository(private val jpa: PointLedgerJpaRepository, private val 
     override fun removeAllocation(allocation: PointAllocation) = em.remove(allocation)
 }
 
-interface PointBalanceJpaRepository : JpaRepository<PointBalance, Long>
-
 @Repository
-class JpaPointBalanceRepository(private val jpa: PointBalanceJpaRepository, private val em: EntityManager) : PointBalanceRepository {
+class JpaPointBalanceRepository(private val em: EntityManager) : PointBalanceRepository {
 
-    override fun find(userId: Long): PointBalance? = jpa.findById(userId).orElse(null)
+    override fun find(userId: Long): PointBalance? = em.find(PointBalance::class.java, userId)
 
-    // id를 직접 정하는 엔티티라 Spring Data save는 merge(먼저 SELECT)가 된다. 새 행이므로 persist로 넣는다
+    // id를 직접 정하는 엔티티라 merge가 아니라 persist로 넣는다(새 행)
     override fun add(balance: PointBalance) = em.persist(balance)
 }
