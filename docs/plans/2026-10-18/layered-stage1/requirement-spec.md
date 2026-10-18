@@ -18,6 +18,7 @@
   - 장애 주입 → **다시 한다**: 결제 중 kill -9 후 재기동, DB 쓰기 실패, 같은 키 동시 요청 30회
   - 의존 방향 → **domain이 저장소 인터페이스 소유**: api → service → domain ← infra
   - 저장소 → **Spring Data JPA + 네이티브 쿼리**: 단순 조회·저장은 JpaRepository, 잠금·호가·배치는 `@Query` 네이티브 또는 EntityManager(infra 안)
+    - **재합의 3 (2026-10-18, 리뷰 루프 2)**: 트랜잭션 밖 단건 조회는 infra에서 `em.find`로 구현한다(Spring Data `findById`는 호출마다 읽기 전용 트랜잭션을 열어 god와 DB 상호작용이 달라짐). 사용자: "infra에서 em.find로 맞춤". 결과로 트랜잭션 밖에서 쓰던 Spring Data 메서드가 모두 바뀌어 JpaRepository를 쓰지 않게 됨 → 저장소 구현은 domain 인터페이스 + infra EntityManager(JPQL·네이티브)로 확정. 사용자: "이대로(EntityManager)".
   - 규모 비교 → **이번 완료 시 1회**(줄 수·파일 수·클래스 수, 줄 수 채우기 금지)
 
 ---
@@ -32,9 +33,10 @@
   - `api`: 컨트롤러·요청/응답 DTO·JSON 파싱·오류 응답 변환. 파싱·위임·직렬화만 하고 규칙을 갖지 않는다. `service`만 부른다(`domain` 타입은 응답 변환에 읽기만 허용, `infra` 의존 금지).
   - `service`: 유스케이스별 클래스. 트랜잭션 경계·잠금 순서·호출 순서 조율. 규칙은 도메인 객체에 위임.
   - `domain`: 엔티티(=도메인 객체)·값 계산·상태 전이·저장소/PG/시계 인터페이스. `org.springframework.*`·`infra` 의존 금지(`jakarta.persistence` 어노테이션만 예외).
-  - `infra`: 저장소 구현(Spring Data JPA 인터페이스·네이티브 쿼리·EntityManager), PG HTTP 클라이언트, 시계 구현, 기동 복구 훅 같은 프레임워크 접착.
+  - `infra`: 저장소 구현(Spring Data JPA 인터페이스·네이티브 쿼리·EntityManager), PG HTTP 클라이언트, 시계 구현.
+  - 앱 루트 `com.ccle.layered`(조립 지점): `LayeredApplication`과 기동 복구 훅(Spring 생명주기 접착). 훅은 service 유스케이스만 부른다. — **재합의 1 (2026-10-18, 리뷰 루프 1)**: 원문은 훅을 infra 예시로 들었으나 infra→service 의존이 생겨 의존 방향과 충돌. 사용자: "앱 루트 패키지에 훅".
 - **계약(ADR-0003):** 응답 모양·HTTP 상태·`code`·판정 순서(401→400→멱등→404→403→409→422), 어떤 요청도 5xx 없음, 같은 요청 순서 → 같은 DB 결과. 재합의 1·2(§9의 6·7)와 §10 전제 포함.
-- **god와 같은 동작:** §0의 기술 선택을 그대로 따른다. 경합·장애 경로(동시 요청·크래시·PG 지연)에서도 god와 같은 결과가 나와야 한다. 쓰기 순서가 바뀌어 `bid_events`·`point_transactions` 등의 id 순서가 달라지는 것도 차이로 본다(verify가 id 순서를 쓴다).
+- **god와 같은 동작:** §0의 기술 선택을 그대로 따른다. 허용 차이(**재합의 2, 2026-10-18 리뷰 루프 1** — 사용자: "유지하고 차이로 기록"): 도메인 객체의 상태 전이 단언(`check`)은 유지한다. 불변식이 깨진 데이터에서만 god(그대로 진행)와 달리 롤백·400 `UNEXPECTED_ERROR`로 끝난다. 정합한 데이터에서는 결과가 같아야 한다. 경합·장애 경로(동시 요청·크래시·PG 지연)에서도 god와 같은 결과가 나와야 한다. 쓰기 순서가 바뀌어 `bid_events`·`point_transactions` 등의 id 순서가 달라지는 것도 차이로 본다(verify가 id 순서를 쓴다).
 - **동시성(§3.3):** 사이즈 입찰 상태 변경은 `product_sizes FOR UPDATE` 트랜잭션 안에서, `bid_events`는 잠근 뒤 쓴다. 같은 멱등 키 동시 요청 → 주문 1건.
 - **결제(§5.1):** 주문 행은 PG 호출 전 커밋. PG 응답 없음 → UNKNOWN(5xx 아님). `pg_transactions`는 결과 확정 뒤 1행.
 - **금액·시각·스키마:** ADR-0002 §5·§9.2·ADR-0003 §8 표 그대로. 주입된 시계만 사용(`now()`·`Instant.now()`·DB `now()` 금지, 요청 하나의 시각은 같은 값). `ddl-auto: validate`, 스키마 무변경.
