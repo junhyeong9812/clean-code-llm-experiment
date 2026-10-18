@@ -8,7 +8,6 @@ import com.ccle.layered.domain.MarketClock
 import com.ccle.layered.domain.ProductSizeRepository
 import com.ccle.layered.domain.Trade
 import com.ccle.layered.domain.UserRepository
-import com.ccle.layered.domain.notFound
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -33,7 +32,7 @@ class PlaceBidService(
     fun place(userId: Long, productSizeId: Long?, side: String?, price: Long?, validDays: Long?, instant: Boolean?): PlacedBid {
         val request = BidRequest.of(productSizeId, side, price, validDays, instant)
         val now = clock.now()
-        if (!sizes.lock(request.productSizeId)) notFound("없는 사이즈: ${request.productSizeId}")
+        sizes.lock(request.productSizeId)
 
         val user = users.find(userId) ?: throw IllegalStateException("확인된 사용자가 없다: $userId")
         user.requireCanBid(request.side, now)

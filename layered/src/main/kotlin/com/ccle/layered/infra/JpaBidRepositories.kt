@@ -7,6 +7,7 @@ import com.ccle.layered.domain.BidRepository
 import com.ccle.layered.domain.Book
 import com.ccle.layered.domain.ProductSize
 import com.ccle.layered.domain.ProductSizeRepository
+import com.ccle.layered.domain.notFound
 import jakarta.persistence.EntityManager
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
@@ -22,11 +23,12 @@ class JpaProductSizeRepository(private val jpa: ProductSizeJpaRepository, privat
 
     override fun exists(id: Long): Boolean = jpa.findById(id).isPresent
 
-    override fun lock(id: Long): Boolean =
-        em.createNativeQuery("SELECT id FROM product_sizes WHERE id = :id FOR UPDATE")
+    override fun lock(id: Long) {
+        val rows = em.createNativeQuery("SELECT id FROM product_sizes WHERE id = :id FOR UPDATE")
             .setParameter("id", id)
             .resultList
-            .isNotEmpty()
+        if (rows.isEmpty()) notFound("없는 사이즈: $id")
+    }
 }
 
 interface BidJpaRepository : JpaRepository<Bid, Long>

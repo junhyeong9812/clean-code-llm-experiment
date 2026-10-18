@@ -10,6 +10,9 @@ class ClockService(private val clock: MarketClock) {
 
     fun now(): Instant = clock.now()
 
-    /** 같은 시각·뒤 시각만 허용한다. 앞 시각이면 시계가 CLOCK_BACKWARD. */
-    fun moveTo(target: Instant): Instant = clock.moveTo(target)
+    /** 같은 시각·뒤 시각만 허용한다. 앞 시각이면 시계가 CLOCK_BACKWARD. 반환 = 옮긴 뒤 시계에서 다시 읽은 현재 시각. */
+    fun moveTo(target: Instant): Instant {
+        clock.moveTo(target)
+        return clock.now()
+    }
 }

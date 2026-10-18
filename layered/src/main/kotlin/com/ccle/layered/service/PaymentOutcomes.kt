@@ -29,18 +29,19 @@ class PaymentOutcomes(
         order.approve(paidAt)
 
         val rate = users.find(order.buyerId)!!.earnRatePermille()
-        var pendingAdded = 0L
+        val earns = mutableListOf<PointLedgerEntry>()
         for (item in items.listOf(orderId)) {
-            item.markPaid(paidAt)
+            val earn = item.markPaid(paidAt, order.buyerId, rate)
             trades.find(item.tradeId)!!.markPaid()
-            val earn = item.earnAmount(rate)
-            if (earn > 0) {
-                points.add(PointLedgerEntry.pendingEarn(order.buyerId, earn, item.id!!, paidAt))
-                pendingAdded = Math.addExact(pendingAdded, earn)
+            if (earn != null) {
+                points.add(earn)
+                earns += earn
             }
         }
         points.useEntryOf(orderId)?.confirm()
-        if (pendingAdded > 0) pointBook.changeBalance(order.buyerId, availableDelta = 0, pendingDelta = pendingAdded, now = now)
+        if (earns.isNotEmpty()) {
+            pointBook.changeBalance(order.buyerId, availableDelta = 0, pendingDelta = PointLedgerEntry.pendingTotal(earns), now = now)
+        }
     }
 
     /** 거절: 주문 FAILED, 항목 PAYMENT_FAILED, 체결은 그대로, 포인트 예약 해제. */

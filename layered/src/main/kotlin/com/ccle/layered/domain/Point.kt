@@ -80,6 +80,9 @@ class PointLedgerEntry(
             createdAt = now,
         )
 
+        /** 적립 예정 행들의 금액 합(point_balances.pending 증가분). */
+        fun pendingTotal(earns: List<PointLedgerEntry>): Long = earns.fold(0L) { sum, e -> Math.addExact(sum, e.amount) }
+
         /** 적립 예정(§5.2): 항목마다 EARN PENDING, remaining = 적립액, expires_at·order_id 없음, created_at = 결제 시각. */
         fun pendingEarn(userId: Long, amount: Long, orderItemId: Long, paidAt: Instant) = PointLedgerEntry(
             userId = userId,

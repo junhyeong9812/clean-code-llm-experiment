@@ -158,6 +158,23 @@ class PurchaseOrder(
         status = "FAILED"
     }
 
+    /** PG 결과를 아직 쓰지 못한 상태(요청 처리 중이거나, 쓰지 못하고 죽은 프로세스가 남긴 것). */
+    fun isPaying(): Boolean = status == "PAYING"
+
+    /** 결과 미정: PG 재조회로 확정할 대상(§7 pg-inquiry). */
+    fun isUnknown(): Boolean = status == "UNKNOWN"
+
+    /**
+     * 결과를 쓰지 못한 결제의 정리(§9의 7 — 결과 반영 실패 뒤 재기록, 기동 시 전환): 아직 PAYING이고 APPROVE 행이 없을 때만
+     * UNKNOWN으로 바꾸고 써야 할 APPROVE UNKNOWN 행을 돌려준다(결과가 정해진 뒤 1행, §5.1). 아니면 null(이미 기록됨).
+     * approveRowCount는 PAYING일 때만 센다.
+     */
+    fun abandonPayment(approveRowCount: () -> Long, requestedAt: Instant): PgTransaction? {
+        if (!isPaying() || approveRowCount() > 0) return null
+        markUnknown()
+        return PgTransaction.unknownApproval(this, requestedAt)
+    }
+
     /** 응답 없음(§5.1 표): PAYING → UNKNOWN. 확정은 pg-inquiry가 한다. */
     fun markUnknown() {
         check(status == "PAYING") { "PAYING이 아닌 주문 $id 를 UNKNOWN으로 바꾸려 했다: $status" }
@@ -191,9 +208,12 @@ class OrderItem(
     var paidAt: Instant? = paidAt
         private set
 
-    fun markPaid(paidAt: Instant) {
+    /** 승인 반영(§5.1 표): 항목 PAID(paid_at). 적립 예정(§5.2): 적립액 > 0이면 EARN PENDING 행을 돌려준다(아니면 null). */
+    fun markPaid(paidAt: Instant, buyerId: Long, ratePermille: Long): PointLedgerEntry? {
         status = "PAID"
         this.paidAt = paidAt
+        val earn = earnAmount(ratePermille)
+        return if (earn > 0) PointLedgerEntry.pendingEarn(buyerId, earn, id!!, paidAt) else null
     }
 
     fun markPaymentFailed() {
@@ -201,7 +221,7 @@ class OrderItem(
     }
 
     /** 적립액 = floor(floor(카드 몫 × 체결가 ÷ 기준액) × 적립률), 기준액 = 체결가 + 수수료 + 배송비 몫. */
-    fun earnAmount(ratePermille: Long): Long {
+    private fun earnAmount(ratePermille: Long): Long {
         val base = Math.addExact(Math.addExact(price, buyerFee), shippingShare)
         return mulDiv(mulDiv(cardShare, price, base), ratePermille, 1000)
     }
@@ -262,11 +282,11 @@ class PgTransaction(
             orderId = orderId,
             kind = "APPROVE",
             amount = cardAmount,
-            status = result.status,
+            status = result.outcome.name,
             pgTxId = result.pgTxId,
             idempotencyKey = idempotencyKey,
             requestedAt = requestedAt,
-            respondedAt = if (result.status == "UNKNOWN") null else now,
+            respondedAt = if (result.outcome == PgOutcome.UNKNOWN) null else now,
         )
 
         /**
@@ -274,12 +294,12 @@ class PgTransaction(
          * pg_tx_id는 APPROVED면 PG 값·DECLINED면 NULL. 응답 없음이면 행을 만들지 않는다(호출자).
          */
         fun inquiry(order: PurchaseOrder, result: PgResult, now: Instant): PgTransaction {
-            check(result.status != "UNKNOWN") { "응답 없는 재조회는 기록하지 않는다: 주문 ${order.id}" }
+            check(result.outcome != PgOutcome.UNKNOWN) { "응답 없는 재조회는 기록하지 않는다: 주문 ${order.id}" }
             return PgTransaction(
                 orderId = order.id!!,
                 kind = "INQUIRY",
                 amount = order.cardAmount,
-                status = result.status,
+                status = result.outcome.name,
                 pgTxId = result.pgTxId,
                 idempotencyKey = order.idempotencyKey,
                 requestedAt = now,

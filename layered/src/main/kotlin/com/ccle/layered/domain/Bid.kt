@@ -22,9 +22,9 @@ interface ProductSizeRepository {
 
     /**
      * 사이즈 행을 잠근다(§3.3 사이즈 단위 직렬화, `SELECT … FOR UPDATE`). 그 사이즈의 입찰 상태를 바꾸는 처리는 모두 이 잠금 뒤에 하고,
-     * 잠금은 커밋까지 유지된다. 그래서 같은 사이즈 안에서는 bid_events.id 순서가 실제 처리 순서다. 반환 = 사이즈가 있었나.
+     * 잠금은 커밋까지 유지된다. 그래서 같은 사이즈 안에서는 bid_events.id 순서가 실제 처리 순서다. 없는 사이즈면 404 NOT_FOUND.
      */
-    fun lock(id: Long): Boolean
+    fun lock(id: Long)
 }
 
 /**
@@ -100,6 +100,9 @@ class Bid(
         status = "MATCHED"
         return BidEvent(bidId = id!!, fromStatus = "ACTIVE", toStatus = "MATCHED", tradeId = trade.id, createdAt = now)
     }
+
+    /** 체결 가능(§3.3): ACTIVE이고 expires_at > 현재. 결제 기한 만료로 복구된 판매 입찰은 이것이면 바로 재매칭한다. */
+    fun isMatchable(now: Instant): Boolean = status == "ACTIVE" && expiresAt.isAfter(now)
 
     /** bid-expiry 대상(§7): ACTIVE이고 expires_at ≤ 현재. */
     fun isExpirable(now: Instant): Boolean = status == "ACTIVE" && !expiresAt.isAfter(now)

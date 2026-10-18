@@ -8,6 +8,7 @@ import com.ccle.layered.domain.BuyerWarning
 import com.ccle.layered.domain.BuyerWarningRepository
 import com.ccle.layered.domain.MarketClock
 import com.ccle.layered.domain.OrderRepository
+import com.ccle.layered.domain.PgOutcome
 import com.ccle.layered.domain.PgTransaction
 import com.ccle.layered.domain.PgTransactionRepository
 import com.ccle.layered.domain.ProductSizeRepository
@@ -110,7 +111,7 @@ class PaymentDueBatch(
         events.add(bids.find(trade.buyBidId)!!.cancelForUnpaid(trade, now))
         val sell = bids.find(trade.sellBidId)!!
         events.add(sell.reopenForUnpaid(trade, now))
-        if (sell.status == "ACTIVE") {
+        if (sell.isMatchable(now)) {
             val counter = bids.bestCounter(sell.productSizeId, "SELL", sell.userId, sell.price, now)
             if (counter != null) matches.record(sell, counter, now)
         }
@@ -134,7 +135,7 @@ class PgInquiryBatch(
 ) {
     fun run(now: Instant): Int = targets.forEach(BatchTarget.UNKNOWN_ORDERS, now) { orderId ->
         val result = pgCaller.inquire(orders.find(orderId)!!.idempotencyKey)
-        if (result.status == "UNKNOWN") {
+        if (result.outcome == PgOutcome.UNKNOWN) {
             false
         } else {
             tx.execute {
@@ -142,9 +143,9 @@ class PgInquiryBatch(
                 users.lock(order.buyerId)
                 orders.reload(order)
                 // 다른 재조회가 먼저 확정했으면 건너뛴다
-                if (order.status != "UNKNOWN") return@execute false
+                if (!order.isUnknown()) return@execute false
                 pgTransactions.add(PgTransaction.inquiry(order, result, now))
-                if (result.status == "APPROVED") {
+                if (result.outcome == PgOutcome.APPROVED) {
                     outcomes.approve(orderId, paidAt = pgTransactions.approveRequestedAt(orderId), now = now)
                 } else {
                     outcomes.decline(orderId, now)

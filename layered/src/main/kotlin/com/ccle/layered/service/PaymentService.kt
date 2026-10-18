@@ -8,6 +8,7 @@ import com.ccle.layered.domain.OrderRepository
 import com.ccle.layered.domain.OrderRequest
 import com.ccle.layered.domain.OrderSnapshot
 import com.ccle.layered.domain.PayableTrades
+import com.ccle.layered.domain.PgOutcome
 import com.ccle.layered.domain.PaymentGateway
 import com.ccle.layered.domain.PgTransaction
 import com.ccle.layered.domain.PgTransactionRepository
@@ -67,15 +68,15 @@ class PaymentService(
         val reflected = try {
             tx.execute {
                 pgTransactions.add(PgTransaction.approval(orderId, cardAmount, request.idempotencyKey, result, requestedAt = now, now = now))
-                when (result.status) {
-                    "APPROVED" -> outcomes.approve(orderId, paidAt = now, now = now)
-                    "DECLINED" -> outcomes.decline(orderId, now)
-                    else -> orders.find(orderId)!!.markUnknown()
+                when (result.outcome) {
+                    PgOutcome.APPROVED -> outcomes.approve(orderId, paidAt = now, now = now)
+                    PgOutcome.DECLINED -> outcomes.decline(orderId, now)
+                    PgOutcome.UNKNOWN -> orders.find(orderId)!!.markUnknown()
                 }
             }
             true
         } catch (e: Exception) {
-            log.error("결제 결과 반영 실패({} {}), UNKNOWN 기록을 다시 시도한다", orderId, result.status, e)
+            log.error("결제 결과 반영 실패({} {}), UNKNOWN 기록을 다시 시도한다", orderId, result.outcome, e)
             false
         }
         if (!reflected) recordUnknown(orderId, now)
@@ -83,7 +84,7 @@ class PaymentService(
         // 결과(PAID·FAILED·UNKNOWN)가 영속된 것을 다시 읽어 확인한 뒤에만 201. 확인되지 않으면 계약 밖 오류로 끝낸다
         // (주문은 PAYING으로 남고 다음 기동 때 UNKNOWN으로 바뀐다, ADR-0003 §9의 7)
         val snapshot = reader.read(orderId)
-        if (snapshot.order.status == "PAYING") {
+        if (snapshot.order.isPaying()) {
             throw IllegalStateException("주문 $orderId 의 결제 결과를 기록하지 못했다 — PAYING으로 남고 다음 기동 때 UNKNOWN으로 바뀐다")
         }
         return PaymentResult(created = true, order = snapshot)
@@ -117,8 +118,8 @@ class PaymentService(
 
     /**
      * 결과 반영이 실패하면 응답 없음(UNKNOWN)으로라도 남긴다. 확정은 pg-inquiry가 한다.
-     * 단 반영 트랜잭션이 DB에는 커밋됐는데 예외만 받았을 수 있으므로, 잠근 뒤 다시 읽어 아직 PAYING이고
-     * APPROVE 행이 없을 때만 쓴다(결과가 정해진 뒤 1행, §5.1). 이것도 실패하면 PAYING으로 남고 다음 기동 때 전환된다.
+     * 단 반영 트랜잭션이 DB에는 커밋됐는데 예외만 받았을 수 있으므로, 잠근 뒤 다시 읽고 abandonPayment가 쓸지 정한다.
+     * 이것도 실패하면 PAYING으로 남고 다음 기동 때 전환된다.
      */
     private fun recordUnknown(orderId: Long, now: Instant) {
         try {
@@ -126,10 +127,7 @@ class PaymentService(
                 val order = orders.find(orderId)!!
                 users.lock(order.buyerId)
                 orders.reload(order)
-                if (order.status == "PAYING" && pgTransactions.approveCount(orderId) == 0L) {
-                    pgTransactions.add(PgTransaction.unknownApproval(order, requestedAt = now))
-                    order.markUnknown()
-                }
+                order.abandonPayment({ pgTransactions.approveCount(orderId) }, requestedAt = now)?.let(pgTransactions::add)
             }
         } catch (again: Exception) {
             log.error("UNKNOWN 기록도 실패: 주문 {}", orderId, again)
@@ -148,7 +146,7 @@ class PaymentService(
         val deadline = System.nanoTime() + pg.timeout.multipliedBy(2).plusSeconds(10).toNanos()
         while (true) {
             val snapshot = reader.read(orderId)
-            if (snapshot.order.status != "PAYING") return snapshot
+            if (!snapshot.order.isPaying()) return snapshot
             if (System.nanoTime() > deadline) {
                 throw IllegalStateException("주문 $orderId 가 대기 상한을 넘어서도 PAYING이다")
             }

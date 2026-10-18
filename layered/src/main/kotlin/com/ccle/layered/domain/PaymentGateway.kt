@@ -23,26 +23,29 @@ interface PaymentGateway {
     fun getApproval(idempotencyKey: String): PgReply
 }
 
+/** PG 결과(ADR-0003 §5.1 표의 세 갈래). 이름이 pg_transactions.status 값이다. */
+enum class PgOutcome { APPROVED, DECLINED, UNKNOWN }
+
 /**
- * PG 응답 해석(ADR-0003 §5.1·§6·§7): status = APPROVED|DECLINED|UNKNOWN, pgTxId는 승인일 때만 PG 값.
+ * PG 응답 해석(ADR-0003 §5.1·§6·§7): outcome = 승인·거절·응답 없음, pgTxId는 승인일 때만 PG 값.
  * 응답 없음(null)·200이 아닌 코드·읽을 수 없는 본문·알 수 없는 status·pgTxId 없는 승인은 UNKNOWN.
  * 재조회의 404(승인 요청이 기록되지 않음)는 DECLINED. warning = 응답이 있었는데 UNKNOWN으로 본 이유(로그용).
  */
-class PgResult private constructor(val status: String, val pgTxId: String?, val warning: String?) {
+class PgResult private constructor(val outcome: PgOutcome, val pgTxId: String?, val warning: String?) {
     companion object {
         fun of(reply: PgReply?, inquiry: Boolean): PgResult {
-            if (reply == null) return PgResult("UNKNOWN", null, null)
-            if (inquiry && reply.httpStatus == 404) return PgResult("DECLINED", null, null)
-            if (reply.httpStatus != 200) return PgResult("UNKNOWN", null, "PG 응답 없음으로 본다: HTTP ${reply.httpStatus}")
-            if (!reply.readable) return PgResult("UNKNOWN", null, "PG 응답 본문을 읽을 수 없다: ${reply.raw}")
+            if (reply == null) return PgResult(PgOutcome.UNKNOWN, null, null)
+            if (inquiry && reply.httpStatus == 404) return PgResult(PgOutcome.DECLINED, null, null)
+            if (reply.httpStatus != 200) return PgResult(PgOutcome.UNKNOWN, null, "PG 응답 없음으로 본다: HTTP ${reply.httpStatus}")
+            if (!reply.readable) return PgResult(PgOutcome.UNKNOWN, null, "PG 응답 본문을 읽을 수 없다: ${reply.raw}")
             return when (reply.status) {
                 "APPROVED" -> if (reply.pgTxId != null) {
-                    PgResult("APPROVED", reply.pgTxId, null)
+                    PgResult(PgOutcome.APPROVED, reply.pgTxId, null)
                 } else {
-                    PgResult("UNKNOWN", null, "PG 승인 응답에 pgTxId가 없다: ${reply.raw}")
+                    PgResult(PgOutcome.UNKNOWN, null, "PG 승인 응답에 pgTxId가 없다: ${reply.raw}")
                 }
-                "DECLINED" -> PgResult("DECLINED", null, null)
-                else -> PgResult("UNKNOWN", null, "PG가 알 수 없는 상태를 돌려줌: ${reply.raw}")
+                "DECLINED" -> PgResult(PgOutcome.DECLINED, null, null)
+                else -> PgResult(PgOutcome.UNKNOWN, null, "PG가 알 수 없는 상태를 돌려줌: ${reply.raw}")
             }
         }
     }

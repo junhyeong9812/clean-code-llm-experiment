@@ -9,6 +9,6 @@ import java.time.Instant
 interface MarketClock {
     fun now(): Instant
 
-    /** 같은 시각·뒤 시각만 허용하고 옮긴 뒤의 시각을 돌려준다. 앞 시각이면 CLOCK_BACKWARD. */
-    fun moveTo(requested: Instant): Instant
+    /** 같은 시각·뒤 시각만 허용한다. 앞 시각이면 CLOCK_BACKWARD. */
+    fun moveTo(requested: Instant)
 }

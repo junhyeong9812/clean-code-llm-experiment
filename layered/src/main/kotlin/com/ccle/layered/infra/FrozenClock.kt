@@ -19,12 +19,11 @@ class FrozenClock(@Value("\${CLOCK_START:2026-10-01T00:00:00+09:00}") start: Str
     override fun now(): Instant = current
 
     @Synchronized
-    override fun moveTo(requested: Instant): Instant {
+    override fun moveTo(requested: Instant) {
         val target = requested.truncatedTo(ChronoUnit.MICROS)
         if (target.isBefore(current)) {
             throw MarketException(Failure.CLOCK_BACKWARD, "시계를 뒤로 옮길 수 없다: 현재 $current, 요청 $target")
         }
         current = target
-        return current
     }
 }
