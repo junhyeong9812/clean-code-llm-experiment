@@ -1,7 +1,10 @@
 package com.ccle.layered.api
 
+import com.ccle.layered.service.BatchService
 import com.ccle.layered.service.ClockService
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
@@ -12,7 +15,7 @@ import java.time.format.DateTimeParseException
 /** 관리 엔드포인트(ADR-0003 §7, 헤더 불필요). */
 @RestController
 @RequestMapping("/admin")
-class AdminController(private val clock: ClockService) {
+class AdminController(private val clock: ClockService, private val batches: BatchService) {
 
     @GetMapping("/clock")
     fun clock(): Map<String, String> = mapOf("now" to iso(clock.now()))
@@ -27,4 +30,7 @@ class AdminController(private val clock: ClockService) {
         }
         return mapOf("now" to iso(clock.moveTo(target)))
     }
+
+    @PostMapping("/batches/{name}")
+    fun runBatch(@PathVariable name: String): Map<String, Int> = mapOf("processed" to batches.run(name))
 }

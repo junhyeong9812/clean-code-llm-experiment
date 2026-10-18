@@ -1,11 +1,14 @@
 package com.ccle.layered.infra
 
+import com.ccle.layered.domain.BuyerWarning
+import com.ccle.layered.domain.BuyerWarningRepository
 import com.ccle.layered.domain.Trade
 import com.ccle.layered.domain.TradeFilter
 import com.ccle.layered.domain.TradeRepository
 import jakarta.persistence.EntityManager
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
+import java.time.Instant
 
 interface TradeJpaRepository : JpaRepository<Trade, Long> {
     fun findByBuyerIdOrderById(buyerId: Long): List<Trade>
@@ -33,6 +36,10 @@ class JpaTradeRepository(private val jpa: TradeJpaRepository, private val em: En
             ).setParameter("bid", bidId).resultList.firstOrNull() as Number?
             )?.toLong()
 
+    override fun reload(trade: Trade) = em.refresh(trade)
+
+    override fun flush() = em.flush()
+
     override fun listOf(userId: Long, filter: TradeFilter): List<Trade> {
         val status = filter.status
         return if (filter.asBuyer) {
@@ -41,4 +48,16 @@ class JpaTradeRepository(private val jpa: TradeJpaRepository, private val em: En
             if (status == null) jpa.findBySellerIdOrderById(userId) else jpa.findBySellerIdAndStatusOrderById(userId, status)
         }
     }
+}
+
+@Repository
+class JpaBuyerWarningRepository(private val em: EntityManager) : BuyerWarningRepository {
+
+    override fun add(warning: BuyerWarning) = em.persist(warning)
+
+    override fun createdAtAfter(userId: Long, from: Instant): List<Instant> =
+        em.createQuery(
+            "SELECT w.createdAt FROM BuyerWarning w WHERE w.userId = :user AND w.createdAt > :from",
+            Instant::class.java,
+        ).setParameter("user", userId).setParameter("from", from).resultList
 }

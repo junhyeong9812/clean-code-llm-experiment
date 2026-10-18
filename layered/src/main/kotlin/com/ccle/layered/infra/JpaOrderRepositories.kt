@@ -12,6 +12,7 @@ import jakarta.persistence.PersistenceException
 import org.hibernate.exception.ConstraintViolationException
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
+import java.time.Instant
 
 interface PurchaseOrderJpaRepository : JpaRepository<PurchaseOrder, Long>
 
@@ -41,6 +42,14 @@ class JpaOrderRepository(private val jpa: PurchaseOrderJpaRepository, private va
     }
 
     override fun reload(order: PurchaseOrder) = em.refresh(order)
+
+    override fun countUndecidedFor(tradeId: Long): Long =
+        (
+            em.createNativeQuery(
+                "SELECT count(*) FROM order_items i JOIN orders o ON o.id = i.order_id" +
+                    " WHERE i.trade_id = :trade AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING')",
+            ).setParameter("trade", tradeId).singleResult as Number
+            ).toLong()
 }
 
 @Repository
@@ -74,4 +83,10 @@ class JpaPgTransactionRepository(private val em: EntityManager) : PgTransactionR
         em.createQuery("SELECT count(p) FROM PgTransaction p WHERE p.orderId = :order AND p.kind = 'APPROVE'", Long::class.javaObjectType)
             .setParameter("order", orderId)
             .singleResult
+
+    override fun approveRequestedAt(orderId: Long): Instant =
+        em.createQuery(
+            "SELECT p.requestedAt FROM PgTransaction p WHERE p.orderId = :order AND p.kind = 'APPROVE'",
+            Instant::class.java,
+        ).setParameter("order", orderId).singleResult
 }

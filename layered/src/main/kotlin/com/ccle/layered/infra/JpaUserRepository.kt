@@ -15,4 +15,6 @@ class JpaUserRepository(private val jpa: UserJpaRepository, private val em: Enti
     override fun lock(id: Long) {
         em.createNativeQuery("SELECT id FROM users WHERE id = :id FOR UPDATE").setParameter("id", id).resultList
     }
+
+    override fun reload(user: User) = em.refresh(user)
 }

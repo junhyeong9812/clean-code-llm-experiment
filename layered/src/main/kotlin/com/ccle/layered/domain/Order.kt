@@ -220,6 +220,9 @@ interface OrderRepository {
 
     /** 잠금을 기다리는 사이에 바뀌었을 수 있으므로 잠근 뒤 DB의 현재 값으로 다시 읽는다. */
     fun reload(order: PurchaseOrder)
+
+    /** 그 체결에 걸린(항목이 PAYMENT_FAILED가 아닌) 결과 미정(UNKNOWN·PAYING) 주문 수. */
+    fun countUndecidedFor(tradeId: Long): Long
 }
 
 /** 다른 요청이 같은 멱등 키로 주문을 먼저 만들었다(유일 제약 위반). 다시 하면 멱등 키 조회에서 판정된다. */
@@ -266,6 +269,24 @@ class PgTransaction(
             respondedAt = if (result.status == "UNKNOWN") null else now,
         )
 
+        /**
+         * 재조회 결과 1행(§7 pg-inquiry): INQUIRY, amount = card_amount, requested_at·responded_at = 현재,
+         * pg_tx_id는 APPROVED면 PG 값·DECLINED면 NULL. 응답 없음이면 행을 만들지 않는다(호출자).
+         */
+        fun inquiry(order: PurchaseOrder, result: PgResult, now: Instant): PgTransaction {
+            check(result.status != "UNKNOWN") { "응답 없는 재조회는 기록하지 않는다: 주문 ${order.id}" }
+            return PgTransaction(
+                orderId = order.id!!,
+                kind = "INQUIRY",
+                amount = order.cardAmount,
+                status = result.status,
+                pgTxId = result.pgTxId,
+                idempotencyKey = order.idempotencyKey,
+                requestedAt = now,
+                respondedAt = now,
+            )
+        }
+
         /** 결과를 쓰지 못한 승인 요청의 UNKNOWN 1행(§9의 7). */
         fun unknownApproval(order: PurchaseOrder, requestedAt: Instant) = PgTransaction(
             orderId = order.id!!,
@@ -284,4 +305,7 @@ interface PgTransactionRepository {
     fun add(row: PgTransaction)
 
     fun approveCount(orderId: Long): Long
+
+    /** 그 주문 APPROVE 행의 requested_at(PG가 실제로 승인한 때, §7 재조회 승인 시각). */
+    fun approveRequestedAt(orderId: Long): Instant
 }

@@ -38,6 +38,18 @@ class Trade(
         status = "PAID"
     }
 
+    /**
+     * payment-due 대상(§7, §9의 6): AWAITING_PAYMENT이고 payment_due_at ≤ 현재이며 결과가 정해지지 않은 주문(UNKNOWN·PAYING)이 없다.
+     * undecidedOrders = 그 체결에 걸린 UNKNOWN·PAYING 주문 수.
+     */
+    fun isExpirableUnpaid(now: Instant, undecidedOrders: Long): Boolean =
+        status == "AWAITING_PAYMENT" && !paymentDueAt.isAfter(now) && undecidedOrders == 0L
+
+    /** AWAITING_PAYMENT → PAYMENT_EXPIRED. */
+    fun expireUnpaid() {
+        status = "PAYMENT_EXPIRED"
+    }
+
     companion object {
         val STATUSES = setOf("AWAITING_PAYMENT", "PAID", "PAYMENT_EXPIRED")
     }
@@ -97,6 +109,15 @@ interface TradeRepository {
 
     /** 내 체결 목록, id 오름차순. */
     fun listOf(userId: Long, filter: TradeFilter): List<Trade>
+
+    /** 잠금을 기다리는 사이에 바뀌었을 수 있으므로 잠근 뒤 DB의 현재 값으로 다시 읽는다. */
+    fun reload(trade: Trade)
+
+    /**
+     * 지금까지의 변경을 바로 DB에 쓴다. 만료한 체결의 판매 입찰로 새 체결을 넣기 전에 부른다:
+     * 부분 UNIQUE(trades_live_sell_bid_key)가 아직 살아 있는 옛 체결과 충돌하지 않게.
+     */
+    fun flush()
 }
 
 @Entity
@@ -107,4 +128,16 @@ class BuyerWarning(
     var userId: Long,
     var tradeId: Long,
     var createdAt: Instant,
-)
+) {
+    companion object {
+        /** 결제 기한이 지난 체결의 구매자 경고 1행(§7), created_at = 현재. */
+        fun issue(trade: Trade, now: Instant) = BuyerWarning(userId = trade.buyerId, tradeId = trade.id!!, createdAt = now)
+    }
+}
+
+interface BuyerWarningRepository {
+    fun add(warning: BuyerWarning)
+
+    /** 그 사용자의 경고 중 created_at > from 인 것의 created_at. */
+    fun createdAtAfter(userId: Long, from: Instant): List<Instant>
+}

@@ -101,6 +101,33 @@ class Bid(
         return BidEvent(bidId = id!!, fromStatus = "ACTIVE", toStatus = "MATCHED", tradeId = trade.id, createdAt = now)
     }
 
+    /** bid-expiry 대상(§7): ACTIVE이고 expires_at ≤ 현재. */
+    fun isExpirable(now: Instant): Boolean = status == "ACTIVE" && !expiresAt.isAfter(now)
+
+    /** ACTIVE → EXPIRED(§7 bid-expiry). 사이즈를 잠그고 다시 읽은 뒤 부른다. */
+    fun expire(now: Instant): BidEvent {
+        check(isExpirable(now)) { "만료 대상이 아닌 입찰 $id: $status, 만료 $expiresAt" }
+        status = "EXPIRED"
+        return BidEvent(bidId = id!!, fromStatus = "ACTIVE", toStatus = "EXPIRED", tradeId = null, createdAt = now)
+    }
+
+    /** 결제 기한 만료(§7 payment-due)의 구매 입찰: MATCHED → CANCELLED. 이벤트의 trade_id = 만료된 체결. */
+    fun cancelForUnpaid(trade: Trade, now: Instant): BidEvent {
+        check(side == "BUY" && status == "MATCHED") { "만료된 체결의 구매 입찰이 아니다: $id $side $status" }
+        status = "CANCELLED"
+        return BidEvent(bidId = id!!, fromStatus = "MATCHED", toStatus = "CANCELLED", tradeId = trade.id, createdAt = now)
+    }
+
+    /**
+     * 결제 기한 만료(§7 payment-due)의 판매 입찰: 유효기간이 지났으면 MATCHED → EXPIRED, 아니면 MATCHED → ACTIVE로 복구한다
+     * (원래 created_at 유지 — 다시 체결될 때 체결가 판정에 쓴다, §3.3). 복구되면 호출자가 새 입찰처럼 바로 재매칭한다.
+     */
+    fun reopenForUnpaid(trade: Trade, now: Instant): BidEvent {
+        check(side == "SELL" && status == "MATCHED") { "만료된 체결의 판매 입찰이 아니다: $id $side $status" }
+        status = if (!expiresAt.isAfter(now)) "EXPIRED" else "ACTIVE"
+        return BidEvent(bidId = id!!, fromStatus = "MATCHED", toStatus = status, tradeId = trade.id, createdAt = now)
+    }
+
     companion object {
         /**
          * 새 입찰(§3.1). created_at = 현재, expires_at = 현재 + 유효기간. 즉시 입찰은 상대(반대편 최우선 입찰)의 가격이고,
