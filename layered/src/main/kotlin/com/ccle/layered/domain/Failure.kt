@@ -11,7 +11,10 @@ enum class Failure {
     NOT_FOUND,
     BID_NOT_ACTIVE,
     NO_COUNTER_BID,
+    TRADE_NOT_PAYABLE,
+    IDEMPOTENCY_KEY_REUSED,
     CLOCK_BACKWARD,
+    POINT_RULE_VIOLATION,
 }
 
 class MarketException(val failure: Failure, message: String) : RuntimeException(message)

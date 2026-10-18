@@ -2,9 +2,11 @@ package com.ccle.layered.api
 
 import com.ccle.layered.domain.Bid
 import com.ccle.layered.domain.Book
+import com.ccle.layered.domain.OrderSnapshot
 import com.ccle.layered.domain.Trade
 import com.ccle.layered.service.BidDetail
 import com.ccle.layered.service.PlacedBid
+import com.ccle.layered.service.PointsSummary
 import java.time.Instant
 
 // 응답 본문 모양(ADR-0003). 서비스 결과(도메인 객체)를 읽어 채운다. Instant는 KST ISO-8601로 나간다(Json.kt).
@@ -61,4 +63,52 @@ data class TradeView(
         matchedAt = trade.matchedAt,
         paymentDueAt = trade.paymentDueAt,
     )
+}
+
+data class OrderItemView(
+    val orderItemId: Long,
+    val tradeId: Long,
+    val status: String,
+    val price: Long,
+    val buyerFee: Long,
+    val cardShare: Long,
+    val pointShare: Long,
+    val shippingShare: Long,
+)
+
+data class OrderView(
+    val orderId: Long,
+    val status: String,
+    val itemTotal: Long,
+    val buyerFeeTotal: Long,
+    val shippingFee: Long,
+    val pointUsed: Long,
+    val cardAmount: Long,
+    val items: List<OrderItemView>,
+) {
+    constructor(snapshot: OrderSnapshot) : this(
+        orderId = snapshot.order.id!!,
+        status = snapshot.order.status,
+        itemTotal = snapshot.order.itemTotal,
+        buyerFeeTotal = snapshot.order.buyerFeeTotal,
+        shippingFee = snapshot.order.shippingFee,
+        pointUsed = snapshot.order.pointUsed,
+        cardAmount = snapshot.order.cardAmount,
+        items = snapshot.items.map {
+            OrderItemView(
+                orderItemId = it.id!!,
+                tradeId = it.tradeId,
+                status = it.status,
+                price = it.price,
+                buyerFee = it.buyerFee,
+                cardShare = it.cardShare,
+                pointShare = it.pointShare,
+                shippingShare = it.shippingShare,
+            )
+        },
+    )
+}
+
+data class PointsView(val available: Long, val pending: Long, val usable: Long) {
+    constructor(summary: PointsSummary) : this(summary.available, summary.pending, summary.usable)
 }

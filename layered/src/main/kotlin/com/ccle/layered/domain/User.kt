@@ -39,8 +39,20 @@ class User(
             throw MarketException(Failure.SALE_RESTRICTED, "판매 제한 중: ${saleRestrictedUntil}까지")
         }
     }
+
+    /** 등급 적립률(ADR-0002 §5.2, 천분율): BRONZE 1% · SILVER 1.5% · GOLD 2% · VIP 3%. 결제 요청 시각의 등급(1단계 전제, ADR-0003 §10). */
+    fun earnRatePermille(): Long = when (grade) {
+        "BRONZE" -> 10L
+        "SILVER" -> 15L
+        "GOLD" -> 20L
+        "VIP" -> 30L
+        else -> throw IllegalStateException("알 수 없는 등급: $grade")
+    }
 }
 
 interface UserRepository {
     fun find(id: Long): User?
+
+    /** 사용자 행 잠금(`SELECT … FOR UPDATE`). 결제·포인트 잔액을 바꾸는 처리는 구매자 잠금 뒤에 한다(같은 구매자의 결제를 줄 세운다). */
+    fun lock(id: Long)
 }

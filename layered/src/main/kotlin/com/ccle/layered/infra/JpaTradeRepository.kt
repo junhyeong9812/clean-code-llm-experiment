@@ -19,6 +19,13 @@ class JpaTradeRepository(private val jpa: TradeJpaRepository, private val em: En
 
     override fun add(trade: Trade) = em.persist(trade)
 
+    override fun find(id: Long): Trade? = jpa.findById(id).orElse(null)
+
+    override fun findAll(ids: List<Long>): List<Trade> =
+        em.createQuery("SELECT t FROM Trade t WHERE t.id IN :ids ORDER BY t.id", Trade::class.java)
+            .setParameter("ids", ids)
+            .resultList
+
     override fun liveTradeIdOf(bidId: Long): Long? =
         (
             em.createNativeQuery(

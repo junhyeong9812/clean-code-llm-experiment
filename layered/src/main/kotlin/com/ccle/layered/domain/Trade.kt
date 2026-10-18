@@ -26,6 +26,18 @@ class Trade(
     var status: String = status
         private set
 
+    /** 결제 가능(§5.1): AWAITING_PAYMENT이고 현재 < payment_due_at. 아니면 409. */
+    fun requirePayable(now: Instant) {
+        if (status != "AWAITING_PAYMENT" || !now.isBefore(paymentDueAt)) {
+            throw MarketException(Failure.TRADE_NOT_PAYABLE, "결제할 수 없는 체결: $id ($status, 기한 $paymentDueAt)")
+        }
+    }
+
+    /** 승인 반영(§5.1 표): AWAITING_PAYMENT → PAID. */
+    fun markPaid() {
+        status = "PAID"
+    }
+
     companion object {
         val STATUSES = setOf("AWAITING_PAYMENT", "PAID", "PAYMENT_EXPIRED")
     }
@@ -74,6 +86,11 @@ class TradeFilter private constructor(val asBuyer: Boolean, val status: String?)
 
 interface TradeRepository {
     fun add(trade: Trade)
+
+    fun find(id: Long): Trade?
+
+    /** 그 id들의 체결, id 오름차순(없는 id는 빠진다). */
+    fun findAll(ids: List<Long>): List<Trade>
 
     /** 그 입찰의 살아 있는(PAYMENT_EXPIRED가 아닌) 체결 id. 입찰 1개에 최대 1건이다. */
     fun liveTradeIdOf(bidId: Long): Long?
