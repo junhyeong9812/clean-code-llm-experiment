@@ -65,6 +65,10 @@ class OrderAmounts(private val trades: List<Trade>, val point: Long) {
         if (point > available) pointRule("사용 가능액($available)을 넘는다: $point")
     }
 
+    /** 포인트 예약(§5.2): pointToUse > 0일 때만 USE RESERVED 행, 아니면 null(예약 없음). */
+    fun pointReservation(buyerId: Long, orderId: Long, now: Instant): PointLedgerEntry? =
+        if (point > 0) PointLedgerEntry.reservation(buyerId, orderId, point, now) else null
+
     fun order(buyerId: Long, idempotencyKey: String, now: Instant) = PurchaseOrder(
         buyerId = buyerId,
         status = "PAYING",

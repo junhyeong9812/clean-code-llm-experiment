@@ -6,12 +6,12 @@ import com.ccle.layered.domain.Trade
 import com.ccle.layered.domain.TradeFilter
 import com.ccle.layered.domain.TradeRepository
 import jakarta.persistence.EntityManager
-import org.springframework.stereotype.Repository
+import org.springframework.stereotype.Component
 import java.time.Instant
 
 // 조회는 em.find·em.createQuery로 한다(Spring Data 저장소 메서드는 트랜잭션 밖에서 부르면 호출마다 읽기 전용 트랜잭션을 연다.
 // god처럼 트랜잭션 밖에서는 autocommit 1문, 안에서는 그 트랜잭션의 영속성 컨텍스트로 읽는다).
-@Repository
+@Component
 class JpaTradeRepository(private val em: EntityManager) : TradeRepository {
 
     override fun add(trade: Trade) = em.persist(trade)
@@ -45,7 +45,7 @@ class JpaTradeRepository(private val em: EntityManager) : TradeRepository {
     }
 }
 
-@Repository
+@Component
 class JpaBuyerWarningRepository(private val em: EntityManager) : BuyerWarningRepository {
 
     override fun add(warning: BuyerWarning) = em.persist(warning)

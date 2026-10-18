@@ -112,7 +112,7 @@ class PaymentService(
         val order = amounts.order(userId, request.idempotencyKey, now)
         orders.add(order)
         amounts.items(order.id!!).forEach(items::add)
-        if (request.point > 0) pointBook.reserve(userId, order.id!!, request.point, now)
+        amounts.pointReservation(userId, order.id!!, now)?.let { pointBook.reserve(it, now) }
         return order.id!! to amounts.cardAmount
     }
 

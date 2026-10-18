@@ -39,9 +39,7 @@ class PaymentOutcomes(
             }
         }
         points.useEntryOf(orderId)?.confirm()
-        if (earns.isNotEmpty()) {
-            pointBook.changeBalance(order.buyerId, availableDelta = 0, pendingDelta = PointLedgerEntry.pendingTotal(earns), now = now)
-        }
+        PointLedgerEntry.pendingDelta(earns)?.let { pointBook.changeBalance(order.buyerId, it, now) }
     }
 
     /** 거절: 주문 FAILED, 항목 PAYMENT_FAILED, 체결은 그대로, 포인트 예약 해제. */

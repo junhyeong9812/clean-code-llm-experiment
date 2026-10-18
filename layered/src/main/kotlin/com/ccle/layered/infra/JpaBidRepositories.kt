@@ -9,15 +9,16 @@ import com.ccle.layered.domain.ProductSize
 import com.ccle.layered.domain.ProductSizeRepository
 import com.ccle.layered.domain.notFound
 import jakarta.persistence.EntityManager
-import org.springframework.stereotype.Repository
+import org.springframework.stereotype.Component
 import java.time.Instant
 
+// 저장소 어댑터는 @Repository가 아니라 @Component다: 영속 예외 변환 없이 god와 같은 예외가 올라오게.
 // 새 행은 Spring Data save(새 엔티티면 persist, 아니면 merge) 대신 em.persist로 넣는다: 늘 persist이고,
 // IDENTITY라 INSERT가 그 자리에서 실행되어 id 순서가 호출 순서와 같다. 바뀐 행은 영속 상태의 변경 감지로 커밋 때 UPDATE된다.
 // 조회는 em.find·em.createQuery로 한다(Spring Data 저장소 메서드는 트랜잭션 밖에서 부르면 호출마다 읽기 전용 트랜잭션을 연다.
 // god처럼 트랜잭션 밖에서는 autocommit 1문, 안에서는 그 트랜잭션의 영속성 컨텍스트로 읽는다).
 
-@Repository
+@Component
 class JpaProductSizeRepository(private val em: EntityManager) : ProductSizeRepository {
 
     override fun exists(id: Long): Boolean = em.find(ProductSize::class.java, id) != null
@@ -30,7 +31,7 @@ class JpaProductSizeRepository(private val em: EntityManager) : ProductSizeRepos
     }
 }
 
-@Repository
+@Component
 class JpaBidRepository(private val em: EntityManager) : BidRepository {
 
     override fun find(id: Long): Bid? = em.find(Bid::class.java, id)
@@ -74,7 +75,7 @@ class JpaBidRepository(private val em: EntityManager) : BidRepository {
     }
 }
 
-@Repository
+@Component
 class JpaBidEventRepository(private val em: EntityManager) : BidEventRepository {
     override fun add(event: BidEvent) = em.persist(event)
 }

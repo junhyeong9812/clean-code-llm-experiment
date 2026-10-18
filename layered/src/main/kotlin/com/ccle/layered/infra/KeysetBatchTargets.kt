@@ -10,7 +10,6 @@ import java.time.Instant
  * 배치 대상 id를 id 순 키셋 페이지(500개씩)로 읽는다. 시작할 때의 max(id)까지만 본다.
  * 조건은 별칭 t로 쓴 WHERE 절이다. UNKNOWN·PAYING 주문의 항목은 모두 AWAITING_PAYMENT이므로(verify order_status_vs_items)
  * payment-due의 항목 조건 status <> 'PAYMENT_FAILED'를 붙여도 뜻은 같고, 부분 인덱스 order_items_live_trade_key를 탄다.
- * @Repository가 아니다: 영속 예외 변환 프록시가 handle(배치 처리)에서 올라온 예외까지 바꾸지 않게.
  */
 @Component
 class KeysetBatchTargets(private val em: EntityManager) : BatchTargets {

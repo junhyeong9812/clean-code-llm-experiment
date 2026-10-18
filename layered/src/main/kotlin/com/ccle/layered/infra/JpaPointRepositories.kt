@@ -6,12 +6,12 @@ import com.ccle.layered.domain.PointBalanceRepository
 import com.ccle.layered.domain.PointLedgerEntry
 import com.ccle.layered.domain.PointRepository
 import jakarta.persistence.EntityManager
-import org.springframework.stereotype.Repository
+import org.springframework.stereotype.Component
 import java.time.Instant
 
 // 조회는 em.find·em.createQuery로 한다(Spring Data 저장소 메서드는 트랜잭션 밖에서 부르면 호출마다 읽기 전용 트랜잭션을 연다.
 // god처럼 트랜잭션 밖에서는 autocommit 1문, 안에서는 그 트랜잭션의 영속성 컨텍스트로 읽는다).
-@Repository
+@Component
 class JpaPointRepository(private val em: EntityManager) : PointRepository {
 
     override fun find(entryId: Long): PointLedgerEntry =
@@ -50,7 +50,7 @@ class JpaPointRepository(private val em: EntityManager) : PointRepository {
     override fun removeAllocation(allocation: PointAllocation) = em.remove(allocation)
 }
 
-@Repository
+@Component
 class JpaPointBalanceRepository(private val em: EntityManager) : PointBalanceRepository {
 
     override fun find(userId: Long): PointBalance? = em.find(PointBalance::class.java, userId)

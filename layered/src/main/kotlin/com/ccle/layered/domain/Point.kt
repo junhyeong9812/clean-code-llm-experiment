@@ -55,10 +55,20 @@ class PointLedgerEntry(
         status = "CONFIRMED"
     }
 
-    /** 예약 해제: USE RESERVED → RELEASED. 배분 행 삭제와 묶음 되돌림(restore)은 호출자가 한다. */
-    fun release() {
+    /** 예약의 잔액 영향: available −amount(사용 가능액에서 빠진다). */
+    fun reservationDelta(): BalanceDelta {
+        check(kind == "USE") { "USE가 아닌 행 $id 의 예약 영향을 물었다: $kind" }
+        return BalanceDelta(available = -amount, pending = 0)
+    }
+
+    /**
+     * 예약 해제: USE RESERVED → RELEASED. 잔액 영향(available +amount)을 돌려준다.
+     * 배분 행 삭제와 묶음 되돌림(restore)은 호출자가 한다.
+     */
+    fun release(): BalanceDelta {
         check(kind == "USE" && status == "RESERVED") { "예약이 아닌 행 $id 를 해제하려 했다: $kind $status" }
         status = "RELEASED"
+        return BalanceDelta(available = amount, pending = 0)
     }
 
     /** 해제된 배분만큼 묶음의 remaining을 되돌린다. */
@@ -80,8 +90,9 @@ class PointLedgerEntry(
             createdAt = now,
         )
 
-        /** 적립 예정 행들의 금액 합(point_balances.pending 증가분). */
-        fun pendingTotal(earns: List<PointLedgerEntry>): Long = earns.fold(0L) { sum, e -> Math.addExact(sum, e.amount) }
+        /** 적립 예정 행들의 잔액 영향: pending +금액 합. 적립 예정이 없으면 잔액을 바꾸지 않는다(null). */
+        fun pendingDelta(earns: List<PointLedgerEntry>): BalanceDelta? =
+            if (earns.isEmpty()) null else BalanceDelta(available = 0, pending = earns.fold(0L) { sum, e -> Math.addExact(sum, e.amount) })
 
         /** 적립 예정(§5.2): 항목마다 EARN PENDING, remaining = 적립액, expires_at·order_id 없음, created_at = 결제 시각. */
         fun pendingEarn(userId: Long, amount: Long, orderItemId: Long, paidAt: Instant) = PointLedgerEntry(
@@ -108,6 +119,9 @@ class PointAllocation(
     var amount: Long,
 )
 
+/** point_balances 캐시의 변화량. */
+data class BalanceDelta(val available: Long, val pending: Long)
+
 /** point_balances 캐시. 행이 없는 사용자는 처음 바뀔 때 만든다. updated_at = 바꾼 시각. */
 @Entity
 @Table(name = "point_balances")
@@ -127,10 +141,16 @@ class PointBalance(
     var updatedAt: Instant = updatedAt
         private set
 
-    fun change(availableDelta: Long, pendingDelta: Long, now: Instant) {
-        available = Math.addExact(available, availableDelta)
-        pending = Math.addExact(pending, pendingDelta)
+    fun apply(delta: BalanceDelta, now: Instant) {
+        available = Math.addExact(available, delta.available)
+        pending = Math.addExact(pending, delta.pending)
         updatedAt = now
+    }
+
+    companion object {
+        /** 처음 바뀌는 사용자의 행: 0에서 delta만큼 바뀐 값. */
+        fun opened(userId: Long, delta: BalanceDelta, now: Instant) =
+            PointBalance(userId = userId, available = delta.available, pending = delta.pending, updatedAt = now)
     }
 }
 
