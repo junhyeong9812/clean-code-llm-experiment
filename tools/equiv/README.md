@@ -1,0 +1,89 @@
+# tools/equiv — god·layered 동치 비교 하네스
+
+god와 layered에 같은 요청 순서를 보내고 결과를 비교한다. 비교 층은 응답, 새 행, Hibernate SQL, DB 문장 로그다.
+두 앱은 각자 새 일회용 1k 시드 DB를 쓴다. 정규화는 아래 목록의 이름 붙은 규칙으로만 하고, 목록 밖의 차이는 전부 실패로 판정한다.
+
+```bash
+tools/equiv/run.sh run           # 시나리오 하나
+tools/equiv/run.sh all           # 7종 전부(약 12분)
+LAYERED_JAR=/path/old.jar tools/equiv/run.sh pay   # jar 지정(GOD_JAR도 같음). 지정하지 않은 앱은 bootJar를 빌드한다
+CONC_N=10 tools/equiv/run.sh conc                  # 동시 요청 쌍 수(기본 30)
+tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered를 교대로 3회(기본 2), 판정 없음
+```
+
+## 종료 코드
+
+| 코드 | 뜻 |
+|---|---|
+| 0 | 모든 시나리오가 4층 모두 같음 |
+| 1 | 차이 있음. `build/equiv/<시나리오>/diff/<층>.diff` |
+| 2 | 실행 실패로 비교가 성립하지 않음: 포트 점유, jar 없음, 앱·가짜 PG 기동 실패, 시나리오 중 명령 실패(curl·psql 오류, 앱 종료), 덤프 0줄, 빈 층 |
+| 130 | 중단(Ctrl-C). 컨테이너와 앱·가짜 PG 프로세스를 정리한 뒤 끝난다 |
+
+`all`은 한 시나리오가 실패해도 다음 시나리오를 계속 돌리고, 가장 나쁜 코드로 끝난다. 층마다 파일 수와 줄 수를 출력하므로 비교가 비었는지 바로 보인다.
+
+## 시나리오 (`scenarios/<이름>.sh`)
+
+시나리오 스크립트에는 픽스처, 요청 순서, 덤프 쿼리, 그리고 필요할 때만 정규화 묶음(`norm_logs`·`norm_responses`)이 들어 있다.
+
+| 이름 | 내용 | 가짜 PG | 쓰는 규칙 |
+|---|---|---|---|
+| `run` | 입찰·체결·취소: 지정가 교차, 즉시 구매·판매, 자기 입찰 건너뜀, 취소 409, 호가, 체결 목록 | 없음 | 공통만 |
+| `pay` | 결제: 승인(포인트 배분), 같은 키 200·409, 거절과 해제, 응답 없음(UNKNOWN), 422·403·404, 조회 | 지연 3초 | + `norm_pg_tx_id` |
+| `batch` | bid-expiry, payment-due(경고 → 제한·재매칭·UNKNOWN 제외), pg-inquiry(승인·404), 403, 없는 배치 | 지연 3초 | + `norm_pg_tx_id` |
+| `recov` | PG 대기 중 kill -9 → 재기동 시 PAYING → UNKNOWN → pg-inquiry | 지연 60초 | + `norm_pg_tx_id` |
+| `fail` | 반영 실패 주입(트리거 A·B·C), C의 같은 키 대기 상한, 정상 종료·재기동, pg-inquiry | 지연 3초 | + `norm_pg_tx_id`, `norm_poll_fold` |
+| `conc` | 같은 키 동시 2요청 × N: (a) 같은 구매자(진 요청 대기) (b) 다른 구매자(409) | 지연 1초 | + `norm_conc_distribution`, `norm_cut_from_mark` |
+| `errors` | 형식 오류 400, 404, 영속 예외(bids·orders INSERT 트리거 실패)의 응답 code·message | 지연 3초 | 공통만 |
+
+## 비교 층 (`build/equiv/<시나리오>/{god,layered}/norm/<층>/`)
+
+| 층 | 원본 | 추출 |
+|---|---|---|
+| 응답 `responses` | `responses.txt`: 요청 1건이 한 줄(메서드, 경로, 멱등 키, 본문, 상태 코드) | 그대로. conc만 분포로 바꾼다 |
+| 새 행 `rows` | `rows/*.txt`: 시나리오의 `dump`·`dump_text` 결과. id는 시작 시 `max(id)`를 뺀 오프셋으로 쓴다. 단계별 덤프와 앱 로그 건수도 여기에 든다 | 그대로 |
+| Hibernate SQL `sql` | `app.log`(`--logging.level.org.hibernate.SQL=debug`, 재기동하면 이어 쓴다) | `ext_hibernate_sql` |
+| DB 문장 로그 `pgstmt` | `pg.log`(`log_statement=all`, 접두 `%a\|`, BEGIN·COMMIT·SET 포함) | `ext_pg_app_statements` → `norm_drop_pool_probe` |
+
+응답 본문의 절대 id(bidId·orderId 등)는 정규화하지 않는다. 두 앱이 같은 시드에서 같은 순서로 요청하므로 같은 값이 나온다.
+
+## 추출·정규화 규칙 전체 목록 (`lib.sh`)
+
+| 함수 | 대상 | 하는 일 | 이유 |
+|---|---|---|---|
+| `ext_hibernate_sql` | sql 층 | 첫 기동 완료(`: Started `) 뒤의 org.hibernate.SQL 레코드 본문만 남긴다. 이어진 줄은 ⏎로 잇고, mark는 `== MARK <이름>` | 기동 중 SQL은 비교 대상이 아니다. 여러 줄 SQL을 버리지 않는다 |
+| `ext_pg_app_statements` | pgstmt 층 | application_name이 `PostgreSQL JDBC Driver`인 줄만 남기고 DETAIL(바인드 값)은 뺀다. 탭으로 시작하는 이어진 줄은 ⏎로 잇고, 하네스의 mark 문장은 `== MARK <이름>` | 하네스(psql)의 픽스처·덤프 문장은 앱 동작이 아니다 |
+| `norm_drop_pool_probe` | pgstmt 층(전 시나리오) | 빈 문장 `LOG:  statement: `을 지운다 | pgjdbc `isValid`의 빈 질의다. HikariCP가 500ms 넘게 쉰 연결을 빌려줄 때나 health 확인 때 나가서 요청 사이 간격(부하)에 따라 수가 바뀐다. 앱 문장은 비어 있을 수 없다(명세 §2 재합의 1) |
+| `norm_pg_tx_id` | 덤프 SQL의 식 | `pg_tx_id IS NOT NULL`: 값 대신 있음/없음만 | 가짜 PG가 거래 id를 매번 새로 만든다 |
+| `norm_poll_fold <시작> <끝>` | fail의 sql·pgstmt 층, 두 mark 사이만 | 같은 블록(1~16줄)이 연달아 2번 이상 나오면 한 번 + `⟳ 반복 접음(N줄 블록)`으로 바꾼다 | 같은 키 진 요청은 대기 상한까지 50ms마다 스냅샷을 다시 읽어서 반복 횟수가 시간에 따라 다르다. 블록의 내용·순서와 구간 밖은 그대로 비교한다. **한계:** 반복 단위가 통째로 늘어나는 변경(예: 대기 한 번에 같은 스냅샷 읽기를 2회)은 반복 횟수 차이와 구분되지 않아 잡지 못한다(실측: 아래 '가정 2 실증') |
+| `norm_cut_from_mark <표식>` | conc의 sql·pgstmt 층 | 표식부터 끝까지 지운다(표식 줄은 남긴다) | 동시 구간은 두 요청의 SQL이 섞이고 대기 폴링·충돌 재시도 횟수도 달라서 줄 단위 비교가 성립하지 않는다. 그 앞의 직렬 픽스처 요청(입찰·체결 3N건)은 비교한다 |
+| `norm_conc_distribution` | conc의 응답 층 | `conc` 줄(쌍마다 두 응답과 키당 주문 수)에서 두 응답을 정렬하고 회차를 빼서 분포 건수로 바꾼다 | 어느 요청이 이기는지는 실행마다 다르다. 쌍마다 결과 조합과 키당 주문 수는 같아야 한다 |
+
+가정 2 실증(2026-10-19, fail 시나리오, layered를 작업 트리에서 임시로 바꿔 만든 jar를 `LAYERED_JAR`로 지정):
+
+| 변경 | 위치 | 결과 |
+|---|---|---|
+| recordUnknown 트랜잭션에 `approveCount` 조회 1문 추가 | 접는 구간 밖 | exit 1, sql·pgstmt 층 차이(+3문) |
+| 같은 키 대기 루프에 `approveCount` 조회 1문 추가 | 접는 구간 안 | exit 1, 접힌 블록 2→3줄(sql)·7→8줄(pgstmt) |
+| 같은 키 대기 루프에서 스냅샷 읽기를 2회 | 접는 구간 안 | exit 0, **못 잡음**(위 한계) |
+
+conc의 행 층은 id·구매자 배정 순서와 무관한 집계로만 덤프한다(상태별 주문 수, 키 접두별 주문 수·금액, PG 거래 상태, 체결 상태, 재시도·예상 못 한 오류 로그 건수).
+
+## 결과 위치
+
+- `build/equiv/<시나리오>/<앱>/`: 원본(`responses.txt`, `rows/`, `app.log`, `pg.log`, `fake-pg.log`), 정규화본 `norm/`, 완료 표식 `done`
+- `build/equiv/<시나리오>/diff/<층>.diff`: 차이가 있는 층만 남는다
+- `build/equiv/measure-expiry/<회차>-<앱>/`: 측정 원본과 `result.txt`
+
+`build/`는 루트 .gitignore로 무시된다. 시나리오를 다시 돌리면 그 시나리오 폴더를 지우고 새로 만든다.
+
+## 포트·이름, 주의
+
+- DB 15445(컨테이너 `ccle-equiv-db`, 이미지 `ccle-postgres-seed:1k-s42`), 앱 18085, 가짜 PG 15485.
+  `tools/behavior/run.sh`(8081·8082·15435·15480)와 개발 DB(15432)와 겹치지 않는다.
+- 시작 전에 세 포트가 비었는지 확인하고, 하나라도 쓰이고 있으면 exit 2로 끝난다.
+  다른 프로세스가 그 포트를 쓰고 있으면 엉뚱한 상대를 판정하게 되고, 같은 이름의 컨테이너를 지우게 된다.
+- **한 번에 하나만 돌린다.** 포트와 컨테이너 이름이 고정이다.
+  `tools/behavior/run.sh`와는 포트가 겹치지 않지만, 같은 jar를 다시 빌드하면(bootJar) 실행 중인 앱의 jar가 바뀐다. CPU 부하도 타이밍에 기대는 시나리오(recov의 대기, conc의 지연)를 흔든다. 그래서 동시에 돌리지 않는다.
+- 도구 검증으로 작업 트리를 임시로 바꿀 때는 bootJar 뒤에 jar를 복사해 `LAYERED_JAR`로 쓰고, 끝나면 되돌려서 `git status`가 깨끗한지 확인한다.
+- 중단(Ctrl-C)은 터미널에서는 그대로 동작한다. 스크립트로 시험할 때는 SIGINT가 기본 처리인 새 프로세스 그룹에서 띄워야 한다. 비대화형 셸의 `&` 백그라운드 작업은 SIGINT가 무시된 채 시작한다.
