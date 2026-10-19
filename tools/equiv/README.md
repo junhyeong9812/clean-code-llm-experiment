@@ -33,7 +33,7 @@ tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered
 | `batch` | bid-expiry, payment-due(경고 → 제한·재매칭·UNKNOWN 제외), pg-inquiry(승인·404), 403, 없는 배치 | 지연 3초 | + `norm_pg_tx_id` |
 | `recov` | PG 대기 중 kill -9 → 재기동 시 PAYING → UNKNOWN → pg-inquiry | 지연 60초 | + `norm_pg_tx_id` |
 | `fail` | 반영 실패 주입(트리거 A·B·C), C의 같은 키 대기 상한, 정상 종료·재기동, pg-inquiry | 지연 3초 | + `norm_pg_tx_id`, `norm_poll_fold` |
-| `conc` | 같은 키 동시 2요청 × N: (a) 같은 구매자(진 요청 대기) (b) 다른 구매자(409) | 지연 1초 | + `norm_conc_distribution`, `norm_cut_from_mark` |
+| `conc` | 같은 키 동시 2요청 × N: (a) 같은 구매자(진 요청 대기) (b) 다른 구매자(409) | 지연 1초 | + `norm_conc_distribution`, `norm_set_from_mark` |
 | `errors` | 형식 오류 400, 404, 영속 예외(bids·orders INSERT 트리거 실패)의 응답 code·message | 지연 3초 | 공통만 |
 
 ## 비교 층 (`build/equiv/<시나리오>/{god,layered}/norm/<층>/`)
@@ -55,8 +55,8 @@ tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered
 | `ext_pg_app_statements` | pgstmt 층 | application_name이 `PostgreSQL JDBC Driver`인 줄만 남기고 DETAIL(바인드 값)은 뺀다. 탭으로 시작하는 이어진 줄은 ⏎로 잇고, 하네스의 mark 문장은 `== MARK <이름>` | 하네스(psql)의 픽스처·덤프 문장은 앱 동작이 아니다 |
 | `norm_drop_pool_probe` | pgstmt 층(전 시나리오) | 빈 문장 `LOG:  statement: `을 지운다 | pgjdbc `isValid`의 빈 질의다. HikariCP가 500ms 넘게 쉰 연결을 빌려줄 때나 health 확인 때 나가서 요청 사이 간격(부하)에 따라 수가 바뀐다. 앱 문장은 비어 있을 수 없다(명세 §2 재합의 1) |
 | `norm_pg_tx_id` | 덤프 SQL의 식 | `pg_tx_id IS NOT NULL`: 값 대신 있음/없음만 | 가짜 PG가 거래 id를 매번 새로 만든다 |
-| `norm_poll_fold <시작> <끝>` | fail의 sql·pgstmt 층, 두 mark 사이만 | 같은 블록(1~16줄)이 연달아 2번 이상 나오면 한 번 + `⟳ 반복 접음(N줄 블록)`으로 바꾼다 | 같은 키 진 요청은 대기 상한까지 50ms마다 스냅샷을 다시 읽어서 반복 횟수가 시간에 따라 다르다. 블록의 내용·순서와 구간 밖은 그대로 비교한다. **한계:** 반복 단위가 통째로 늘어나는 변경(예: 대기 한 번에 같은 스냅샷 읽기를 2회)은 반복 횟수 차이와 구분되지 않아 잡지 못한다(실측: 아래 '가정 2 실증') |
-| `norm_cut_from_mark <표식>` | conc의 sql·pgstmt 층 | 표식부터 끝까지 지운다(표식 줄은 남긴다) | 동시 구간은 두 요청의 SQL이 섞이고 대기 폴링·충돌 재시도 횟수도 달라서 줄 단위 비교가 성립하지 않는다. 그 앞의 직렬 픽스처 요청(입찰·체결 3N건)은 비교한다 |
+| `norm_poll_fold <시작> <끝>` | fail의 sql·pgstmt 층, 두 mark 사이만 | 같은 블록(1~16줄)이 연달아 2번 이상 나오면 한 번 + `⟳ 반복 접음(N줄 블록)`으로 바꾼다 | 같은 키 진 요청은 대기 상한까지 50ms마다 스냅샷을 다시 읽어서 반복 횟수가 시간에 따라 다르다. 블록의 내용·순서와 구간 밖은 그대로 비교한다. **한계:** 반복 단위가 통째로 늘어나는 변경(예: 대기 한 번에 같은 스냅샷 읽기를 2회)은 반복 횟수 차이와 구분되지 않아 잡지 못한다(실측: 아래 '가정 2 실증', 명세 재합의 2) |
+| `norm_set_from_mark <표식>` | conc의 sql·pgstmt 층 | 표식 앞은 그대로(줄 단위), 표식 뒤는 중복을 뺀 정렬 문장 집합(`sort -u`). 경계 줄 `== MARK <이름> (이후 집합 비교: 순서·횟수 무시)` | 동시 구간은 두 요청의 SQL이 섞이고 대기 폴링·충돌 재시도 횟수도 달라서 줄 단위 비교가 성립하지 않는다. 순서·횟수는 비교하지 않지만 한쪽에만 있는 문장 종류는 잡는다(명세 재합의 3). 집합에 넣기 전에 pgstmt의 준비 문장 이름 `execute S_<n>:`·`execute <unnamed>:`를 `execute:`로 바꾼다. pgjdbc가 연결별 사용 횟수에 따라 붙이는 이름이라, 동시 구간에서는 연결 배정에 따라 실행마다 달라진다(실측). 표식 앞은 이름을 그대로 비교한다(명세 재합의 4). 앞쪽 직렬 픽스처 요청(입찰·체결 3N건)은 줄 단위로 비교한다 |
 | `norm_conc_distribution` | conc의 응답 층 | `conc` 줄(쌍마다 두 응답과 키당 주문 수)에서 두 응답을 정렬하고 회차를 빼서 분포 건수로 바꾼다 | 어느 요청이 이기는지는 실행마다 다르다. 쌍마다 결과 조합과 키당 주문 수는 같아야 한다 |
 
 가정 2 실증(2026-10-19, fail 시나리오, layered를 작업 트리에서 임시로 바꿔 만든 jar를 `LAYERED_JAR`로 지정):

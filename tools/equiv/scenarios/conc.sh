@@ -4,11 +4,11 @@
 #   (b) 다른 구매자 — 하나는 201, 다른 하나는 409 IDEMPOTENCY_KEY_REUSED(주문 생성 충돌 재시도 뒤)
 # 사용: [CONC_N=…] scenarios/conc.sh <god|layered> <jar> <outdir>  (보통은 tools/equiv/run.sh conc)
 # 동시 구간은 어느 요청이 이기는지·SQL이 섞이는 순서가 실행마다 달라, 응답은 분포로(norm_conc_distribution),
-# 행은 id·구매자 배정과 무관한 집계로, SQL 두 층은 동시 구간 앞(직렬 픽스처 요청)까지만(norm_cut_from_mark) 비교한다.
+# 행은 id·구매자 배정과 무관한 집계로, SQL 두 층은 동시 구간 앞(직렬 픽스처 요청)은 줄 단위, 동시 구간은 문장 종류 집합으로(norm_set_from_mark) 비교한다.
 source "$(dirname "$0")/../lib.sh"
 app_begin "$@"
 N=${CONC_N:-30}
-norm_logs() { norm_cut_from_mark concurrent; }
+norm_logs() { norm_set_from_mark concurrent; }
 norm_responses() { norm_conc_distribution; }
 start_db
 

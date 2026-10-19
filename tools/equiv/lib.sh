@@ -213,10 +213,20 @@ norm_poll_fold() {
     END { if (inr) fold() }'
 }
 
-# 규칙 norm_cut_from_mark <표식>: 표식부터 끝까지를 지운다(표식 줄은 "== MARK <이름> (이후 비교 안 함)"으로 남김).
-# 동시 요청 구간의 SQL은 두 요청이 섞여 순서·횟수(대기 폴링·충돌 재시도)가 실행마다 달라 줄 단위 비교가 성립하지 않는다.
-# 그 구간은 응답 분포(norm_conc_distribution)·행 집계로 비교한다.
-norm_cut_from_mark() { awk -v m="== MARK $1" 'cut { next } $0 == m { print m " (이후 비교 안 함)"; cut = 1; next } { print }'; }   # 끝까지 읽는다(앞 단계에 SIGPIPE를 내지 않게)
+# 규칙 norm_set_from_mark <표식>: 표식 앞은 그대로(줄 단위 비교), 표식 뒤는 중복을 뺀 정렬 문장 집합(sort -u)으로 바꾼다.
+# 표식 줄은 "== MARK <이름> (이후 집합 비교: 순서·횟수 무시)". 동시 구간은 두 요청의 SQL이 섞이고 대기 폴링·충돌 재시도
+# 횟수가 실행마다 달라 순서·횟수는 비교할 수 없지만, 어느 한쪽에만 있는 문장 종류는 잡는다(명세 §2 재합의 3).
+# 그 구간의 결과는 응답 분포(norm_conc_distribution)·행 집계로도 비교한다.
+# 집합에 넣기 전에 DB 문장 로그의 준비 문장 이름(`execute S_<n>:`·`execute <unnamed>:`)을 `execute:`로 바꾼다. pgjdbc가 연결마다
+# 사용 횟수(prepareThreshold)에 따라 이름을 붙여서, 어느 요청이 어느 연결을 썼는지에 따라 이름이 실행마다 달라진다(실측 —
+# 본문은 같고 이름만 다른 줄이 god·layered 사이에 생겼다). 표식 앞(직렬 구간)은 이름을 그대로 둔다(명세 §2 재합의 4).
+# Hibernate SQL 층에는 이 이름이 없어 영향이 없다.
+norm_set_from_mark() {
+  awk -v m="== MARK $1" '
+    set { sub(/^LOG:  execute (S_[0-9]+|<unnamed>): /, "LOG:  execute: "); print | "LC_ALL=C sort -u"; next }
+    $0 == m { print m " (이후 집합 비교: 순서·횟수 무시)"; fflush(); set = 1; next }
+    { print }'
+}
 
 # 규칙 norm_conc_distribution: "conc " 로 시작하는 응답 줄(동시 요청 1쌍 = 두 응답 + 키당 주문 수)에서
 # 두 응답의 순서를 정렬하고 회차 번호를 빼서 분포(건수)로 접는다. 어느 요청이 이기는지는 실행마다 다르다. 나머지 줄은 그대로.
