@@ -15,7 +15,7 @@
 | 동시성·장애 | §9에 처음부터 정한다 |
 | 적립률 | 결제 요청 시각의 등급을 `user_grade_history`로 읽는다(§8.1, ADR-0003 §10 전제) |
 
-- 시각 계산은 모두 KST(`Asia/Seoul`)다 — 정산 주·월 경계, 날짜(`date`) 열. **[verify]**
+- 시각 계산은 모두 KST(`Asia/Seoul`)다 — 정산 주·월 경계, 날짜(`date`) 열. (verify가 직접 검사하는 것은 정산 마감·지급 시각뿐이고, 등급 달력월 경계는 테스트가 판정한다.)
 
 ## 2. 공통
 
@@ -55,7 +55,7 @@
 |---|---|---|---|
 | `POST /order-items/{id}/shipment` | 판매자 | `PAID` 이고 `현재 < paid_at + 3일` | `SHIPPED_TO_CENTER`, `shipped_at` = 현재. 기한 뒤면 409 `DEADLINE_PASSED` |
 | `POST /admin/order-items/{id}/receipt` | 센터 | `SHIPPED_TO_CENTER` | `INSPECTING`(시각 열 없음 — `inspected_at`은 NULL **[verify]**) |
-| `POST /admin/order-items/{id}/inspection` `{"result": "PASS"\|"FAIL", "reason": 문자열\|null}` | 센터 | `INSPECTING` | PASS: `inspections`(PASS, reason NULL, `inspected_at` = 현재) + 항목 `DELIVERING`·`inspected_at` 같은 값. FAIL: §6 판매자 귀책(`inspections` FAIL·reason, `inspected_at` = `cancelled_at` = 현재). FAIL인데 reason이 비면 400 |
+| `POST /admin/order-items/{id}/inspection` `{"result": "PASS"\|"FAIL", "reason": 문자열\|null}` | 센터 | `INSPECTING` | PASS: `inspections`(PASS, reason NULL — 요청의 reason은 무시, `inspected_at` = 현재) + 항목 `DELIVERING`·`inspected_at` 같은 값. FAIL: §6 판매자 귀책(`inspections` FAIL·reason, `inspected_at` = `cancelled_at` = 현재). FAIL인데 reason이 null이거나 앞뒤 공백을 뺀 값이 비면 400 |
 | `POST /admin/order-items/{id}/delivery` | 센터 | `DELIVERING` | `DELIVERED`, `delivered_at` = 현재 |
 
 - 배송 시작은 따로 없다 — 검수 합격이 곧 `DELIVERING`(ADR-0002 §4.4).
@@ -65,7 +65,8 @@
 
 ### 4.1 구매 확정 `POST /order-items/{id}/confirm`
 
-- 구매자, `DELIVERED`만. 항목 `CONFIRMED`, `confirmed_at` = 현재 → §8.2 포인트 확정.
+- 구매자, `DELIVERED`만. 항목 `CONFIRMED`, `confirmed_at = min(현재, delivered_at + 7일)` → §8.2 포인트 확정. 7일이 지난 뒤의 확정은 자동 확정과 같은 결과다(`confirmed_at ≤ delivered_at + 7일` **[verify]**).
+- 소급된 `confirmed_at`이 분쟁 기간(§4.3)의 기준이므로, 늦게 확정된 항목은 분쟁 기간이 짧거나 이미 지났을 수 있다.
 
 ### 4.2 구매자 취소 `POST /order-items/{id}/cancel`
 
@@ -103,6 +104,7 @@
 
 - 항목 `CANCELLED_SELLER_FAULT`, `cancelled_at` = 현재 → §7 환불(`fault = SELLER`, 전액).
 - 패널티: `seller_penalties` 1행(`seller_id` = 체결 판매자, `order_item_id`, `amount = floor(체결가 × 10%)` **[verify]**, `settlement_id` NULL, `created_at` = 현재).
+- 판매자 귀책 처리는 판매자 사용자 행을 잠근다(§9.1 — 동시 귀책의 횟수 누락 방지).
 - 판매 제한: 패널티를 쓴 뒤, 그 판매자의 패널티 중 `created_at > 현재 − 30일`이고 `created_at > coalesce(sale_restricted_until − 30일, -∞)`인 것이 3건 이상이면 `users.sale_restricted_until = 현재 + 30일`. 구매 경고(ADR-0003 §7)와 같은 해석이다. **[기본값 — 생성기와 같은 해석]**
 
 ## 7. 환불
@@ -115,27 +117,33 @@
 - **마지막 환불:** 이 환불로 주문의 모든 항목이 환불되면, 아직 환불되지 않은 배송비(구매자 취소로 첫 항목이 먼저 빠진 경우의 `s_c`·`s_p`)를 이 환불에 더한다. 결과: 모든 항목이 환불된 주문은 Σ카드 환불 = `card_amount`, Σ포인트 환불 = `point_used`. **[verify]**
 - `refunds` 1행: `card_amount`, `point_amount`, `buyer_fee_amount` = 그 항목의 구매 수수료(모든 사유), `shipping_amount` = 이 환불에 실린 배송비 전체(`s` 또는 0), `reason`(구매자 취소 `구매자 취소`, 기한 초과 `발송 기한 초과`, 불합격 = 검수 reason, 분쟁 `분쟁 인정`), `fault`, `created_at` = 현재.
 - 주문 상태: 환불된 항목(취소 2종 + `REFUNDED_AFTER_CONFIRM`)이 일부면 `PARTIALLY_CANCELLED`, 전부면 `CANCELLED` **[verify]**.
+- 취소된 항목의 체결(`PAID`)과 입찰(`MATCHED`)은 그대로 둔다. 판매 입찰 복구는 없다(결제 기한 만료와 다름).
 
 ### 7.2 카드 취소 (가짜 PG)
 
 - 카드 환불 > 0일 때만. 앱 → PG `POST {PG_URL}/cancellations` `{"idempotencyKey": "cancel-<orderItemId>", "approvalKey": <주문 멱등 키>, "amount": <카드 환불>}` → `200 {"pgTxId", "status": "APPROVED"}`. 같은 키의 두 번째 요청은 첫 기록을 그대로 돌려준다.
 - 성공이면 `pg_transactions` 1행: `kind = CANCEL`, `amount` = 카드 환불, `status = APPROVED`, `pg_tx_id` = PG 값, `idempotency_key = cancel-<orderItemId>`, `requested_at` = `responded_at` = 현재 **[verify — Σ카드 환불 = Σ승인 CANCEL]**.
-- PG가 응답하지 않거나(`PG_TIMEOUT_MS`·연결 실패·5xx) APPROVED가 아니면: 요청이면 409 `PG_UNAVAILABLE`, 배치면 그 대상을 건너뛴다. 어느 쪽이든 DB는 바뀌지 않는다. 키가 결정적이라 다시 보내도 PG에 취소가 두 번 생기지 않는다. **[기본값]**
+- PG가 응답하지 않거나(`PG_TIMEOUT_MS`·연결 실패·5xx), APPROVED가 아니거나, **응답의 `amount`가 요청한 금액과 다르면**: 요청이면 409 `PG_UNAVAILABLE`, 배치면 그 대상을 건너뛴다. 어느 쪽이든 DB는 바뀌지 않는다. 키는 항목당 하나(사유와 무관)라, 다시 보내거나 다른 사유로 보내도 PG에 취소가 두 번 생기지 않는다. 가짜 PG 응답: `200 {"pgTxId", "status": "APPROVED", "amount"}`(같은 키면 첫 기록의 금액). **[기본값]**
+- **계약 밖(사용자 결정 2026-10-21):** PG가 취소를 기록한 뒤 앱이 DB에 반영하기 전에 프로세스가 죽는 경우. 같은 요청을 다시 보내면 반영되지만, 그 사이 항목이 다른 상태로 바뀌면 카드 취소만 남는다(스키마에 환불 진행 상태가 없다). 위 금액 확인은 이 상태에서 다른 금액이 기록되는 것만 막는다.
 - 테스트 → PG: `POST /_control/outcomes` `{"idempotencyKey": "cancel-<id>", "outcome": "UNAVAILABLE"}` = 그 키의 취소 요청에 503(기록하지 않음). 지정이 없으면 승인.
 
 ### 7.3 포인트
 
 - **적립 예정 취소:** 그 항목의 EARN이 `PENDING`이면 `CANCELLED`, `point_balances.pending` 감소. `remaining`은 그대로 둔다(= `amount`, 배분 없음 — verify의 "PENDING·CANCELLED EARN은 손대지 않음"). **[기본값]**
 - **복구(RESTORE):** 포인트 환불 > 0이면 RESTORE 1행(`status = DONE`, `amount` = 포인트 환불, `order_id`, `order_item_id`, `created_at` = 현재)과 배분을 쓴다. 되돌릴 묶음 = 그 주문의 CONFIRMED USE가 빠져나간 묶음, **만료가 늦은 묶음부터(같으면 id 큰 것부터)**, 묶음마다 "그 USE가 가져간 양 − 이미 되돌린 양"까지. 묶음 `remaining`·`point_balances.available` 증가. **[기본값 — 생성기와 같은 순서]**
-- 되돌린 묶음이 이미 만료됐으면(`expires_at ≤ 현재`) 같은 시각에 그 양만큼 §8.3 소멸을 뒤따라 쓴다.
+- 되돌린 묶음이 이미 만료됐으면(`expires_at ≤ 현재`) 같은 시각에 **되돌린 양만큼만** EXPIRE 1행 + 배분을 뒤따라 쓴다(`remaining`은 복구 전 값으로 돌아감 — 그 묶음에 원래 남아 있던 양은 `point-expiry`가 처리). **[기본값 — 생성기와 같음]**
+- 회수(REVOKE)로 0이 된 묶음에도 다른 주문의 복구는 되돌아온다(생성기·verify와 같음).
 
 ## 8. 포인트·등급
 
 ### 8.1 적립률 (ADR-0003 §5.1 개정 — §11)
 
-- 적립률 = 결제 요청 시각(주문 `created_at`)의 등급. 그 등급 = `user_grade_history`에서 `effective_from ≤ date(created_at, KST)`인 최신 행의 등급, 행이 없으면 `users.grade`. **[기본값]**
-- 늦은 승인(pg-inquiry·기동 전환)도 이 규칙을 따른다 — 그 사이 등급이 재산정돼도 요청 시각의 등급.
-- 이력이 없는 사용자는 `users.grade`(1단계 테스트가 직접 넣은 GOLD 등 사용자와 호환).
+- 적립률의 등급은 승인을 반영할 때(동기 승인·pg-inquiry·기동 전환 모두) 다음 순서로 정한다. **[기본값]**
+  1. `user_grade_history`에서 `effective_from ≤ date(주문 created_at, KST)`인 최신 행의 등급.
+  2. 그런 행이 없지만 그 사용자의 이력이 있으면(모두 요청 날짜 뒤) `BRONZE` — 첫 이력 이전 등급(시드는 모든 사용자가 BRONZE에서 시작, 생성기와 같음).
+  3. 이력이 전혀 없으면 `users.grade`(1단계 테스트가 직접 넣은 사용자와 호환).
+- 결과: 요청 뒤에 등급이 재산정돼도 늦은 승인은 요청 날짜의 등급을 쓴다. **한계:** `effective_from`이 날짜라, `grade-recalc`를 기준일 00:00이 아닌 시각에 돌리면 그 날 배치 전에 생성된 주문은 승인이 배치 전이냐 뒤냐에 따라 등급이 다르다. 테스트·과제는 `grade-recalc`를 기준일 00:00(KST)에 돌린다.
+- 테스트가 BRONZE가 아닌 사용자를 만들고 `grade-recalc`를 거치게 할 때는 그 등급의 이력 행도 함께 넣는다(2번 규칙에 걸리지 않게).
 
 ### 8.2 포인트 확정 (구매 확정 시)
 
@@ -144,7 +152,7 @@
 
 ### 8.3 소멸 (EXPIRE)
 
-- 묶음 1개당 EXPIRE 1행(`status = DONE`, `amount` = 그 묶음의 `remaining`, `order_id`·`order_item_id` NULL, `created_at` = 현재) + 배분 1행. 묶음 `remaining = 0`(EARN은 `AVAILABLE` 그대로), `point_balances.available` 감소. **[기본값 — `created_at`을 배치 시각으로; verify는 `≥ expires_at`만 본다]**
+- (`point-expiry` 배치) 묶음 1개당 EXPIRE 1행(`status = DONE`, `amount` = 그 묶음의 `remaining`, `order_id`·`order_item_id` NULL, `created_at` = 현재) + 배분 1행. 묶음 `remaining = 0`(EARN은 `AVAILABLE` 그대로), `point_balances.available` 감소. **[기본값 — `created_at`을 배치 시각으로; verify는 `≥ expires_at`만 본다]**
 
 ### 8.4 회수 (REVOKE, 분쟁 인정 시)
 
@@ -156,21 +164,22 @@
 - 기준일 `D` = 현재 시각이 속한 달의 1일(KST). 지난 달들은 소급하지 않는다. **[기본값]**
 - 기준 금액 = 그 사용자가 구매자인 항목 중 상태가 `CONFIRMED`·`DISPUTED`이고 `confirmed_at`이 `[D − 6개월, D)`(KST 달력월)인 것의 체결가 합. 분쟁 인정된 항목(`REFUNDED_AFTER_CONFIRM`)은 빠진다 = 확정 월에서 뺀다(ADR-0002 §9.2).
 - 등급 = VIP ≥ 5,000,000 · GOLD ≥ 2,000,000 · SILVER ≥ 500,000 · 그 밖 BRONZE **[verify]**.
-- 등급이 `users.grade`와 다르면 `user_grade_history` 1행(`grade`, `effective_from = D`, `basis_amount`)과 `users.grade` 갱신. 같으면 아무것도 쓰지 않는다. 같은 `D`로 다시 돌려도 결과가 같다(이미 바뀐 사용자는 같아졌으므로).
+- 그 사용자에게 `effective_from = D`인 이력이 이미 있으면 건너뛴다(`UNIQUE(user_id, effective_from)` 보호 — 그 달의 첫 산정 결과를 유지). **[기본값]**
+- 없으면: 등급이 `users.grade`와 다를 때만 `user_grade_history` 1행(`grade`, `effective_from = D`, `basis_amount`)과 `users.grade` 갱신. 같으면 아무것도 쓰지 않는다 — 그래서 첫 실행에서 등급이 그대로였던 사용자는 같은 달에 다시 돌릴 때 기준 금액이 바뀌었으면 그때 이력이 생길 수 있다(결과는 실행 시점의 DB 상태로 결정된다).
 
 ## 9. 동시성·장애
 
 ### 9.1 경합
 
 - 주문 항목을 바꾸는 모든 처리(§3·§4·§5·§6)는 §2.3의 주문 행 잠금으로 직렬화한다. 그래서 같은 항목에 동시에 온 두 요청 중 하나만 성공하고 다른 하나는 바뀐 상태를 보고 409를 받는다(예: 취소 ↔ 발송, 확정 ↔ 자동 확정, 분쟁 제기 ↔ 판정). 같은 주문의 다른 항목 두 개를 동시에 취소해도 "마지막 환불"(§7.1)은 정확히 한 번이다.
-- 포인트 행을 바꾸는 처리는 주문 잠금 뒤에 그 사용자 행을 잠근다(`users … FOR UPDATE`, 1단계와 같은 잠금). 잠금 순서: 주문 → 사용자.
-- 정산(§10)은 판매자 한 명을 트랜잭션 하나로 처리하고, 그 판매자의 대상 항목 행을 id 순으로 잠근다(`order_items … FOR UPDATE`). 항목 처리 쪽은 주문 → 항목 순으로 잠그므로 정산과 교착하지 않는다. 정산 중인 항목의 분쟁 제기는 정산 커밋 뒤에 처리된다. **[기본값]**
+- 포인트 행을 바꾸는 처리(구매자)와 판매자 귀책(판매자)은 주문 잠금 뒤에 관련 사용자 행을 잠근다(`users … FOR UPDATE`, 1단계와 같은 잠금). 잠금 순서: 주문 → 항목 → 사용자, **사용자 행끼리는 id 오름차순**(구매자·판매자가 서로 바뀐 두 주문이 교착하지 않게).
+- 정산(§10)은 **한 주를 트랜잭션 하나로**(모든 판매자) 처리하고, 대상 항목 행을 id 순으로 잠근 뒤(`order_items … FOR UPDATE`) 대상 조건을 다시 평가한다. 항목 처리 쪽은 주문 → 항목 순으로 잠그므로 정산과 교착하지 않는다. 정산 중인 항목의 분쟁 제기는 정산 커밋 뒤에 처리된다. **[기본값]**
 - 배치 두 개를 동시에 돌리는 것은 계약 밖이다(테스트·과제는 직렬로 부른다).
 
 ### 9.2 장애
 
-- 카드 취소는 DB 반영 전에 결정적 키로 요청한다(§7.2). PG가 취소를 기록한 뒤 앱이 죽으면 DB에는 아무것도 없고, 같은 요청을 다시 보내면 PG가 같은 기록을 돌려주고 앱이 반영한다 — 카드가 두 번 취소되지 않는다.
-- 배치는 대상 1건씩 커밋한다. 재실행은 남은 대상만 처리한다(대상 조건이 바뀐 상태를 빼므로). `weekly-settlement`는 판매자·주 단위로 커밋하고 `UNIQUE(seller_id, period_start)`로 같은 주를 두 번 만들지 않는다.
+- 카드 취소는 DB 반영 전에 항목당 하나인 키로 요청한다(§7.2). PG가 취소를 기록한 뒤 앱이 죽으면 DB에는 아무것도 없고, 같은 요청을 다시 보내면 PG가 같은 기록을 돌려주고 앱이 반영한다 — 카드가 두 번 취소되지 않는다. 그 사이 항목이 다른 상태로 바뀌는 경우는 계약 밖이다(§7.2).
+- 배치는 대상 1건씩 커밋한다(`weekly-settlement`는 한 주씩). 재실행은 남은 대상만 처리한다(대상 조건이 바뀐 상태를 빼므로). 한 주의 정산이 중간에 실패하면 그 주 전체가 커밋되지 않으므로, 재실행이 그 주를 처음부터 다시 정산한다.
 - 응답을 못 받은 클라이언트가 같은 요청을 다시 보내면: 이미 반영됐으면 409 `ITEM_STATE_CONFLICT`(상태가 바뀌었으므로). 요청을 멱등으로 만들지 않는다. **[기본값]**
 
 ## 10. 주간 정산 `weekly-settlement`
@@ -178,8 +187,9 @@
 ### 10.1 어느 주를 정산하나
 
 - 마감 시각 = 월요일 00:00 KST. 주 = `[마감 − 7일, 마감)`, `period_start` = 그 주 월요일, `period_end = period_start + 6` **[verify]**.
-- 정산할 주 = 마감 ≤ 현재이고 아직 정산되지 않은 모든 주, 오래된 주부터. "정산되지 않음" = 그 주의 마감이 지금까지 만든 모든 정산의 마지막 마감보다 뒤. 시드의 마지막 마감은 2026-09-28이다.
-- 한 주를 정산할 때 모든 판매자를 처리한 뒤 다음 주로 간다. **[verify — 마지막 마감 전 확정분은 모두 포함되어야 한다]**
+- 정산할 주 = 마감 ≤ 현재이고 아직 정산되지 않은 모든 주, 오래된 주부터. "정산되지 않음" = 그 주의 마감이 지금까지 만든 모든 정산의 마지막 마감보다 뒤. 시드의 마지막 마감은 2026-09-28이다. 정산 행이 하나도 없으면 현재 직전 마감 1주만 정산한다.
+- 한 주는 모든 판매자를 한 트랜잭션으로 처리한다(§9). 그래서 "마지막 마감"은 한 주가 통째로 커밋될 때만 전진한다. **[verify — 마지막 마감 전 확정분은 모두 포함되어야 한다]**
+- **늦게 돌린 정산:** 여러 주를 몰아서 정산하면 지난 주도 **지금의 항목 상태**로 계산한다(예: 그 주 마감 때 CONFIRMED였고 지금 DISPUTED면 그 주에 HELD, 이미 분쟁 인정됐으면 INCLUDED도 CLAWBACK도 없음). 매주 제때 돌린 결과와 다를 수 있다. 같은 요청·배치 순서면 결과는 결정적이다.
 
 ### 10.2 판매자 1명의 한 주 (`cutoff` = 그 주 마감)
 
@@ -191,12 +201,12 @@
 | 패널티 | `settlement_id` NULL, `created_at < cutoff` | 그 정산에 붙인다(`settlement_id` 갱신) |
 
 - `gross = Σamount`, `fee_total = Σfee`, `penalty_total` = 붙인 패널티 합, `carry_in` = 그 판매자 직전 정산의 `carry_out`(없으면 0), `net = gross − fee_total − penalty_total + carry_in`, `payout = max(net, 0)`, `carry_out = min(net, 0)` **[verify]**.
-- 행을 만들지 않는 경우: 위 대상이 하나도 없고 `carry_in = 0`. (`carry_in < 0`이면 대상이 없어도 행을 만든다 **[verify]**.)
+- 행을 만들지 않는 경우: 위 대상이 하나도 없고 `carry_in = 0`. (`carry_in < 0`이면 대상이 없어도 행을 만든다. verify `settlement_carry_next_week`는 전역 마지막 주를 검사하지 않으므로 이 경계는 테스트가 판정한다.)
 - 상태·지급: `payout > 0`이면 `PAID`, `paid_at = period_start + 9일 00:00 KST`(수요일 — 정산 행을 만들 때 미리 쓴다), 아니면 `CARRIED`, `paid_at` NULL **[verify]**. 별도의 지급 배치는 없다.
 
 ### 10.3 조회 `GET /me/settlements`
 
-- 판매자 본인 정산, `period_start` 오름차순: `[{"settlementId", "periodStart", "periodEnd", "gross", "feeTotal", "penaltyTotal", "carryIn", "net", "payout", "carryOut", "status", "paidAt", "items": [{"orderItemId", "amount", "fee", "status"}]}]`.
+- 판매자 본인 정산, `period_start` 오름차순, `items`는 `orderItemId` 오름차순(같은 항목의 HELD가 여러 정산에 있을 수 있다): `[{"settlementId", "periodStart", "periodEnd", "gross", "feeTotal", "penaltyTotal", "carryIn", "net", "payout", "carryOut", "status", "paidAt", "items": [{"orderItemId", "amount", "fee", "status"}]}]`.
 
 ## 11. ADR-0002·0003 보완 (합의 필요)
 
@@ -206,7 +216,9 @@
 4. **[ADR-0002 §4.4 해석]** 자동 확정의 `confirmed_at` = `delivered_at + 7일`(배치가 늦게 돌아도 소급). 정산 배치는 자동 확정을 먼저 수행한다.
 5. **[ADR-0002 §5.4 해석]** 판매 제한 "30일 안에 3회면 30일간" = 제한을 건 패널티 뒤로 횟수를 다시 센다(§6, 구매 경고와 같은 해석).
 6. **[ADR-0002 §5.2 해석]** 등급 "최근 6개월" = 기준일 직전 6개 달력월(KST, 이번 달 제외). 재산정은 현재 달 1일 기준 1회, 지난 달 소급 없음.
-7. 카드 취소는 PG 실패 시 반영하지 않는다(§7.2). 스키마에 환불 진행 상태가 없어서다. 실패 경로는 "아무것도 바뀌지 않음 + 재시도"뿐이다.
+7. 카드 취소는 PG 실패 시 반영하지 않는다(§7.2). 스키마에 환불 진행 상태가 없어서다. 실패 경로는 "아무것도 바뀌지 않음 + 재시도"뿐이고, PG 기록 뒤 앱 사망은 계약 밖이다(사용자 결정).
+8. **[ADR-0002 §5.4 해석]** 늦게 돌린 주간 정산은 지난 주를 지금의 항목 상태로 계산한다(§10.1).
+9. **[ADR-0002 §4.4 해석]** 7일이 지난 구매자 확정은 `confirmed_at = delivered_at + 7일`(§4.1).
 
 ## 12. 금액 예시 (테스트 기대값의 정본)
 
@@ -238,7 +250,7 @@
 **포인트**
 
 - P1 확정: E의 2번 항목 확정 → EARN 181 `AVAILABLE`, `expires_at = confirmed_at + 365일`, pending −181, available +181.
-- P2 회수: A의 1번 항목(EARN 1,164)이 확정된 뒤 그 묶음에서 500P를 다른 주문에 쓰고 분쟁 인정 → REVOKE 664, 묶음 `remaining` 0, EARN `AVAILABLE` 유지.
+- P2 회수: A의 1번 항목(EARN 1,164)이 확정된 뒤(사용 가능 묶음은 이것 하나) 다른 주문에서 1,000P를 쓰고 분쟁 인정 → REVOKE 164, 묶음 `remaining` 0, EARN `AVAILABLE` 유지.
 
 ## 13. DB 표면 대조 (명세 가정 1)
 
