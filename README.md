@@ -46,6 +46,15 @@ tools/behavior/run.sh layered
 - 같은 테스트(`behavior-tests/`)가 두 앱에 돈다. 계약은 ADR-0003, 금액 기대값은 그 §8 표.
 - 루트 `./gradlew build`는 행위 테스트를 건너뛴다. 직접 돌릴 때는 `BEHAVIOR_TESTS=1`과 `BASE_URL`·`DB_URL`이 필요하다(run.sh가 넘긴다).
 
+### god·layered 동치 비교
+
+```bash
+tools/equiv/run.sh all           # 시나리오 7종 × 응답·새 행·Hibernate SQL·DB 문장 로그 비교(약 11분), 같으면 exit 0
+tools/equiv/measure-expiry.sh    # bid-expiry 소요 시간 측정(판정 없음)
+```
+
+- 두 앱이 같은 요청 순서에 같은 결과·같은 SQL을 내는지 본다. 정규화 규칙·종료 코드·한계는 [tools/equiv/README.md](tools/equiv/README.md).
+
 ### 합성 데이터와 시드 이미지
 
 ```bash
@@ -65,5 +74,5 @@ tools/seedgen/run-db.sh 500k-s42 ccle-run-001 15433                      # 실�
 | 1. 기본 세팅(두 서버 + 도커 PostgreSQL) | 완료 — ADR-0001 |
 | 2. 도메인·절차 정의와 DB 설계 | 완료 — ADR-0002 |
 | 3. DDL 확정 → 합성 데이터 생성·적재·검증 | 완료 — 사용자 50만, 불변식 75개 위반 0, 시드 이미지 16.6GB |
-| 4. 행위 테스트 → 갓 클래스 → 레이어드 분리 | 진행 — 행위 테스트 1단계(ADR-0003, 계약 117) · 갓 클래스 1단계 완료(god 계약 117/117, verify 0) · 레이어드 분리 1단계 완료(layered 계약 117/117, verify 0, god와 응답·DB·SQL 동치) |
+| 4. 행위 테스트 → 갓 클래스 → 레이어드 분리 | 진행 — 행위 테스트 1단계(ADR-0003, 계약 117) · 갓 클래스 1단계 완료(god 계약 117/117, verify 0) · 레이어드 분리 1단계 완료(layered 계약 117/117, verify 0, god와 응답·DB·SQL 동치) · 동치 비교 하네스(`tools/equiv`, 시나리오 7종) |
 | 5. 과제·판정·러너 → 실행·분석 | |
