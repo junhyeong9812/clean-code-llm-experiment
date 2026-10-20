@@ -42,7 +42,7 @@ pair() { # <a|b> <회차> <키> <사용자1> <체결1> <사용자2> <체결2> �
   wait $p1 || die "동시 요청 실패: $r-1"; wait $p2 || die "동시 요청 실패: $r-2"
   r1=$(response_of "$r-1"); r2=$(response_of "$r-2")
   n=$(q "SELECT count(*) FROM orders WHERE idempotency_key='$3'")
-  printf 'conc %s %s orders=%s\t%s\t%s\n' "$1" "$2" "$n" "$r1" "$r2" >> "$out/responses.txt"
+  printf 'conc %s %s orders=%s trades=%s,%s\t%s\t%s\n' "$1" "$2" "$n" "$5" "$7" "$r1" "$r2" >> "$out/responses.txt"
 }
 mkdir -p "$out/r"
 mark concurrent

@@ -284,11 +284,13 @@ norm_set_from_mark() {
     { print }'
 }
 
-# 규칙 norm_conc_pair: "conc" 줄(동시 요청 1쌍 = "conc <a|b> <회차> orders=<키당 주문 수>" 탭 응답1 탭 응답2,
-# 응답 = "<상태 코드> <본문 전체>")에서 실행마다 달라지는 것만 바꾼다. 나머지 줄은 그대로.
+# 규칙 norm_conc_pair: "conc" 줄(동시 요청 1쌍 = "conc <a|b> <회차> orders=<키당 주문 수> trades=<요청1 체결>,<요청2 체결>"
+# 탭 응답1 탭 응답2, 응답 = "<상태 코드> <본문 전체>")에서 실행마다 달라지는 것만 바꾼다. 나머지 줄은 그대로.
 #  - 어느 요청이 이기는지가 실행마다 달라 두 응답의 순서를 정렬한다(정렬 키는 id를 가린 응답).
-#  - 이긴 쪽에 따라 orderId·orderItemId·tradeId 값이 달라져(다른 구매자의 체결, 충돌로 소비된 주문 번호) 쌍 안에서 처음 나온
+#  - orderId·orderItemId는 동시 구간에서 배정되어(충돌로 소비된 번호 포함) 값이 실행마다 달라진다 → 쌍 안에서 처음 나온
 #    순서대로 #orderId1 같은 기호로 바꾼다. 같은 값은 같은 기호라 (a)에서 두 응답이 같은 주문을 가리키는지는 비교에 남는다.
+#  - tradeId는 직렬 픽스처에서 정해져 결정적이지만, (b)는 이긴 구매자에 따라 어느 쪽 체결이 나오는지가 달라진다
+#    → 그 쌍이 보낸 체결(trades=)이면 #sent로 바꾸고, 아니면 원래 값을 남긴다(엉뚱한 체결을 가리키면 차이로 잡힌다).
 #  금액·status·message·items 구조와 상태 코드는 그대로 비교한다. 쌍은 회차 순서대로 한 줄씩 남는다(집계하지 않는다).
 norm_conc_pair() {
   awk -F '\t' '
@@ -298,6 +300,7 @@ norm_conc_pair() {
       while (match(r, /"(orderId|orderItemId|tradeId)":[0-9]+/)) {
         m = substr(r, RSTART, RLENGTH); pre = substr(r, 1, RSTART - 1); r = substr(r, RSTART + RLENGTH)
         k = m; sub(/":.*/, "", k); sub(/^"/, "", k); v = m; sub(/.*":/, "", v)
+        if (k == "tradeId") { out = out pre "\"tradeId\":" ((v in sent) ? "#sent" : v); continue }
         if (!((k, v) in seen)) seen[k, v] = k (++cnt[k])
         out = out pre "\"" k "\":#" seen[k, v]
       }
@@ -305,7 +308,8 @@ norm_conc_pair() {
     }
     $1 !~ /^conc / { print; next }
     { a = $2; b = $3; if (masked(a) > masked(b)) { t = a; a = b; b = t }
-      split("", seen); split("", cnt)
+      split("", seen); split("", cnt); split("", sent)
+      tr = $1; sub(/.*trades=/, "", tr); n = split(tr, ts, ","); for (i = 1; i <= n; i++) sent[ts[i]] = 1
       a = sym(a); b = sym(b); print $1 "\t" a "\t" b }'
 }
 
