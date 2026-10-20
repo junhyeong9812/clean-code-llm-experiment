@@ -27,6 +27,7 @@ for _ in $(seq 50); do [ "$(q "SELECT count(*) FROM orders WHERE id>$mo")" = 1 ]
 [ "$(q "SELECT count(*) FROM orders WHERE id>$mo")" = 1 ] || die "K1 주문 행이 생기지 않음"
 call POST /orders $B_ "{\"tradeIds\":[$T2],\"pointToUse\":1000}" K2 2> /dev/null & c2=$!
 for _ in $(seq 50); do [ "$(q "SELECT count(*) FROM orders WHERE id>$mo AND status='PAYING'")" = 2 ] && break; sleep 0.1; done
+[ "$(q "SELECT count(*) FROM orders WHERE id>$mo AND status='PAYING'")" = 2 ] || die "PAYING 주문이 2건이 되지 않음(강제 종료 전제)"
 sleep 1
 dump before-kill "SELECT id-$mo,status FROM orders WHERE id>$mo ORDER BY id"
 kill_app
@@ -36,7 +37,7 @@ start_app 2000
 dump orders-after-restart "SELECT id-$mo,buyer_id-$base,status,point_used,card_amount,idempotency_key,created_at,paid_at FROM orders WHERE id>$mo ORDER BY id"
 dump pg-after-restart "SELECT id-$mp,order_id-$mo,kind,amount,status,$(norm_pg_tx_id),idempotency_key,requested_at,responded_at FROM pg_transactions WHERE id>$mp ORDER BY id"
 dump points-after-restart "SELECT id-$ml,kind,status,amount,remaining,order_id-$mo FROM point_ledger WHERE id>=$ml ORDER BY id"
-grep -h '기동 시 PAYING' "$out/app.log" | sed -E 's/.*(기동 시)/\1/' | dump_text startup-log
+norm_startup_log < "$out/app.log" | dump_text startup-log
 call POST /admin/batches/pg-inquiry
 dump orders-after-inquiry "SELECT id-$mo,status,paid_at FROM orders WHERE id>$mo ORDER BY id"
 dump pg-after-inquiry "SELECT id-$mp,order_id-$mo,kind,status,$(norm_pg_tx_id),requested_at,responded_at FROM pg_transactions WHERE id>$mp ORDER BY id"

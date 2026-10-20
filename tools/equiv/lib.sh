@@ -9,6 +9,10 @@ export JAVA_HOME=${JAVA_HOME_21:-$HOME/.sdkman/candidates/java/21.0.5-tem}
 EQ_DB=ccle-equiv-db EQ_DB_PORT=15445 EQ_APP_PORT=18085 EQ_PG_PORT=15485
 EQ_BASE=http://127.0.0.1:$EQ_APP_PORT
 EQ_PG=http://127.0.0.1:$EQ_PG_PORT
+# curl 한 번의 상한(초). 정상 경로에서 가장 긴 대기는 recov의 PG 대기(앱 PG_TIMEOUT 60초 — 그 전에 강제 종료로 끊긴다)이고,
+# 그다음이 fail C의 같은 키 대기 상한(PG 타임아웃 2초 × 2 + 10초 = 14초)·bid-expiry 측정(약 14초)이다. 60초보다 넉넉한 120초로
+# 둔다 — 앱이 멈춰도 하네스가 영원히 기다리지 않고 curl 오류(28)로 실패한다. health 확인은 짧게(EQ_CURL_HEALTH).
+EQ_CURL_MAX=120 EQ_CURL_HEALTH=5
 
 die() { echo "equiv: $*" >&2; exit 2; }
 
@@ -33,19 +37,71 @@ app_begin() {
   mkdir -p "$out/rows"
 }
 
-# 프로세스 종료: TERM 후 10초 안에 안 끝나면 -9
-stop_pid() {
-  kill "$1" 2>/dev/null || true
-  for _ in $(seq 50); do kill -0 "$1" 2>/dev/null || break; sleep 0.2; done
-  kill -9 "$1" 2>/dev/null || true
-  wait "$1" 2>/dev/null || true
+# 프로세스 종료: 모두에게 TERM을 먼저 보낸 뒤 하나씩 기다리고, 10초 안에 안 끝나면 -9
+stop_pids() {
+  local p
+  for p in "$@"; do kill "$p" 2>/dev/null || true; done
+  for p in "$@"; do
+    for _ in $(seq 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.2; done
+    kill -9 "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+  done
 }
 
+# 정리 확인: 컨테이너가 남았거나 주어진 pid가 살아 있으면 stderr로 알리고 1을 돌려준다
+cleanup_left() {
+  local p left=
+  for p in "$@"; do kill -0 "$p" 2>/dev/null && left+=" pid $p"; done
+  docker container inspect "$EQ_DB" > /dev/null 2>&1 && left+=" 컨테이너 $EQ_DB"
+  [ -z "$left" ] || { echo "equiv: 정리 실패 —$left 이(가) 남음" >&2; return 1; }
+}
+
+# 앱 1회 실행의 EXIT trap. 정리 중에는 중단 신호를 무시한다(두 번째 Ctrl-C가 정리를 끊지 않게).
+# 정리가 덜 됐으면 원래 종료 코드가 0일 때만 2로 바꾼다(더 나쁜 원래 코드는 그대로).
 app_cleanup() {
-  trap - EXIT INT TERM
-  [ -z "${app_pid:-}" ] || stop_pid "$app_pid"
-  [ -z "${pg_pid:-}" ] || stop_pid "$pg_pid"
+  local rc=$? pids=()
+  trap '' INT TERM; trap - EXIT
+  [ -z "${app_pid:-}" ] || pids+=("$app_pid")
+  [ -z "${pg_pid:-}" ] || pids+=("$pg_pid")
+  [ ${#pids[@]} -eq 0 ] || stop_pids "${pids[@]}"
   docker rm -f "$EQ_DB" > /dev/null 2>&1 || true
+  if ! cleanup_left "${pids[@]}" && [ "$rc" -eq 0 ]; then rc=2; fi
+  exit "$rc"
+}
+
+# ---- 진입점(run.sh·measure-expiry.sh) 공통 ----
+
+# 진입점 trap: 중단 130, 예상 못 한 명령 실패는 '차이(1)'가 아니라 실행 실패(2). 포트 확인 뒤에 컨테이너 정리 EXIT trap을 건다
+# (다른 실행이 쓰는 중이면 그 컨테이너를 지우지 않도록).
+entry_begin() {
+  trap 'echo "equiv: 중단됨" >&2; exit 130' INT; trap 'exit 143' TERM; trap 'exit 2' ERR
+  ports_free
+  trap entry_cleanup EXIT
+}
+entry_cleanup() {
+  local rc=$?
+  trap '' INT TERM; trap - EXIT
+  docker rm -f "$EQ_DB" > /dev/null 2>&1 || true
+  if ! cleanup_left && [ "$rc" -eq 0 ]; then rc=2; fi
+  exit "$rc"
+}
+
+# 사용: prepare_jars [추가 gradle 태스크…] — GOD_JAR·LAYERED_JAR가 있으면 그 jar(없는 경로면 exit 2), 없으면 bootJar를 빌드한다.
+# 결과는 전역 연관 배열 jar[god]·jar[layered].
+prepare_jars() {
+  declare -gA jar
+  local build=() app var
+  for app in god layered; do
+    var=${app^^}_JAR
+    if [ -n "${!var:-}" ]; then
+      jar[$app]=$(realpath -e "${!var}" 2>/dev/null) || die "$var 없음: ${!var}"
+    else
+      jar[$app]=$root/$app/build/libs/$app-0.0.1.jar; build+=(":$app:bootJar")
+    fi
+  done
+  build+=("$@")
+  if [ ${#build[@]} -gt 0 ]; then (cd "$root" && ./gradlew -q "${build[@]}") || die "빌드 실패: ${build[*]}"; fi
+  echo "god: ${jar[god]}"; echo "layered: ${jar[layered]}"
 }
 
 q() { docker exec -i "$EQ_DB" psql -U ccle -d ccle_seed -Atq -v ON_ERROR_STOP=1 -c "$1"; }
@@ -88,14 +144,14 @@ start_app() {
   app_pid=$!
   for _ in $(seq 120); do
     kill -0 "$app_pid" 2>/dev/null || die "$app 기동 실패: $out/app.log"
-    curl -sf "$EQ_BASE/actuator/health" > /dev/null && return 0
+    curl -sf --max-time "$EQ_CURL_HEALTH" "$EQ_BASE/actuator/health" > /dev/null && return 0
     sleep 0.5
   done
   die "$app health 대기 시간 초과: $out/app.log"
 }
 
 # 앱 정상 종료(TERM) / 강제 종료(-9) — 재기동 시나리오용
-stop_app() { stop_pid "$app_pid"; app_pid=; }
+stop_app() { stop_pids "$app_pid"; app_pid=; }
 kill_app() { kill -9 "$app_pid"; wait "$app_pid" 2>/dev/null || true; app_pid=; }
 
 # 사용: call <METHOD> <path> [X-User-Id] [JSON 본문] [Idempotency-Key]. 응답 본문·상태를 responses.txt에 한 줄로.
@@ -103,19 +159,19 @@ kill_app() { kill -9 "$app_pid"; wait "$app_pid" 2>/dev/null || true; app_pid=; 
 call() {
   set -- "$1" "$2" "${3:-}" "${4:-}" "${5:-}"
   local r
-  r=$(curl -sS -X "$1" -H 'Content-Type: application/json' ${3:+-H "X-User-Id: $3"} ${5:+-H "Idempotency-Key: $5"} ${4:+-d "$4"} -w ' %{http_code}' "$EQ_BASE$2")
+  r=$(curl -sS --max-time "$EQ_CURL_MAX" -X "$1" -H 'Content-Type: application/json' ${3:+-H "X-User-Id: $3"} ${5:+-H "Idempotency-Key: $5"} ${4:+-d "$4"} -w ' %{http_code}' "$EQ_BASE$2")
   echo "$1 $2 key=$5 → $r" >> "$out/responses.txt"
 }
 
 # 사용: outcome <멱등 키> <APPROVE|DECLINE|TIMEOUT_APPROVED|TIMEOUT_NOT_RECEIVED> — 가짜 PG의 다음 결과를 정한다
 outcome() {
-  curl -sSf -X POST -H 'Content-Type: application/json' -d "{\"idempotencyKey\":\"$1\",\"outcome\":\"$2\"}" "$EQ_PG/_control/outcomes" > /dev/null
+  curl -sSf --max-time "$EQ_CURL_MAX" -X POST -H 'Content-Type: application/json' -d "{\"idempotencyKey\":\"$1\",\"outcome\":\"$2\"}" "$EQ_PG/_control/outcomes" > /dev/null
 }
 
 # 사용: adv <초> — 앱 시계를 앞으로 옮긴다
 adv() {
   local now nxt
-  now=$(curl -sS "$EQ_BASE/admin/clock" | sed 's/.*"now":"\([^"]*\)".*/\1/')
+  now=$(curl -sS --max-time "$EQ_CURL_MAX" "$EQ_BASE/admin/clock" | sed 's/.*"now":"\([^"]*\)".*/\1/')
   nxt=$(date -d "$now + $1 seconds" --iso-8601=seconds)
   call PUT /admin/clock "" "{\"now\":\"$nxt\"}"
 }
@@ -216,7 +272,7 @@ norm_poll_fold() {
 # 규칙 norm_set_from_mark <표식>: 표식 앞은 그대로(줄 단위 비교), 표식 뒤는 중복을 뺀 정렬 문장 집합(sort -u)으로 바꾼다.
 # 표식 줄은 "== MARK <이름> (이후 집합 비교: 순서·횟수 무시)". 동시 구간은 두 요청의 SQL이 섞이고 대기 폴링·충돌 재시도
 # 횟수가 실행마다 달라 순서·횟수는 비교할 수 없지만, 어느 한쪽에만 있는 문장 종류는 잡는다(명세 §2 재합의 3).
-# 그 구간의 결과는 응답 분포(norm_conc_distribution)·행 집계로도 비교한다.
+# 그 구간의 결과는 쌍별 응답(norm_conc_pair)·행 집계로도 비교한다.
 # 집합에 넣기 전에 DB 문장 로그의 준비 문장 이름(`execute S_<n>:`·`execute <unnamed>:`)을 `execute:`로 바꾼다. pgjdbc가 연결마다
 # 사용 횟수(prepareThreshold)에 따라 이름을 붙여서, 어느 요청이 어느 연결을 썼는지에 따라 이름이 실행마다 달라진다(실측 —
 # 본문은 같고 이름만 다른 줄이 god·layered 사이에 생겼다). 표식 앞(직렬 구간)은 이름을 그대로 둔다(명세 §2 재합의 4).
@@ -228,13 +284,36 @@ norm_set_from_mark() {
     { print }'
 }
 
-# 규칙 norm_conc_distribution: "conc " 로 시작하는 응답 줄(동시 요청 1쌍 = 두 응답 + 키당 주문 수)에서
-# 두 응답의 순서를 정렬하고 회차 번호를 빼서 분포(건수)로 접는다. 어느 요청이 이기는지는 실행마다 다르다. 나머지 줄은 그대로.
-norm_conc_distribution() {
-  awk '
-    $1 != "conc" { print; next }
-    { a = $4; b = $5; if (a > b) { t = a; a = b; b = t }; c[$1 " " $2 " " a " " b " " $6]++ }
-    END { for (k in c) print "분포 " c[k] "회:" k | "sort"; close("sort") }'
+# 규칙 norm_conc_pair: "conc" 줄(동시 요청 1쌍 = "conc <a|b> <회차> orders=<키당 주문 수>" 탭 응답1 탭 응답2,
+# 응답 = "<상태 코드> <본문 전체>")에서 실행마다 달라지는 것만 바꾼다. 나머지 줄은 그대로.
+#  - 어느 요청이 이기는지가 실행마다 달라 두 응답의 순서를 정렬한다(정렬 키는 id를 가린 응답).
+#  - 이긴 쪽에 따라 orderId·orderItemId·tradeId 값이 달라져(다른 구매자의 체결, 충돌로 소비된 주문 번호) 쌍 안에서 처음 나온
+#    순서대로 #orderId1 같은 기호로 바꾼다. 같은 값은 같은 기호라 (a)에서 두 응답이 같은 주문을 가리키는지는 비교에 남는다.
+#  금액·status·message·items 구조와 상태 코드는 그대로 비교한다. 쌍은 회차 순서대로 한 줄씩 남는다(집계하지 않는다).
+norm_conc_pair() {
+  awk -F '\t' '
+    function masked(r,   t) { t = r; gsub(/"(orderId|orderItemId|tradeId)":[0-9]+/, "&#", t); gsub(/":[0-9]+#/, "\":#", t); return t }
+    function sym(r,   out, pre, m, k, v) {
+      out = ""
+      while (match(r, /"(orderId|orderItemId|tradeId)":[0-9]+/)) {
+        m = substr(r, RSTART, RLENGTH); pre = substr(r, 1, RSTART - 1); r = substr(r, RSTART + RLENGTH)
+        k = m; sub(/":.*/, "", k); sub(/^"/, "", k); v = m; sub(/.*":/, "", v)
+        if (!((k, v) in seen)) seen[k, v] = k (++cnt[k])
+        out = out pre "\"" k "\":#" seen[k, v]
+      }
+      return out r
+    }
+    $1 !~ /^conc / { print; next }
+    { a = $2; b = $3; if (masked(a) > masked(b)) { t = a; a = b; b = t }
+      split("", seen); split("", cnt)
+      a = sym(a); b = sym(b); print $1 "\t" a "\t" b }'
+}
+
+# 규칙 norm_startup_log: 앱 로그(stdin)에서 "기동 시 PAYING" 줄만 골라 시각·pid·앱 이름·스레드·로거를 지우고 "<레벨> <메시지>"로 남긴다.
+# 시각·pid는 실행마다 다르다. 로거는 두 앱의 클래스 구조가 달라(god Marketplace / layered StalePaymentRecovery — 명세 재합의 1의
+# 기동 훅 구조 차이) 남기면 구조 차이만으로 실패한다. 레벨과 메시지(전환 건수)는 비교한다.
+norm_startup_log() {
+  awk 'index($0, "기동 시 PAYING") { lvl = $2; msg = $0; sub(/^[^]]*\][^]]*\][^:]*: /, "", msg); print lvl " " msg }'
 }
 
 # 시나리오가 다시 정의하는 정규화 묶음(기본은 그대로). norm_logs는 Hibernate SQL·DB 문장 두 층에, norm_responses는 응답 층에 적용.
@@ -259,18 +338,24 @@ declare -A EQ_LAYER_NAME=([responses]=응답 [rows]=새행 [sql]=HibernateSQL [p
 # 사용: compare_layers <시나리오> <시나리오 결과 dir>. 반환: 0 같음, 1 차이, 2 빈 비교·diff 오류.
 # 층마다 파일 수·줄 수를 출력하고, 차이는 <dir>/diff/<층>.diff 로 남긴다.
 compare_layers() {
-  local sc=$1 d=$2 layer f gf lf gl ll rc res=0
+  local sc=$1 d=$2 layer f gf lf gl ll gm lm rc res=0
   mkdir -p "$d/diff"
   for layer in $EQ_LAYERS; do
     gf=$(find "$d/god/norm/$layer" -type f | wc -l); lf=$(find "$d/layered/norm/$layer" -type f | wc -l)
-    gl=$(cat "$d/god/norm/$layer"/* | wc -l); ll=$(cat "$d/layered/norm/$layer"/* | wc -l)
+    # 줄 수는 mark 표식(== MARK)을 뺀 내용 줄만 센다 — 표식만 남은 층은 비교한 것이 없다
+    gl=$(cat "$d/god/norm/$layer"/* | grep -vc '^== MARK' || true); ll=$(cat "$d/layered/norm/$layer"/* | grep -vc '^== MARK' || true)
+    gm=$(cat "$d/god/norm/$layer"/* | grep -c '^== MARK' || true); lm=$(cat "$d/layered/norm/$layer"/* | grep -c '^== MARK' || true)
     for f in "$d/god/norm/$layer"/* "$d/layered/norm/$layer"/*; do
       [ -s "$f" ] || { echo "[$sc] ${EQ_LAYER_NAME[$layer]}: 빈 파일 ${f#"$d"/} — 비교하지 않은 것으로 실패" >&2; res=2; }
     done
+    if [ "$gl" -eq 0 ] || [ "$ll" -eq 0 ]; then
+      echo "[$sc] ${EQ_LAYER_NAME[$layer]}: 내용 줄 0(god $gl / layered $ll, 표식 제외) — 비교하지 않은 것으로 실패" >&2; res=2
+    fi
     rc=0; diff -ruN "$d/god/norm/$layer" "$d/layered/norm/$layer" > "$d/diff/$layer.diff" || rc=$?
+    local marks=; [ "$gm$lm" = 00 ] || marks="  (표식 god $gm / layered $lm)"
     case $rc in
-      0) rm -f "$d/diff/$layer.diff"; printf '[%s] %-12s 파일 god %d / layered %d  줄 god %d / layered %d  같음\n' "$sc" "${EQ_LAYER_NAME[$layer]}" "$gf" "$lf" "$gl" "$ll" ;;
-      1) printf '[%s] %-12s 파일 god %d / layered %d  줄 god %d / layered %d  차이 → %s\n' "$sc" "${EQ_LAYER_NAME[$layer]}" "$gf" "$lf" "$gl" "$ll" "$d/diff/$layer.diff"
+      0) rm -f "$d/diff/$layer.diff"; printf '[%s] %-12s 파일 god %d / layered %d  줄 god %d / layered %d  같음%s\n' "$sc" "${EQ_LAYER_NAME[$layer]}" "$gf" "$lf" "$gl" "$ll" "$marks" ;;
+      1) printf '[%s] %-12s 파일 god %d / layered %d  줄 god %d / layered %d  차이 → %s%s\n' "$sc" "${EQ_LAYER_NAME[$layer]}" "$gf" "$lf" "$gl" "$ll" "$d/diff/$layer.diff" "$marks"
          [ $res = 2 ] || res=1 ;;
       *) echo "[$sc] ${EQ_LAYER_NAME[$layer]}: diff 오류(exit $rc)" >&2; res=2 ;;
     esac

@@ -71,7 +71,7 @@ SQL
 stop_app
 start_app 2000
 stage restart
-grep -h '기동 시 PAYING' "$out/app.log" | sed -E 's/.*(기동 시)/\1/' | dump_text startup-log
+norm_startup_log < "$out/app.log" | dump_text startup-log
 call POST /admin/batches/pg-inquiry
 stage inquiry
 app_end

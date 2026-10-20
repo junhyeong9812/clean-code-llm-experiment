@@ -17,27 +17,19 @@ else
   scenarios=$1
 fi
 
-# 중단·실패 때 앱 실행(자식)이 자기 trap으로 정리한다. 여기서는 남은 컨테이너만 한 번 더 지운다.
-trap 'echo "equiv: 중단됨" >&2; exit 130' INT; trap 'exit 143' TERM; trap 'exit 2' ERR   # 예상 못 한 명령 실패는 '차이(1)'가 아니라 실행 실패(2)
+# EQ_SQL_LOG·EQ_PG_LOG는 측정 도구 전용 — 판정에서 로그를 끄면 비교할 층이 비므로 받지 않는다
+for v in EQ_SQL_LOG EQ_PG_LOG; do
+  [ -z "${!v:-}" ] || [ "${!v}" = 1 ] || die "$v=${!v}: 측정 도구(measure-expiry.sh) 전용 옵션이라 판정에는 쓸 수 없다"
+done
 
-ports_free   # 다른 실행이 쓰는 중이면 그 컨테이너를 지우지 않도록 EXIT trap보다 먼저
-trap 'docker rm -f "$EQ_DB" > /dev/null 2>&1 || true' EXIT
-declare -A jar
-build=()
-for app in god layered; do
-  var=${app^^}_JAR
-  if [ -n "${!var:-}" ]; then
-    jar[$app]=$(realpath -e "${!var}" 2>/dev/null) || die "$var 없음: ${!var}"
-  else
-    jar[$app]=$root/$app/build/libs/$app-0.0.1.jar; build+=(":$app:bootJar")
-  fi
-done
+# 중단·실패 때 앱 실행(자식)이 자기 trap으로 정리한다. 여기서는 남은 컨테이너를 한 번 더 지우고 확인한다.
+entry_begin
 # 가짜 PG가 필요한 시나리오(start_pg를 부르는 것)가 있을 때만 그 클래스패스를 만든다
+extra=()
 for sc in $scenarios; do
-  if grep -q '^ *start_pg' "$here/scenarios/$sc.sh"; then build+=(:behavior-tests:fakePgClasspath); break; fi
+  if grep -q '^ *start_pg' "$here/scenarios/$sc.sh"; then extra+=(:behavior-tests:fakePgClasspath); break; fi
 done
-if [ ${#build[@]} -gt 0 ]; then (cd "$root" && ./gradlew -q "${build[@]}"); fi
-echo "god: ${jar[god]}"; echo "layered: ${jar[layered]}"
+prepare_jars "${extra[@]}"
 
 overall=0
 for sc in $scenarios; do

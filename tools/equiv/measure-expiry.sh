@@ -10,21 +10,8 @@ source "$here/lib.sh"
 n=${1:-2}
 [[ $n =~ ^[1-9][0-9]*$ ]] || die "사용: tools/equiv/measure-expiry.sh [N]"
 
-trap 'echo "equiv: 중단됨" >&2; exit 130' INT; trap 'exit 143' TERM; trap 'exit 2' ERR
-ports_free
-trap 'docker rm -f "$EQ_DB" > /dev/null 2>&1 || true' EXIT
-declare -A jar
-build=()
-for app in god layered; do
-  var=${app^^}_JAR
-  if [ -n "${!var:-}" ]; then
-    jar[$app]=$(realpath -e "${!var}" 2>/dev/null) || die "$var 없음: ${!var}"
-  else
-    jar[$app]=$root/$app/build/libs/$app-0.0.1.jar; build+=(":$app:bootJar")
-  fi
-done
-if [ ${#build[@]} -gt 0 ]; then (cd "$root" && ./gradlew -q "${build[@]}"); fi
-echo "god: ${jar[god]}"; echo "layered: ${jar[layered]}"
+entry_begin
+prepare_jars
 
 base=$root/build/equiv/measure-expiry
 rm -rf "$base"
@@ -34,7 +21,7 @@ one() { # <회차> <앱> — 하위 셸에서 돈다(정리는 app_begin의 trap
   EQ_SQL_LOG=0 start_app 2000
   call PUT /admin/clock "" '{"now":"2027-01-14T06:34:02+09:00"}'
   local t body batch events
-  t=$(curl -sS -o "$out/body.txt" -w '%{time_total}' -X POST "$EQ_BASE/admin/batches/bid-expiry")
+  t=$(curl -sS --max-time "$EQ_CURL_MAX" -o "$out/body.txt" -w '%{time_total}' -X POST "$EQ_BASE/admin/batches/bid-expiry")
   body=$(cat "$out/body.txt")
   [[ $body == *'"processed"'* ]] || die "$2 bid-expiry 응답이 이상함: $body"
   batch=$(grep -h '배치 bid-expiry' "$out/app.log" | sed -E 's/.*processed=[0-9]+, //' | tail -1 || true)

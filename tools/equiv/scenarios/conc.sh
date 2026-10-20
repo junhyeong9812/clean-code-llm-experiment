@@ -3,13 +3,13 @@
 #   (a) 같은 구매자·같은 체결 — PG 1초 지연 동안 진 요청이 대기했다가 이긴 주문(200)을 돌려받는다
 #   (b) 다른 구매자 — 하나는 201, 다른 하나는 409 IDEMPOTENCY_KEY_REUSED(주문 생성 충돌 재시도 뒤)
 # 사용: [CONC_N=…] scenarios/conc.sh <god|layered> <jar> <outdir>  (보통은 tools/equiv/run.sh conc)
-# 동시 구간은 어느 요청이 이기는지·SQL이 섞이는 순서가 실행마다 달라, 응답은 분포로(norm_conc_distribution),
+# 동시 구간은 어느 요청이 이기는지·SQL이 섞이는 순서가 실행마다 달라, 응답은 쌍마다 본문 전체를 두 응답 정렬·id 기호화 뒤(norm_conc_pair),
 # 행은 id·구매자 배정과 무관한 집계로, SQL 두 층은 동시 구간 앞(직렬 픽스처 요청)은 줄 단위, 동시 구간은 문장 종류 집합으로(norm_set_from_mark) 비교한다.
 source "$(dirname "$0")/../lib.sh"
 app_begin "$@"
 N=${CONC_N:-30}
 norm_logs() { norm_set_from_mark concurrent; }
-norm_responses() { norm_conc_distribution; }
+norm_responses() { norm_conc_pair; }
 start_db
 
 # 픽스처: 새 사이즈 1개, 사용자 s(판매)·b·c·d(구매)
@@ -28,19 +28,21 @@ mapfile -t TC < <(q "SELECT id FROM trades WHERE id>$mt AND buyer_id=$C_ ORDER B
 mapfile -t TD < <(q "SELECT id FROM trades WHERE id>$mt AND buyer_id=$D_ ORDER BY id")
 [ ${#TB[@]} = "$N" ] && [ ${#TC[@]} = "$N" ] && [ ${#TD[@]} = "$N" ] || die "체결 수가 N=$N 과 다름: ${#TB[@]} ${#TC[@]} ${#TD[@]}"
 
-# 응답 1건 → "<상태 코드>:<status 또는 오류 code>". 본문을 못 받으면(curl 오류) 시나리오 실패.
+# 응답 1건을 <파일 접두>.code·.body로 받는다. 본문을 못 받으면(curl 오류) 시나리오 실패.
 pay() { # <파일 접두> <사용자> <키> <체결>
-  curl -sS -o "$1.body" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "X-User-Id: $2" -H "Idempotency-Key: $3" -d "{\"tradeIds\":[$4]}" "$EQ_BASE/orders" > "$1.code"; }
-outcome_of() {
-  local body code
-  body=$(cat "$1.body"); code=$(cat "$1.code")
-  if [[ $body =~ \"code\":\"([A-Z_]+)\" ]] || [[ $body =~ \"status\":\"([A-Z_]+)\" ]]; then echo "$code:${BASH_REMATCH[1]}"; else echo "$code:?"; fi
+  curl -sS --max-time "$EQ_CURL_MAX" -o "$1.body" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "X-User-Id: $2" -H "Idempotency-Key: $3" -d "{\"tradeIds\":[$4]}" "$EQ_BASE/orders" > "$1.code"; }
+response_of() { # <파일 접두> → "<상태 코드> <본문 전체>"
+  local code body
+  code=$(cat "$1.code"); body=$(cat "$1.body")
+  echo "$code $body"
 }
-pair() { # <a|b> <회차> <키> <사용자1> <체결1> <사용자2> <체결2>
-  local r=$out/r/$1$2 p1 p2
+pair() { # <a|b> <회차> <키> <사용자1> <체결1> <사용자2> <체결2> — 한 쌍 = responses.txt 한 줄(탭으로 두 응답 구분)
+  local r=$out/r/$1$2 p1 p2 r1 r2 n
   pay "$r-1" "$4" "$3" "$5" & p1=$!; pay "$r-2" "$6" "$3" "$7" & p2=$!
   wait $p1 || die "동시 요청 실패: $r-1"; wait $p2 || die "동시 요청 실패: $r-2"
-  echo "conc $1 $2 $(outcome_of "$r-1") $(outcome_of "$r-2") orders=$(q "SELECT count(*) FROM orders WHERE idempotency_key='$3'")" >> "$out/responses.txt"
+  r1=$(response_of "$r-1"); r2=$(response_of "$r-2")
+  n=$(q "SELECT count(*) FROM orders WHERE idempotency_key='$3'")
+  printf 'conc %s %s orders=%s\t%s\t%s\n' "$1" "$2" "$n" "$r1" "$r2" >> "$out/responses.txt"
 }
 mkdir -p "$out/r"
 mark concurrent
