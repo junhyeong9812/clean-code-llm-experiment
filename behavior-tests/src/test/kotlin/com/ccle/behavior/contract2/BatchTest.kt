@@ -61,7 +61,7 @@ class BatchTest {
         S2.runBatch("auto-confirm")
         assertEquals("DELIVERED", Db2.item(p.item).status)
 
-        Flow.moveTo(deliveredAt.plus(days(9)))
+        val batchAt = Flow.moveTo(deliveredAt.plus(days(9)))
         S2.runBatch("auto-confirm")
         val retro = deliveredAt.plus(days(7))
         val row = Db2.item(p.item)
@@ -72,6 +72,7 @@ class BatchTest {
         assertEquals(retro.plus(days(365)), e.expiresAt)
         assertEquals(1_000L, Db.balance(p.buyer)!!.available)
         assertEquals(0L, Db.balance(p.buyer)!!.pending)
+        assertEquals(batchAt, Db.balance(p.buyer)!!.updatedAt, "point_balances.updated_at = 현재(소급값 아님)")
 
         Flow.advance(HOUR)
         S2.runBatch("auto-confirm")

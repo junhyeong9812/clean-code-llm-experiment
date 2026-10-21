@@ -5,7 +5,8 @@ import com.ccle.behavior.pg.FakePg
 /**
  * 가짜 PG 카드 취소 제어·조회(ADR-0004 §7.2). 키는 `cancel-<orderItemId>`.
  *  - 조회 `GET /_control/cancellations/{key}`: 앱이 보낸 취소 요청 수·금액·승인 키와 기록.
- *  - 제어 `POST /_control/outcomes {"outcome": "UNAVAILABLE"}`: 그 키의 취소 요청에 503(기록 없음). APPROVE로 되돌린다.
+ *  - 전체 조회 `GET /_control/cancellations`: 받은 모든 취소 키(승인 키·요청 수·기록).
+ *  - 제어 `POST /_control/outcomes {"outcome": "UNAVAILABLE"|"DECLINE"}`: 그 키의 취소 요청에 503 / 200 DECLINED(둘 다 기록 없음). APPROVE로 되돌린다.
  */
 object PgCancel {
     data class Info(
@@ -14,6 +15,20 @@ object PgCancel {
     )
 
     fun key(orderItemId: Long) = "cancel-$orderItemId"
+
+    /** 전체 조회의 키 1개. */
+    data class KeyInfo(val key: String, val approvalKeys: List<String>, val requests: Int, val recordStatus: String?, val recordAmount: Long?)
+
+    /** 가짜 PG가 받은 모든 취소 키 중 그 승인 키(주문 멱등 키)로 들어온 것. */
+    fun keysOfApproval(approvalKey: String): List<KeyInfo> {
+        val r = Api.request("GET", "/_control/cancellations", base = Flow.pgUrl())
+        check(r.status == 200) { "가짜 PG 취소 전체 조회 실패: $r" }
+        return r.json.map { e ->
+            val rec = e.get("record")?.takeIf { !it.isNull }
+            KeyInfo(e.get("key").asText(), e.get("approvalKeys").map { it.asText() }, e.get("requests").asInt(),
+                rec?.get("status")?.asText(), rec?.get("amount")?.asLong())
+        }.filter { approvalKey in it.approvalKeys }
+    }
 
     fun info(orderItemId: Long): Info {
         val r = Api.request("GET", "/_control/cancellations/${key(orderItemId)}", base = Flow.pgUrl())
@@ -48,6 +63,6 @@ object PgCancel {
 
     fun unavailable(orderItemId: Long) = Flow.pgOutcome(key(orderItemId), FakePg.Outcome.UNAVAILABLE)
 
-    /** 지정을 풀어 승인으로 되돌린다(취소 키에는 UNAVAILABLE 밖의 결과가 모두 승인이다). */
+    /** 지정을 풀어 승인으로 되돌린다(취소 키에는 UNAVAILABLE·DECLINE 밖의 결과가 모두 승인이다). */
     fun approve(orderItemId: Long) = Flow.pgOutcome(key(orderItemId), FakePg.Outcome.APPROVE)
 }

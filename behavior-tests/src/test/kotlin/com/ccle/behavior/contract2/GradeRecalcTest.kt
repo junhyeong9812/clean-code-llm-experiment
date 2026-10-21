@@ -37,10 +37,10 @@ class GradeRecalcTest {
 
     @Test
     fun `임계값 - SILVER 500,000(경계)·GOLD 2,000,000·VIP 5,000,000, 499,999는 BRONZE라 행 없음, 재산정 뒤 결제는 새 등급 적립률`() {
-        val silver = Db.createUser(); confirmedPurchase(silver, 500_000)
-        val bronze = Db.createUser(); confirmedPurchase(bronze, 499_999)
-        val gold = Db.createUser(); confirmedPurchase(gold, 2_000_000)
-        val vip = Db.createUser(); confirmedPurchase(vip, 5_000_000)
+        val silver = Db.createUser(); val ps = confirmedPurchase(silver, 500_000)
+        val bronze = Db.createUser(); val pb = confirmedPurchase(bronze, 499_999)
+        val gold = Db.createUser(); val pg = confirmedPurchase(gold, 2_000_000)
+        val vip = Db.createUser(); val pv = confirmedPurchase(vip, 5_000_000)
 
         val d = Kst.nextMonthStart(Flow.now())
         Flow.moveTo(Kst.at(d))
@@ -50,6 +50,11 @@ class GradeRecalcTest {
         assertOneRow(vip, "VIP", d, 5_000_000)
         assertTrue(history(bronze).isEmpty(), "등급이 users.grade와 같으면 아무것도 쓰지 않는다")
         assertEquals("BRONZE", Db.user(bronze).grade)
+        // 판매 금액은 구매자 기준 금액이 아니다: 판매자(5,000,000 판매자 포함)는 이력 없음·BRONZE
+        for (seller in listOf(ps, pb, pg, pv).map { it.seller }) {
+            assertTrue(history(seller).isEmpty(), "판매자 $seller 이력 없음")
+            assertEquals("BRONZE", Db.user(seller).grade, "판매자 $seller")
+        }
 
         // §8.1: effective_from = D ≤ 주문 날짜 → SILVER 1.5%
         val p = S2.purchase(listOf(Line(100_000)), silver)
@@ -147,6 +152,18 @@ class GradeRecalcTest {
         Flow.advance(HOUR)
         val row = assertItemOk(S2.confirm(p.item, user), p.item, "CONFIRMED")
         assertEquals(Kst.at(d).minus(DAY), row.confirmedAt, "준비: 소급 확정 = delivered_at + 7일 = D − 1일")
+        S2.runBatch("grade-recalc")
+        assertOneRow(user, "SILVER", d, 500_000)
+    }
+
+    @Test
+    fun `기준일 - D + 10일에 돌려도 effective_from = D, 기간은 D − 6개월부터 D 전까지(D + 5일 확정분은 빠진다)`() {
+        val user = Db.createUser()
+        confirmedPurchase(user, 500_000)                            // D 전 확정 → 포함
+        val d = Kst.nextMonthStart(Flow.now())
+        Flow.moveTo(Kst.at(d).plus(days(5)))
+        confirmedPurchase(user, 2_000_000)                          // D + 5일 확정 → 제외(포함되면 GOLD 2,500,000)
+        Flow.moveTo(Kst.at(d).plus(days(10)))
         S2.runBatch("grade-recalc")
         assertOneRow(user, "SILVER", d, 500_000)
     }

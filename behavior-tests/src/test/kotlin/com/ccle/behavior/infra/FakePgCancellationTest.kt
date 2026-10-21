@@ -85,6 +85,30 @@ class FakePgCancellationTest {
     }
 
     @Test
+    fun `전체 조회 - 받은 모든 취소 키의 승인 키·요청 수·기록, 기록 없는 키 포함`() {
+        val approved = key()
+        val refused = key()
+        cancel(approved, 7000, "order-list")
+        cancel(approved, 7000, "order-list")
+        assertEquals(200, control(refused, "UNAVAILABLE").status)
+        cancel(refused, 5000, "order-list")
+
+        val r = Api.request("GET", "/_control/cancellations", base = pg.url)
+        assertEquals(200, r.status, r.toString())
+        val byKey = r.json.associateBy { it["key"].asText() }
+        val a = byKey.getValue(approved)
+        assertEquals("order-list", a["approvalKey"].asText())
+        assertEquals(listOf("order-list"), a["approvalKeys"].map { it.asText() })
+        assertEquals(2, a["requests"].asInt())
+        assertEquals("APPROVED", a["record"]["status"].asText())
+        assertEquals(7000L, a["record"]["amount"].asLong())
+        val b = byKey.getValue(refused)
+        assertEquals(1, b["requests"].asInt())
+        assertTrue(b["record"].isNull, b.toString())
+        assertEquals(listOf("order-list"), b["approvalKeys"].map { it.asText() })
+    }
+
+    @Test
     fun `UNAVAILABLE - 503, 기록하지 않음, 해제하면 승인`() {
         val k = key()
         assertEquals(200, control(k, "UNAVAILABLE").status)

@@ -25,12 +25,13 @@ class SerialRaceTest {
         val now = Flow.advance(HOUR)
         S2.ready("구매자 취소", S2.cancel(p.item, buyer))
         Flow.advance(HOUR)
+        val requestsBefore = PgCancel.info(p.item).requests
         S2.cancel(p.item, buyer).assertError(409, "ITEM_STATE_CONFLICT")
         assertEquals(now, Db2.item(p.item).cancelledAt)
         assertEquals(1, Db2.refunds(p.item).size)
         assertEquals(1, Db2.ledgerOfItem(p.item, "RESTORE").size)
         assertEquals(1, Db2.pgCancels(p.orderId).size)
-        assertEquals(1, PgCancel.info(p.item).requests, "상태 위반은 PG를 부르지 않는다")
+        assertEquals(requestsBefore, PgCancel.info(p.item).requests, "상태 위반은 PG를 부르지 않는다")
     }
 
     @Test
@@ -60,9 +61,10 @@ class SerialRaceTest {
         assertTrue(Db2.penaltiesOfItem(first.item).isEmpty())
 
         assertEquals("CANCELLED_SELLER_FAULT", Db2.item(second.item).status)
+        val requestsBefore = PgCancel.info(second.item).requests
         S2.cancel(second.item, second.buyer).assertError(409, "ITEM_STATE_CONFLICT")
         assertEquals("SELLER", Db2.refunds(second.item).single().fault)
-        assertEquals(1, PgCancel.info(second.item).requests)
+        assertEquals(requestsBefore, PgCancel.info(second.item).requests, "상태 위반은 PG를 부르지 않는다")
     }
 
     @Test

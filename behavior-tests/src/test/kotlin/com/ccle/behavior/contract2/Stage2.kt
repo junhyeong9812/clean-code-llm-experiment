@@ -206,13 +206,21 @@ fun assertRefund(itemId: Long, exp: RefundExp, at: Instant): RefundRow {
     return rf
 }
 
-/** 카드 취소: PG가 받은 요청 1건(키 cancel-<id>, 승인 키 = 주문 멱등 키, 금액) + pg_transactions CANCEL 1행. */
+/**
+ * 카드 취소: 그 항목 키(cancel-<id>)의 PG 기록 1건(APPROVED, 금액, 승인 키 = 주문 멱등 키), 그 키로 관측된 요청은 모두 같은 금액
+ * (같은 키 재시도는 허용 — 요청 수는 보지 않는다), pg_transactions CANCEL 1행. 그리고 그 주문의 승인 키로 기록된 취소 키는
+ * 카드 환불이 있는 그 주문 항목의 키뿐이다(다른 키로 보낸 추가 취소를 잡는다).
+ */
 fun assertCardCancel(p: Purchase, itemId: Long, amount: Long, at: Instant) {
     val pg = PgCancel.info(itemId)
-    assertEquals(1, pg.requests, "PG 취소 요청 수: $pg")
-    assertEquals(listOf(amount), pg.amounts, "PG 취소 amount = 카드 환불: $pg")
-    assertEquals(listOf(p.key), pg.approvalKeys, "PG 취소 approvalKey = 주문 멱등 키: $pg")
+    assertTrue(pg.amounts.isNotEmpty() && pg.amounts.all { it == amount }, "PG 취소 요청 금액 = 카드 환불: $pg")
+    assertTrue(pg.approvalKeys.all { it == p.key }, "PG 취소 approvalKey = 주문 멱등 키: $pg")
     assertEquals("APPROVED", pg.status, "PG 취소 기록: $pg")
+    assertEquals(amount, pg.amount, "PG 기록 금액: $pg")
+    assertEquals(p.key, pg.approvalKey, "PG 기록 승인 키: $pg")
+    val refundedKeys = Db2.itemsOfOrder(p.orderId).filter { i -> Db2.refunds(i.id).any { it.cardAmount > 0 } }.map { PgCancel.key(it.id) }.toSet()
+    val recorded = PgCancel.keysOfApproval(p.key).filter { it.recordStatus != null }.map { it.key }.toSet()
+    assertEquals(refundedKeys, recorded, "그 주문 승인 키로 기록된 취소 키 = 카드 환불된 항목 키")
     val rows = Db2.pgCancels(p.orderId).filter { it.idempotencyKey == PgCancel.key(itemId) }
     val tx = rows.single()
     assertEquals(amount, tx.amount, "CANCEL amount = 카드 환불")

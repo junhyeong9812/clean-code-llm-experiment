@@ -47,11 +47,12 @@ class BuyerActionTest {
         val p = S2.purchase(price)
         S2.toDelivered(p.item, p.seller)
         val deliveredAt = Db2.item(p.item).deliveredAt!!
-        Flow.moveTo(deliveredAt.plus(days(8)))
+        val now = Flow.moveTo(deliveredAt.plus(days(8)))
 
         val row = assertItemOk(S2.confirm(p.item, p.buyer), p.item, "CONFIRMED")
         assertEquals(deliveredAt.plus(days(7)), row.confirmedAt)
         assertEquals(deliveredAt.plus(days(7)).plus(days(365)), Db.earnOfItem(p.item).single().expiresAt)
+        assertEquals(now, Db.balance(p.buyer)!!.updatedAt, "point_balances.updated_at = 현재(소급값 아님)")
     }
 
     @Test

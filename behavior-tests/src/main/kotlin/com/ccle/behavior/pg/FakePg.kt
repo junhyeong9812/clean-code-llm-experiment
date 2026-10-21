@@ -27,6 +27,8 @@ import java.util.concurrent.atomic.AtomicLong
  *    (ADR 밖 보조 조회: 별도 프로세스로 띄운 PG의 카운터를 테스트가 HTTP로 단언한다)
  *  - POST /_control/inquiry-outcomes {"idempotencyKey","outcome": "TIMEOUT"} (ADR 밖 보조 제어):
  *    그 키의 재조회(GET)를 delayMs 뒤에 응답한다. ADR-0003 §7 pg-inquiry의 "응답 없음" 경로를 만들기 위해서다.
+ *  - GET  /_control/cancellations → [{"key","approvalKey","approvalKeys","requests","record"|null}] (ADR 밖 보조 조회: 받은
+ *    모든 취소 키. approvalKey = 그 키의 첫 승인 키, approvalKeys = 받은 승인 키(중복 제거). 다른 키로 보낸 취소를 잡는 데 쓴다)
  *  - GET  /_control/cancellations/{idempotencyKey} → {"requests": n, "amounts": [...], "approvalKeys": [...],
  *    "record": {"pgTxId","status","amount","approvalKey"}|null} (ADR 밖 보조 조회: 받은 취소 요청·기록된 취소)
  *
@@ -102,6 +104,7 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
             method == "POST" && path == "/_control/outcomes" -> controlOutcome(ex)
             method == "POST" && path == "/_control/inquiry-outcomes" -> controlInquiry(ex)
             method == "GET" && path.startsWith("/_control/requests/") -> controlRequests(ex, path.removePrefix("/_control/requests/"))
+            method == "GET" && path == "/_control/cancellations" -> controlCancellationList(ex)
             method == "GET" && path.startsWith("/_control/cancellations/") -> controlCancellations(ex, path.removePrefix("/_control/cancellations/"))
             else -> send(ex, 404, mapOf("error" to "no route $method $path"))
         }
@@ -197,6 +200,23 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
             "approvalKeys" to reqs.map { it.approvalKey },
             "record" to cancelRecords[key]?.let { it.toBody() + ("approvalKey" to it.approvalKey) },
         ))
+    }
+
+    /** 받은 모든 취소 키 요약(요청만 있고 기록이 없는 키 포함). */
+    private fun controlCancellationList(ex: HttpExchange) {
+        val keys = (cancelRequests.map { it.idempotencyKey } + cancelRecords.keys).distinct()
+        send(ex, 200, keys.map { k ->
+            val reqs = cancelRequests(k)
+            val rec = cancelRecords[k]
+            val approvalKeys = (reqs.map { it.approvalKey } + listOfNotNull(rec?.approvalKey)).distinct()
+            mapOf(
+                "key" to k,
+                "approvalKey" to approvalKeys.firstOrNull(),
+                "approvalKeys" to approvalKeys,
+                "requests" to reqs.size,
+                "record" to rec?.let { it.toBody() + ("approvalKey" to it.approvalKey) },
+            )
+        })
     }
 
     private fun controlInquiry(ex: HttpExchange) {

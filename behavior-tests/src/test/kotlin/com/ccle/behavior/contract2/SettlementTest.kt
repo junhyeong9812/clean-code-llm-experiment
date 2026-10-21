@@ -364,4 +364,31 @@ class SettlementTest {
             assertEquals(listOf(item("INCLUDED", p.item, 30_000, 1_200)), rows(Db2.settlementItems(s.id)))
         }
     }
+
+    @Test
+    fun `INCLUDED 뒤 분쟁 - OPEN인 채 다음 마감 정산에 HELD·새 행이 없고, 인정하면 그다음 마감에 CLAWBACK 1건`() {
+        val seller = Db.createUser()
+        val p = S2.purchase(listOf(Line(120_000, "SHOES", seller)))
+        S2.toConfirmed(p.item, seller, p.buyer)
+        val c1 = Kst.cutoffOf(Flow.now())
+        Flow.moveTo(c1)
+        S2.runBatch("weekly-settlement")
+        assertEquals(listOf("INCLUDED"), Db2.settlementItemsOfItem(p.item).map { it.status })
+        val disputeId = S2.openDispute(p.item, p.buyer)
+
+        val c2 = c1.plus(days(7))
+        Flow.moveTo(c2)
+        S2.runBatch("weekly-settlement")
+        assertEquals(listOf("INCLUDED"), Db2.settlementItemsOfItem(p.item).map { it.status }, "이미 INCLUDED인 DISPUTED 항목은 HELD가 아니다")
+        assertEquals(1, Db2.settlementsOfSeller(seller).size, "대상·패널티·이월이 없으면 새 행 없음")
+
+        S2.resolved(disputeId, true)
+        val c3 = c2.plus(days(7))
+        Flow.moveTo(c3)
+        S2.runBatch("weekly-settlement")
+        assertEquals(listOf("INCLUDED", "CLAWBACK"), Db2.settlementItemsOfItem(p.item).map { it.status })
+        val s = Db2.settlementsOfSeller(seller).last()
+        assertEquals(Kst.date(c2), s.periodStart)
+        assertEquals(listOf(item("CLAWBACK", p.item, -120_000, -7_200)), rows(Db2.settlementItems(s.id)))
+    }
 }
