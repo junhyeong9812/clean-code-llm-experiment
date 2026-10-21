@@ -31,6 +31,7 @@
 | 2026-10-21 | ADR-0004 수정(메인): D1 확정 min(현재, 배송+7일) · D2 D 행 있으면 건너뜀 · D3 등급 3단계 규칙+한계 · D4 계약 밖+금액 확인 · D5 한 주 = 한 트랜잭션 · D6 판매자 행 잠금·사용자 id 순 · D7 만료 묶음 복구분만 EXPIRE · D8 items 순서·reason 규칙 · D9/§11.8 늦은 정산 · D10 [verify] 범위 · Q1 P2 1,000P→164 · Q2~Q6 문서화 | post-fix 재점검(codex)으로 |
 | 2026-10-21 | post-fix 재점검(codex, packet base `e792eea`, OUT `scratchpad/rv.bicV`): D1~D10·P2 전부 해소, **신규 0** | ADR-0004 리뷰 종료(설계 문서 = 설계 선검증+듀얼 1패스 상한). 사용자 합의 요청 |
 | 2026-10-21 | 사용자: ADR-0004 "채택" | 상태 채택. §11.1 → ADR-0003 §9의 8, §11.2~9 → ADR-0002 §9.7 개정 항목으로 옮김(명세 §4 방식). task 02 완료 → task 03(테스트 기반) |
+| 2026-10-21 11:17~11:28 | task 03 워커(Opus): `contract2Test` 태스크(태그 contract2 + 패키지 필터, contractTest에서 contract2 패키지 제외), FakePg `POST /cancellations`·`UNAVAILABLE`·`GET /_control/cancellations/{key}`, `@Contract2Test`, FakePgCancellationTest 8개. run.sh 수정 없음(두 번째 인자로 태스크) | run.sh god·layered exit 0(infra 26 = 18+8, contract 117/117, skip 0, verify 0). contract2Test 0개 → exit 1(No tests found — 0건 통과 위장 없음, 메인: 유지). 메인 확인: build.gradle diff 열람·금지영역 diff 0 → 코드 커밋. 보조 제어 엔드포인트는 ADR §7.2에 1줄 추가. 동시에 다른 세션의 무관한 부하 프로세스(`/tmp/tmp.k7g7Rydr7o/scripts/run.sh`)가 돌고 있었음 — 결과에 영향 없음 |
 
 ## DB 표면 대조 (가정 1 — 조사 워커 회수본 요약, 근거 T=tables.sql·V=verify.sql·G=seedgen.py)
 

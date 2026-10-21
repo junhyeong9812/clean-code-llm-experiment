@@ -126,6 +126,7 @@
 - PG가 응답하지 않거나(`PG_TIMEOUT_MS`·연결 실패·5xx), APPROVED가 아니거나, **응답의 `amount`가 요청한 금액과 다르면**: 요청이면 409 `PG_UNAVAILABLE`, 배치면 그 대상을 건너뛴다. 어느 쪽이든 DB는 바뀌지 않는다. 키는 항목당 하나(사유와 무관)라, 다시 보내거나 다른 사유로 보내도 PG에 취소가 두 번 생기지 않는다. 가짜 PG 응답: `200 {"pgTxId", "status": "APPROVED", "amount"}`(같은 키면 첫 기록의 금액). **[기본값]**
 - **계약 밖(사용자 결정 2026-10-21):** PG가 취소를 기록한 뒤 앱이 DB에 반영하기 전에 프로세스가 죽는 경우. 같은 요청을 다시 보내면 반영되지만, 그 사이 항목이 다른 상태로 바뀌면 카드 취소만 남는다(스키마에 환불 진행 상태가 없다). 위 금액 확인은 이 상태에서 다른 금액이 기록되는 것만 막는다.
 - 테스트 → PG: `POST /_control/outcomes` `{"idempotencyKey": "cancel-<id>", "outcome": "UNAVAILABLE"}` = 그 키의 취소 요청에 503(기록하지 않음). 지정이 없으면 승인.
+- 테스트 → PG 조회(보조): `GET /_control/cancellations/{key}` → `{"requests", "amounts", "approvalKeys", "record": {"pgTxId", "status", "amount", "approvalKey"} | null}` — 앱이 보낸 취소 요청 수·금액과 기록.
 
 ### 7.3 포인트
 
