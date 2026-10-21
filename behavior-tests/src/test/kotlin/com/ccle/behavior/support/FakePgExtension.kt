@@ -73,6 +73,13 @@ class PgClient(private val base: String) {
 @ExtendWith(FakePgExtension::class)
 annotation class ContractTest
 
+/** 2단계 계약 테스트(ADR-0004, 패키지 contract2): 태그 contract2 + 가짜 PG. Gradle contract2Test가 돌린다. */
+@Target(AnnotationTarget.CLASS)
+@Retention(AnnotationRetention.RUNTIME)
+@Tag("contract2")
+@ExtendWith(FakePgExtension::class)
+annotation class Contract2Test
+
 /** 인프라 자체 테스트: 태그 infra. */
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)

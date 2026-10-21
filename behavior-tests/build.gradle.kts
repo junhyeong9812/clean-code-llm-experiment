@@ -25,9 +25,9 @@ dependencies {
 // (앱용으로 export된 DB_URL 때문에 루트 build가 개발 DB에 픽스처 행을 쓰는 것을 막는다).
 //  - opt-in 없음 + 루트 집계(build·test·check)로 끌려옴 → 이유를 남기고 건너뜀
 //  - opt-in 없음 + 행위 테스트 태스크를 직접(축약 포함) 호출 → 실패(0건 성공이 red를 green으로 보이게 하므로)
-//  - opt-in 있음 + infraTest → DB_URL, contractTest → BASE_URL·DB_URL 명시돼야 함, 없으면 실패
+//  - opt-in 있음 + infraTest → DB_URL, contractTest·contract2Test → BASE_URL·DB_URL 명시돼야 함, 없으면 실패
 val behaviorOptIn: Boolean = System.getenv("BEHAVIOR_TESTS") == "1"
-val behaviorTaskNames = setOf("test", "infraTest", "contractTest")
+val behaviorTaskNames = setOf("test", "infraTest", "contractTest", "contract2Test")
 
 /** 이름을 Gradle 축약 단위로 쪼갠다: '-' 경계와 대문자 앞(camelCase). 예: contractTest → [contract, Test]. */
 fun abbrevParts(name: String): List<String> = name.split('-').flatMap { it.split(Regex("(?=[A-Z0-9])")) }.filter { it.isNotEmpty() }
@@ -41,8 +41,8 @@ fun abbrevMatches(pattern: String, name: String): Boolean {
 
 /**
  * 이 모듈의 행위 테스트 태스크를 사용자가 직접(축약 포함) 불렀나. 요청 문자열을 Gradle 축약 규칙으로 해석한다.
- *  - 경로 형태(`:behavior-tests:cT`, `b-t:iT`): 프로젝트 조각이 이 모듈과 맞고 태스크 조각이 test·infraTest·contractTest 중 하나와 맞으면 직접
- *  - 이름만: infraTest·contractTest와 맞으면 어디서 불러도 직접(이 모듈에만 있는 이름), test와만 맞으면 모듈 디렉터리에서 부른 경우만 직접
+ *  - 경로 형태(`:behavior-tests:cT`, `b-t:iT`): 프로젝트 조각이 이 모듈과 맞고 태스크 조각이 behaviorTaskNames 중 하나와 맞으면 직접
+ *  - 이름만: infraTest·contractTest·contract2Test와 맞으면 어디서 불러도 직접(이 모듈에만 있는 이름), test와만 맞으면 모듈 디렉터리에서 부른 경우만 직접
  *    (루트의 test·tes·build·check는 집계 → 건너뜀)
  * 판정 뒤 실제 그래프에 그 태스크가 있는 것만 남긴다(축약이 다른 태스크로 해석된 경우를 걸러 낸다).
  */
@@ -85,10 +85,12 @@ gradle.taskGraph.whenReady {
     if (behaviorOptIn && hasTask("${project.path}:infraTest") && System.getenv("DB_URL").isNullOrBlank()) {
         throw GradleException("infraTest에는 env DB_URL 이 명시돼야 한다(코드 기본 주소로 붙어 픽스처 행을 쓰지 않게).")
     }
-    if (behaviorOptIn && hasTask("${project.path}:contractTest")) {
-        val missing = listOf("BASE_URL", "DB_URL").filter { System.getenv(it).isNullOrBlank() }
-        if (missing.isNotEmpty()) {
-            throw GradleException("contractTest에는 env $missing 가 명시돼야 한다(코드 기본값으로 엉뚱한 앱·DB를 보지 않게).")
+    for (name in listOf("contractTest", "contract2Test")) {
+        if (behaviorOptIn && hasTask("${project.path}:$name")) {
+            val missing = listOf("BASE_URL", "DB_URL").filter { System.getenv(it).isNullOrBlank() }
+            if (missing.isNotEmpty()) {
+                throw GradleException("${name}에는 env $missing 가 명시돼야 한다(코드 기본값으로 엉뚱한 앱·DB를 보지 않게).")
+            }
         }
     }
 }
@@ -121,9 +123,25 @@ val contractTest by tasks.registering(Test::class) {
     testClassesDirs = testSourceSet.output.classesDirs
     classpath = testSourceSet.runtimeClasspath
     useJUnitPlatform { includeTags("contract") }
+    // 2단계 패키지는 태그를 잘못 달아도 1단계 대상에 섞이지 않게 뺀다
+    filter { excludeTestsMatching("com.ccle.behavior.contract2.*") }
     behaviorDefaults()
     requireOptIn()
     mustRunAfter(infraTest)
+}
+
+// 2단계 계약 테스트(ADR-0004, 패키지 com.ccle.behavior.contract2, 태그 contract2). 1단계 test(infraTest → contractTest)에는 넣지 않는다.
+// 실행: tools/behavior/run.sh <god|layered> contract2Test
+val contract2Test by tasks.registering(Test::class) {
+    description = "ADR-0004 2단계 계약 테스트 (패키지 contract2, 태그 contract2). BASE_URL의 앱을 대상으로 한다"
+    group = "verification"
+    testClassesDirs = testSourceSet.output.classesDirs
+    classpath = testSourceSet.runtimeClasspath
+    useJUnitPlatform { includeTags("contract2") }
+    filter { includeTestsMatching("com.ccle.behavior.contract2.*") }
+    behaviorDefaults()
+    requireOptIn()
+    mustRunAfter(infraTest, contractTest)
 }
 
 // 기본 test = infraTest 다음 contractTest. test 자신은 테스트를 돌리지 않는다

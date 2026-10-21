@@ -16,25 +16,36 @@ import java.util.concurrent.atomic.AtomicLong
  * 앱 → PG
  *  - POST /approvals {"idempotencyKey","amount"} → 200 {"pgTxId","status": APPROVED|DECLINED}
  *  - GET  /approvals/{idempotencyKey}            → 200 {"pgTxId","status"} | 404 (기록 없음)
+ *  - POST /cancellations {"idempotencyKey","approvalKey","amount"} → 200 {"pgTxId","status": APPROVED,"amount"}
+ *    (ADR-0004 §7.2 카드 취소). 같은 키의 두 번째 요청은 첫 기록(첫 금액)을 그대로 돌려준다.
  * 테스트 → PG
  *  - POST /_control/outcomes {"idempotencyKey","outcome"}: APPROVE | DECLINE | TIMEOUT_APPROVED | TIMEOUT_NOT_RECEIVED.
- *    지정이 없는 키는 APPROVE.
+ *    지정이 없는 키는 APPROVE. UNAVAILABLE(ADR-0004 §7.2) = 그 키의 요청에 즉시 503, 기록하지 않음.
+ *    취소 요청(`cancel-<id>` 키)에는 UNAVAILABLE만 의미가 있고, 그 밖의 결과·지정 없음은 승인이다.
  *  - GET  /_control/requests/{idempotencyKey} → {"approvals": n, "inquiries": m, "amounts": [...], "record": {"pgTxId","status"}|null}
  *    (ADR 밖 보조 조회: 별도 프로세스로 띄운 PG의 카운터를 테스트가 HTTP로 단언한다)
  *  - POST /_control/inquiry-outcomes {"idempotencyKey","outcome": "TIMEOUT"} (ADR 밖 보조 제어):
  *    그 키의 재조회(GET)를 delayMs 뒤에 응답한다. ADR-0003 §7 pg-inquiry의 "응답 없음" 경로를 만들기 위해서다.
+ *  - GET  /_control/cancellations/{idempotencyKey} → {"requests": n, "amounts": [...], "approvalKeys": [...],
+ *    "record": {"pgTxId","status","amount","approvalKey"}|null} (ADR 밖 보조 조회: 받은 취소 요청·기록된 취소)
  *
  * TIMEOUT 계열은 앱의 PG_TIMEOUT_MS(기본 2000)보다 늦게(delayMs, 기본 3000) 응답한다.
  * 같은 키로 두 번째 승인 요청이 오면 첫 기록을 그대로 돌려준다(기록이 없으면 지정된 결과를 다시 적용한다).
  */
 class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseable {
 
-    enum class Outcome { APPROVE, DECLINE, TIMEOUT_APPROVED, TIMEOUT_NOT_RECEIVED }
+    enum class Outcome { APPROVE, DECLINE, TIMEOUT_APPROVED, TIMEOUT_NOT_RECEIVED, UNAVAILABLE }
 
     data class Record(val pgTxId: String, val status: String)
 
     /** 받은 승인 요청 1건(테스트가 "PG 호출 없음"·금액을 단언하는 데 쓴다). */
     data class ApprovalRequest(val idempotencyKey: String, val amount: Long)
+
+    /** 기록된 카드 취소 1건(ADR-0004 §7.2). amount = 첫 요청의 금액. */
+    data class CancelRecord(val pgTxId: String, val status: String, val amount: Long, val approvalKey: String)
+
+    /** 받은 취소 요청 1건(형식이 맞는 것만, UNAVAILABLE로 거절된 것 포함). */
+    data class CancelRequest(val idempotencyKey: String, val approvalKey: String, val amount: Long)
 
     private val mapper = jacksonObjectMapper()
     private val outcomes = ConcurrentHashMap<String, Outcome>()
@@ -42,6 +53,8 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
     private val records = ConcurrentHashMap<String, Record>()
     private val approvalRequests = CopyOnWriteArrayList<ApprovalRequest>()
     private val inquiryRequests = CopyOnWriteArrayList<String>()
+    private val cancelRecords = ConcurrentHashMap<String, CancelRecord>()
+    private val cancelRequests = CopyOnWriteArrayList<CancelRequest>()
     private val seq = AtomicLong()
     private val executor = Executors.newCachedThreadPool { r -> Thread(r, "fake-pg").apply { isDaemon = true } }
     private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", port), 64)
@@ -75,6 +88,8 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
     fun approvalRequests(key: String): List<ApprovalRequest> = approvalRequests.filter { it.idempotencyKey == key }
     fun inquiryCount(key: String): Int = inquiryRequests.count { it == key }
     fun record(key: String): Record? = records[key]
+    fun cancelRequests(key: String): List<CancelRequest> = cancelRequests.filter { it.idempotencyKey == key }
+    fun cancelRecord(key: String): CancelRecord? = cancelRecords[key]
 
     private fun route(ex: HttpExchange) {
         val path = ex.requestURI.path
@@ -82,9 +97,11 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
         when {
             method == "POST" && path == "/approvals" -> approve(ex)
             method == "GET" && path.startsWith("/approvals/") -> inquire(ex, path.removePrefix("/approvals/"))
+            method == "POST" && path == "/cancellations" -> cancel(ex)
             method == "POST" && path == "/_control/outcomes" -> controlOutcome(ex)
             method == "POST" && path == "/_control/inquiry-outcomes" -> controlInquiry(ex)
             method == "GET" && path.startsWith("/_control/requests/") -> controlRequests(ex, path.removePrefix("/_control/requests/"))
+            method == "GET" && path.startsWith("/_control/cancellations/") -> controlCancellations(ex, path.removePrefix("/_control/cancellations/"))
             else -> send(ex, 404, mapOf("error" to "no route $method $path"))
         }
     }
@@ -115,7 +132,28 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
                 Thread.sleep(delayMs)
                 send(ex, 503, mapOf("error" to "not received"))
             }
+            Outcome.UNAVAILABLE -> send(ex, 503, mapOf("error" to "unavailable"))
         }
+    }
+
+    /** 카드 취소(ADR-0004 §7.2). 기록이 있으면 첫 기록(첫 금액)을, UNAVAILABLE이면 503(기록 없음), 그 밖은 승인·기록. */
+    private fun cancel(ex: HttpExchange) {
+        val body = readJson(ex)
+        val key = body?.get("idempotencyKey")?.takeIf { it.isTextual }?.asText()
+        val approvalKey = body?.get("approvalKey")?.takeIf { it.isTextual }?.asText()
+        val amountNode = body?.get("amount")
+        if (key.isNullOrEmpty() || approvalKey.isNullOrEmpty() || amountNode == null || !amountNode.isIntegralNumber) {
+            return send(ex, 400, mapOf("error" to "idempotencyKey·approvalKey(문자열)와 amount(정수) 필요"))
+        }
+        val amount = amountNode.asLong()
+        cancelRequests += CancelRequest(key, approvalKey, amount)
+
+        cancelRecords[key]?.let { return send(ex, 200, it.toBody()) }
+        if (outcomes[key] == Outcome.UNAVAILABLE) return send(ex, 503, mapOf("error" to "unavailable"))
+        val rec = cancelRecords.computeIfAbsent(key) {
+            CancelRecord("fakepg-cancel-${seq.incrementAndGet()}-${System.nanoTime()}", "APPROVED", amount, approvalKey)
+        }
+        send(ex, 200, rec.toBody())
     }
 
     private fun recordOnce(key: String, status: String): Record =
@@ -148,6 +186,17 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
         ))
     }
 
+    /** 그 키로 받은 취소 요청 요약: 요청 수·받은 금액·승인 키(순서대로)·현재 기록. */
+    private fun controlCancellations(ex: HttpExchange, key: String) {
+        val reqs = cancelRequests(key)
+        send(ex, 200, mapOf(
+            "requests" to reqs.size,
+            "amounts" to reqs.map { it.amount },
+            "approvalKeys" to reqs.map { it.approvalKey },
+            "record" to cancelRecords[key]?.let { it.toBody() + ("approvalKey" to it.approvalKey) },
+        ))
+    }
+
     private fun controlInquiry(ex: HttpExchange) {
         val body = readJson(ex)
         val key = body?.get("idempotencyKey")?.takeIf { it.isTextual }?.asText()
@@ -160,6 +209,7 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
     }
 
     private fun Record.toBody() = mapOf("pgTxId" to pgTxId, "status" to status)
+    private fun CancelRecord.toBody() = mapOf("pgTxId" to pgTxId, "status" to status, "amount" to amount)
 
     private fun send(ex: HttpExchange, status: Int, body: Any) {
         val bytes = mapper.writeValueAsBytes(body)
