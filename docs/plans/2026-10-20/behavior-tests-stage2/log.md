@@ -78,7 +78,7 @@
 | 2026-10-21 | 사용자: "5건 수정 + 타깃 재점검 1회 후 종료" | codex 감사: A1 Q3-2의 "UNAVAILABLE와 같은 분기" 근거 부정확(타임아웃은 PG 기록 뒤 무응답) → 별도 미검증 경로로 기록 · A2 L3-1의 "모든 요청 키" 검증 불가 → 가짜 PG 전체 취소 조회 추가로 채택 · L3-x1 기각 타당(NEXT 유지) |
 | 2026-10-21 13:03~13:14 | L3 수정 워커(Opus, blind): 6건, 80→82개, infra 27→28(가짜 PG 전체 취소 조회), +129 −14 | 두 앱 82/82 red, skip 0, 기타 0, verify 0 · 1단계 117/117·infra 28 · 반증 스텁 통과 0·트리거 잔여 0. 커밋 839f11f |
 | 2026-10-21 | 타깃 재점검(codex, packet base `6202db8`, OUT `scratchpad/rv.lW1u`): L3-1~5 해소, **신규 0** | 리뷰 종료(사용자 결정대로). 마감 |
-| 2026-10-21 | 사이클 마감: NEXT(N1 god 2단계·N2 layered 2단계·미검증 경로) · README 진행 행·2단계 실행 명령 · measurement-log 1행 · CS 이슈 아카이브는 study-note 보류 방침으로 0건 | 완료 요약: Opus 워커 초안(실파일·git show 복사) → 메인이 compare_layers류 대신 assertCardCancel·트리거 스니펫을 실파일과 대조 후 반영 |
+| 2026-10-21 | 사이클 마감: NEXT(N1 god 2단계·N2 layered 2단계·미검증 경로) · README 진행 행·2단계 실행 명령 · measurement-log 1행 · CS 이슈 아카이브는 study-note 보류 방침으로 0건 | 완료 요약: Opus 워커 초안(실파일·git show 복사) → 메인이 assertCardCancel·트리거 스니펫을 실파일과 대조 후 반영 |
 
 ## DB 표면 대조 (가정 1 — 조사 워커 회수본 요약, 근거 T=tables.sql·V=verify.sql·G=seedgen.py)
 
