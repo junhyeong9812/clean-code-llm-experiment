@@ -41,6 +41,7 @@ curl localhost:8081/actuator/health
 ```bash
 tools/behavior/run.sh god        # 1천 명 시드 DB → 가짜 PG → 앱 → infraTest·contractTest → verify.sql → 정리
 tools/behavior/run.sh layered
+tools/behavior/run.sh god contract2Test   # 2단계 계약(ADR-0004)만
 ```
 
 - 같은 테스트(`behavior-tests/`)가 두 앱에 돈다. 계약은 ADR-0003, 금액 기대값은 그 §8 표.
@@ -74,5 +75,5 @@ tools/seedgen/run-db.sh 500k-s42 ccle-run-001 15433                      # 실�
 | 1. 기본 세팅(두 서버 + 도커 PostgreSQL) | 완료 — ADR-0001 |
 | 2. 도메인·절차 정의와 DB 설계 | 완료 — ADR-0002 |
 | 3. DDL 확정 → 합성 데이터 생성·적재·검증 | 완료 — 사용자 50만, 불변식 75개 위반 0, 시드 이미지 16.6GB |
-| 4. 행위 테스트 → 갓 클래스 → 레이어드 분리 | 진행 — 행위 테스트 1단계(ADR-0003, 계약 117) · 갓 클래스 1단계 완료(god 계약 117/117, verify 0) · 레이어드 분리 1단계 완료(layered 계약 117/117, verify 0, god와 응답·DB·SQL 동치) · 동치 비교 하네스(`tools/equiv`, 시나리오 7종) |
+| 4. 행위 테스트 → 갓 클래스 → 레이어드 분리 | 진행 — 행위 테스트 1단계(ADR-0003, 계약 117) · 갓 클래스 1단계 완료(god 계약 117/117, verify 0) · 레이어드 분리 1단계 완료(layered 계약 117/117, verify 0, god와 응답·DB·SQL 동치) · 동치 비교 하네스(`tools/equiv`, 시나리오 7종) · 행위 테스트 2단계(ADR-0004, 계약 82 — 구현 전 전부 red) |
 | 5. 과제·판정·러너 → 실행·분석 | |
