@@ -43,6 +43,9 @@ object PgCancel {
         check(r.status == 200) { "가짜 PG 취소 기록 실패: $r" }
     }
 
+    /** 그 키의 취소 요청에 200 DECLINED(기록 없음) — ADR-0004 §7.2 "APPROVED가 아니거나". */
+    fun decline(orderItemId: Long) = Flow.pgOutcome(key(orderItemId), FakePg.Outcome.DECLINE)
+
     fun unavailable(orderItemId: Long) = Flow.pgOutcome(key(orderItemId), FakePg.Outcome.UNAVAILABLE)
 
     /** 지정을 풀어 승인으로 되돌린다(취소 키에는 UNAVAILABLE 밖의 결과가 모두 승인이다). */

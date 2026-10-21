@@ -21,7 +21,8 @@ import java.util.concurrent.atomic.AtomicLong
  * 테스트 → PG
  *  - POST /_control/outcomes {"idempotencyKey","outcome"}: APPROVE | DECLINE | TIMEOUT_APPROVED | TIMEOUT_NOT_RECEIVED.
  *    지정이 없는 키는 APPROVE. UNAVAILABLE(ADR-0004 §7.2) = 그 키의 요청에 즉시 503, 기록하지 않음.
- *    취소 요청(`cancel-<id>` 키)에는 UNAVAILABLE만 의미가 있고, 그 밖의 결과·지정 없음은 승인이다.
+ *    취소 요청(`cancel-<id>` 키)에는 UNAVAILABLE과 DECLINE(= 200 {"pgTxId": null, "status": "DECLINED", "amount"}, 기록하지 않음)만
+ *    의미가 있고, 그 밖의 결과·지정 없음은 승인이다.
  *  - GET  /_control/requests/{idempotencyKey} → {"approvals": n, "inquiries": m, "amounts": [...], "record": {"pgTxId","status"}|null}
  *    (ADR 밖 보조 조회: 별도 프로세스로 띄운 PG의 카운터를 테스트가 HTTP로 단언한다)
  *  - POST /_control/inquiry-outcomes {"idempotencyKey","outcome": "TIMEOUT"} (ADR 밖 보조 제어):
@@ -150,6 +151,7 @@ class FakePg(val port: Int, val delayMs: Long = DEFAULT_DELAY_MS) : AutoCloseabl
 
         cancelRecords[key]?.let { return send(ex, 200, it.toBody()) }
         if (outcomes[key] == Outcome.UNAVAILABLE) return send(ex, 503, mapOf("error" to "unavailable"))
+        if (outcomes[key] == Outcome.DECLINE) return send(ex, 200, mapOf("pgTxId" to null, "status" to "DECLINED", "amount" to amount))
         val rec = cancelRecords.computeIfAbsent(key) {
             CancelRecord("fakepg-cancel-${seq.incrementAndGet()}-${System.nanoTime()}", "APPROVED", amount, approvalKey)
         }

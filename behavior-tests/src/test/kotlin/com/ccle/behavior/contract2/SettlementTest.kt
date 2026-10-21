@@ -299,4 +299,69 @@ class SettlementTest {
         assertEquals(Kst.date(c1), sh.periodStart)
         assertEquals(listOf(item("HELD", held.item, 0, 0)), rows(Db2.settlementItems(sh.id)))
     }
+
+    @Test
+    fun `CLAWBACK 경계 - INCLUDED 항목을 다음 마감 정각에 분쟁 인정하면 그 마감 정산에는 CLAWBACK이 없고 다음 마감에 1건`() {
+        val seller = Db.createUser()
+        val p = S2.purchase(listOf(Line(120_000, "SHOES", seller)))
+        S2.toConfirmed(p.item, seller, p.buyer)
+        val c1 = Kst.cutoffOf(Flow.now())
+        Flow.moveTo(c1)
+        S2.runBatch("weekly-settlement")
+        assertEquals(listOf("INCLUDED"), Db2.settlementItemsOfItem(p.item).map { it.status })
+
+        val c2 = c1.plus(days(7))
+        Flow.moveTo(c2)
+        S2.resolved(S2.openDispute(p.item, p.buyer), true)          // cancelled_at = c2
+        assertEquals(c2, Db2.item(p.item).cancelledAt, "준비(2단계) cancelled_at = 마감 정각")
+        S2.runBatch("weekly-settlement")
+        assertEquals(listOf("INCLUDED"), Db2.settlementItemsOfItem(p.item).map { it.status }, "cancelled_at < cutoff가 아니므로 마감 c2 정산에는 없다")
+        assertEquals(1, Db2.settlementsOfSeller(seller).size)
+
+        Flow.moveTo(c2.plus(days(7)))
+        S2.runBatch("weekly-settlement")
+        val claw = Db2.settlementItemsOfItem(p.item).filter { it.status == "CLAWBACK" }
+        assertEquals(1, claw.size)
+        val s = Db2.settlementsOfSeller(seller).last()
+        assertEquals(Kst.date(c2), s.periodStart)
+        assertEquals(s.id, claw.single().settlementId)
+    }
+
+    @Test
+    fun `원자성 - 한 주는 모든 판매자를 한 트랜잭션으로, 두 번째 판매자 행 INSERT가 실패하면 그 주 A·B 행이 모두 없다`() {
+        val a = S2.purchase(listOf(Line(30_000, "TECH")))
+        val b = S2.purchase(listOf(Line(30_000, "TECH")))
+        S2.toConfirmed(a.item, a.seller, a.buyer)
+        S2.toConfirmed(b.item, b.seller, b.buyer)
+        val week = Kst.weekStart(Flow.now())
+        Flow.moveTo(Kst.cutoffOf(Flow.now()))
+
+        val name = "bt_atomic_" + java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+        val sellers = "${a.seller}, ${b.seller}"
+        // 새 행이 A·B 중 하나이고 같은 period_start로 다른 쪽 행이 이미 보이면 실패: 실제 두 번째 INSERT에서 터진다(순서 무관)
+        Db.update(
+            "CREATE FUNCTION $name() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN " +
+                "IF NEW.seller_id IN ($sellers) AND EXISTS (SELECT 1 FROM settlements s WHERE s.seller_id IN ($sellers) " +
+                "AND s.seller_id <> NEW.seller_id AND s.period_start = NEW.period_start) THEN " +
+                "RAISE EXCEPTION '$name: second seller insert'; END IF; RETURN NEW; END $$",
+        )
+        try {
+            Db.update("CREATE TRIGGER $name BEFORE INSERT ON settlements FOR EACH ROW EXECUTE FUNCTION $name()")
+            Flow.batch("weekly-settlement")                           // 응답 상태는 ADR이 정하지 않았다
+            for (seller in listOf(a.seller, b.seller)) {
+                assertTrue(Db2.settlementsOfSeller(seller).none { it.periodStart == week }, "그 주는 통째로 커밋되지 않아야 한다: 판매자 $seller")
+            }
+        } finally {
+            Db.update("DROP TRIGGER IF EXISTS $name ON settlements")
+            Db.update("DROP FUNCTION IF EXISTS $name()")
+        }
+        assertEquals(0L, Db.long("SELECT count(*) FROM pg_trigger WHERE tgname = ?", name), "트리거 제거")
+
+        S2.runBatch("weekly-settlement")
+        for (p in listOf(a, b)) {
+            val s = Db2.settlementsOfSeller(p.seller).single()
+            assertEquals(week, s.periodStart)
+            assertEquals(listOf(item("INCLUDED", p.item, 30_000, 1_200)), rows(Db2.settlementItems(s.id)))
+        }
+    }
 }

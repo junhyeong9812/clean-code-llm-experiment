@@ -259,6 +259,10 @@ object Table12 {
     // | E5 | E 새 주문, E1 뒤 | 2번 항목 검수 불합격(마지막 — 판매자 귀책도 남은 배송비를 싣는다) | 21,817 | 2,183 | 3,000 | CANCELLED, 패널티 2,000 |
     fun e5(reason: String) = RefundExp(card = 21_817, point = 2_183, buyerFee = 1_000, shipping = 3_000, reason = reason, fault = "SELLER")
     const val E5_PENALTY = 2_000L
+    // | E6 | E 새 주문 | 1번 항목 확정 → 분쟁 인정(첫 항목 — 배송비 부분 포함 전액) | 30,910 | 3,090 | 3,000 | PARTIALLY_CANCELLED |
+    val E6 = RefundExp(card = 30_910, point = 3_090, buyerFee = 1_000, shipping = 3_000, reason = "분쟁 인정", fault = "DISPUTE")
+    // | E7 | E 새 주문, 1번 항목 구매자 취소(E1) 뒤 | 2번 항목 확정 → 분쟁 인정(마지막 — 남은 배송비를 싣는다) | 21,817 | 2,183 | 3,000 | CANCELLED |
+    val E7 = RefundExp(card = 21_817, point = 2_183, buyerFee = 1_000, shipping = 3_000, reason = "분쟁 인정", fault = "DISPUTE")
 
     /** 정산 표 1행: gross·fee_total·penalty·carry_in·net·payout·carry_out·상태. */
     data class Settle(

@@ -65,6 +65,26 @@ class FakePgCancellationTest {
     }
 
     @Test
+    fun `DECLINE - 200 DECLINED·pgTxId null·요청 금액, 기록하지 않음, 해제하면 승인`() {
+        val k = key()
+        assertEquals(200, control(k, "DECLINE").status)
+        val r = cancel(k, 7000)
+        assertEquals(200, r.status, r.toString())
+        assertEquals("DECLINED", r.json["status"].asText())
+        assertTrue(r.json["pgTxId"] == null || r.json["pgTxId"].isNull, r.toString())
+        assertEquals(7000L, r.json["amount"].asLong())
+        assertEquals(null, pg.cancelRecord(k))
+        val c = cancellations(k)
+        assertEquals(1, c.json["requests"].asInt())
+        assertTrue(c.json["record"].isNull, "기록이 없어야 한다: $c")
+
+        assertEquals(200, control(k, "APPROVE").status)
+        val ok = cancel(k, 7000)
+        assertEquals("APPROVED", ok.json["status"].asText())
+        assertEquals(7000L, pg.cancelRecord(k)?.amount)
+    }
+
+    @Test
     fun `UNAVAILABLE - 503, 기록하지 않음, 해제하면 승인`() {
         val k = key()
         assertEquals(200, control(k, "UNAVAILABLE").status)

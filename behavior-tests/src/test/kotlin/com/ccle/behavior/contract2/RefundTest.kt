@@ -339,7 +339,11 @@ class RefundTest {
     }
 
     @Test
-    fun `동시 취소 - E 주문 두 항목을 동시에 구매자 취소해도 둘 다 200, 배송비는 정확히 한 번, Σ환불 = 결제액`() {
+    fun `동시 취소 - E 주문 두 항목을 동시에 구매자 취소해도 둘 다 200, 배송비는 정확히 한 번, Σ환불 = 결제액(주문 3건 반복)`() {
+        repeat(3) { concurrentCancelOnce() }
+    }
+
+    private fun concurrentCancelOnce() {
         val buyer = Db.createUser()
         Db.createPointBundle(buyer, 10_000, Flow.now())
         val p = S2.orderE(buyer)
@@ -356,6 +360,75 @@ class RefundTest {
         assertEquals("CANCELLED", Db.order(p.orderId).status)
         assertEquals(50_000L, Db2.pgCancels(p.orderId).sumOf { it.amount })
         assertEquals(5_000L, Db2.ledgerOfUser(buyer, "RESTORE").sumOf { it.amount })
+    }
+
+    @Test
+    fun `카드 취소 PG 거절(DECLINED) - 구매자 취소 409 PG_UNAVAILABLE, 아무것도 바뀌지 않음`() {
+        val buyer = Db.createUser()
+        Db.createPointBundle(buyer, 3_000, Flow.now())
+        val p = S2.purchase(listOf(Line(100_000)), buyer, points = 1_000)
+        PgCancel.decline(p.item)
+        val before = pointSnapshot(buyer)
+
+        Flow.advance(HOUR)
+        S2.cancel(p.item, p.buyer).assertError(409, "PG_UNAVAILABLE")
+        assertEquals("PAID", Db2.item(p.item).status)
+        assertNoRefund(p, p.item)
+        assertTrue(Db2.pgCancels(p.orderId).isEmpty(), "CANCEL 행 없음")
+        assertEquals("PAID", Db.order(p.orderId).status)
+        assertEquals(before, pointSnapshot(buyer), "포인트 원장·잔액 무변경")
+        val pg = PgCancel.info(p.item)
+        assertTrue(pg.amounts.isNotEmpty() && pg.amounts.all { it == 102_000L }, "앱이 취소를 요청했다: $pg")
+        assertNull(pg.status, "PG 기록 없음: $pg")
+    }
+
+    @Test
+    fun `카드 취소 금액 불일치 - shipment-deadline은 그 대상을 건너뛴다(PAID 그대로, 환불·패널티·CANCEL 행 없음)`() {
+        val p = S2.purchase(100_000)
+        PgCancel.record(p.item, p.key, 1_000)
+        Flow.moveTo(p.paidAt.plus(days(3)))
+        S2.runBatch("shipment-deadline")
+        assertEquals("PAID", Db2.item(p.item).status)
+        assertNoRefund(p, p.item)
+        assertTrue(Db2.penaltiesOfItem(p.item).isEmpty())
+        assertTrue(Db2.pgCancels(p.orderId).isEmpty())
+        assertTrue(PgCancel.info(p.item).amounts.contains(103_000L), "배치가 카드 환불 금액으로 요청했다")
+    }
+
+    @Test
+    fun `E6 - E의 1번 항목 확정 뒤 분쟁 인정은 배송비 부분 포함 전액(30,910·3,090·3,000), PARTIALLY_CANCELLED`() {
+        val buyer = Db.createUser()
+        Db.createPointBundle(buyer, 10_000, Flow.now())
+        val p = S2.orderE(buyer)
+        S2.toConfirmed(p.items[0], p.sellers[0], buyer)
+        val disputeId = S2.openDispute(p.items[0], buyer)
+        val now = Flow.advance(HOUR)
+        S2.ready("분쟁 인정", S2.resolve(disputeId, true))
+        assertItemOk(S2.item(p.items[0], buyer), p.items[0], "REFUNDED_AFTER_CONFIRM")
+        assertRefund(p.items[0], Table12.E6, now)
+        assertCardCancel(p, p.items[0], Table12.E6.card, now)
+        assertEquals("PARTIALLY_CANCELLED", Db.order(p.orderId).status)
+        assertTrue(Db2.penaltiesOfItem(p.items[0]).isEmpty())
+    }
+
+    @Test
+    fun `E7 - E1 뒤 2번 항목 확정 → 분쟁 인정(마지막)은 남은 배송비를 싣는다(21,817·2,183·3,000), CANCELLED`() {
+        val buyer = Db.createUser()
+        Db.createPointBundle(buyer, 10_000, Flow.now())
+        val p = S2.orderE(buyer)
+        S2.ready("구매자 취소", S2.cancel(p.items[0], buyer))
+        S2.toConfirmed(p.items[1], p.sellers[1], buyer)
+        val disputeId = S2.openDispute(p.items[1], buyer)
+        val now = Flow.advance(HOUR)
+        S2.ready("분쟁 인정", S2.resolve(disputeId, true))
+        assertItemOk(S2.item(p.items[1], buyer), p.items[1], "REFUNDED_AFTER_CONFIRM")
+        assertRefund(p.items[1], Table12.E7, now)
+        assertCardCancel(p, p.items[1], Table12.E7.card, now)
+        assertEquals("CANCELLED", Db.order(p.orderId).status)
+        val all = Db2.refundsOfOrder(p.orderId)
+        assertEquals(50_000L, all.sumOf { it.cardAmount })
+        assertEquals(5_000L, all.sumOf { it.pointAmount })
+        assertEquals(3_000L, all.sumOf { it.shippingAmount })
     }
 
     private fun concurrently(n: Int, call: (Int) -> com.ccle.behavior.support.Resp): List<com.ccle.behavior.support.Resp> {

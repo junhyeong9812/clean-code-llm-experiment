@@ -182,4 +182,13 @@ class FulfillmentTest {
             assertTrue(Db2.penaltiesOfItem(p.item).isEmpty())
         }
     }
+
+    @Test
+    fun `검수 불합격 reason은 받은 그대로 저장 - 앞뒤 공백 포함 inspections·refunds`() {
+        val p = S2.purchase(70_000)
+        S2.toInspecting(p.item, p.seller)
+        assertItemOk(S2.inspect(p.item, "FAIL", "  오염  "), p.item, "CANCELLED_SELLER_FAULT")
+        assertEquals("  오염  ", Db2.inspections(p.item).single().reason)
+        assertEquals("  오염  ", Db2.refunds(p.item).single().reason)
+    }
 }
