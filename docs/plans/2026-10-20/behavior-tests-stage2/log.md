@@ -49,11 +49,11 @@
 | L2-5 | 2 | codex OQ | FakePg 취소 DECLINE | 채택 | fixed | 2 |
 | L2-6 | 2 | opus | 분쟁 인정 다항목·배송비(E6·E7) | 채택 | fixed | 2 |
 | L2-A3 | 2 | 감사 | 배치 금액 불일치 건너뛰기 | 채택 | fixed | 2 |
-| L3-1 | 3 | codex(+감사 A2) | Stage2.kt:212-214, SerialRaceTest.kt:33·65 PG 요청 수 | 채택(거짓 실패) | open | — |
-| L3-2 | 3 | opus | SettlementTest.kt INCLUDED 뒤 분쟁 HELD | 채택 | open | — |
-| L3-3 | 3 | opus | GradeRecalcTest.kt 판매분 기준 금액 | 채택 | open | — |
-| L3-4 | 3 | opus | GradeRecalcTest.kt D ≠ 1일 실행 | 채택 | open | — |
-| L3-5 | 3 | opus | 소급 확정 balance.updated_at | 채택 | open | — |
+| L3-1 | 3 | codex(+감사 A2) | Stage2.kt:212-214, SerialRaceTest.kt:33·65 PG 요청 수 | 채택(거짓 실패) | fixed | 3 |
+| L3-2 | 3 | opus | SettlementTest.kt INCLUDED 뒤 분쟁 HELD | 채택 | fixed | 3 |
+| L3-3 | 3 | opus | GradeRecalcTest.kt 판매분 기준 금액 | 채택 | fixed | 3 |
+| L3-4 | 3 | opus | GradeRecalcTest.kt D ≠ 1일 실행 | 채택 | fixed | 3 |
+| L3-5 | 3 | opus | 소급 확정 balance.updated_at | 채택 | fixed | 3 |
 | L3-x1 | 3 | codex | §8.1 기동 전환 | 기각(L2-2 반복, NEXT) | — | — |
 | Q3-1~4 | 3 | codex·opus OQ | 정산 행 없음 분기·PG 취소 타임아웃·KDoc·영구 상태 | 미검증 기록(KDoc만 수정) | — | — |
 | 2026-10-21 | 리뷰 회수: codex 7건(F1~F7, 금액 12행 전부 맞음) · Opus 8건+OQ 7(금액 전부 맞음, [verify] 주장 전부 맞음). 메인 종합 D1~D10·Q1~Q6 | 원문·종합표 `scratchpad/rv.LVul/results/` |
@@ -76,6 +76,8 @@
 | 2026-10-21 | 리뷰 루프 3(마지막) 착수: packet base `a8a3556` 누적 + loopfix(04b6558..2eed09e), OUT `scratchpad/rv.OYfN`, 미러 `mirror.zxS1`, 스캔 0 | Opus ∥ codex |
 | 2026-10-21 | 리뷰 루프 3(상한) 회수: codex 2건+OQ 1(F2는 L2-2 반복) · Opus 4건+OQ 6(수정이 만든 결함 0) → 메인 종합 L3-1~5(L3-1은 **거짓 실패** — 같은 키 재시도 구현을 떨어뜨림)·L3-x1 기각·Q3-1~4 | 상한 도달·신규 채택 5 → 사용자 판단 요청 |
 | 2026-10-21 | 사용자: "5건 수정 + 타깃 재점검 1회 후 종료" | codex 감사: A1 Q3-2의 "UNAVAILABLE와 같은 분기" 근거 부정확(타임아웃은 PG 기록 뒤 무응답) → 별도 미검증 경로로 기록 · A2 L3-1의 "모든 요청 키" 검증 불가 → 가짜 PG 전체 취소 조회 추가로 채택 · L3-x1 기각 타당(NEXT 유지) |
+| 2026-10-21 13:03~13:14 | L3 수정 워커(Opus, blind): 6건, 80→82개, infra 27→28(가짜 PG 전체 취소 조회), +129 −14 | 두 앱 82/82 red, skip 0, 기타 0, verify 0 · 1단계 117/117·infra 28 · 반증 스텁 통과 0·트리거 잔여 0. 커밋 839f11f |
+| 2026-10-21 | 타깃 재점검(codex, packet base `6202db8`, OUT `scratchpad/rv.lW1u`): L3-1~5 해소, **신규 0** | 리뷰 종료(사용자 결정대로). 마감 |
 
 ## DB 표면 대조 (가정 1 — 조사 워커 회수본 요약, 근거 T=tables.sql·V=verify.sql·G=seedgen.py)
 
