@@ -42,6 +42,13 @@
 | L1-15 | 1 | opus | 테스트 | 채택 | fixed | 1 |
 | Q-1 | 1 | opus OQ3 | 시계 큰 이동 뒤 정산 실행 시간 | open question | 구현 단계 측정 | — |
 | Q-2 | 1 | opus | 등급 소급 없음 미판정 | 기각(낮음) | — | — |
+| L2-1 | 2 | codex | FulfillmentTest.kt:73 reason 원문 | 채택 | fixed | 2 |
+| L2-2 | 2 | codex+opus OQ | §8.1 기동 전환 경로 | 기각(하네스 한계 — 계약 테스트는 앱 재기동 불가; equiv recov도 적립률 미판정, 감사 A2) → 미검증 한계로 NEXT 기록 | — | — |
+| L2-3 | 2 | codex | SettlementTest.kt:87 CLAWBACK 경계 | 채택 | fixed | 2 |
+| L2-4 | 2 | codex(+감사 A4) | SettlementTest.kt:70 한 주 원자성 | 채택 | fixed | 2 |
+| L2-5 | 2 | codex OQ | FakePg 취소 DECLINE | 채택 | fixed | 2 |
+| L2-6 | 2 | opus | 분쟁 인정 다항목·배송비(E6·E7) | 채택 | fixed | 2 |
+| L2-A3 | 2 | 감사 | 배치 금액 불일치 건너뛰기 | 채택 | fixed | 2 |
 | 2026-10-21 | 리뷰 회수: codex 7건(F1~F7, 금액 12행 전부 맞음) · Opus 8건+OQ 7(금액 전부 맞음, [verify] 주장 전부 맞음). 메인 종합 D1~D10·Q1~Q6 | 원문·종합표 `scratchpad/rv.LVul/results/` |
 | 2026-10-21 | 사용자 결정(D4 카드 취소 중 앱 사망): "계약 밖 + 최소 안전장치" | |
 | 2026-10-21 | codex 감사(1회 성공): A1 D3 같은 날 배치 전후 승인 차이·GOLD 무이력 · A2 D2 "스냅샷" 표현 부정확(BRONZE 유지 사용자는 D 행 없음) · A3 D4(b)의 "키에 사유" 안이 고아 뒤 이중 카드 취소를 만든다 | A1 채택: 한계 명시 + grade-recalc 기준일 00:00 실행 전제 + 비BRONZE 테스트 사용자는 이력 행 함께. A2 채택: 문구 정정. A3 채택: 키는 항목당 하나 유지, 안전장치는 금액 불일치 409만(사용자 결정 "계약 밖 + 최소 안전장치"의 범위 안 — 세부 교체를 보고) |
@@ -58,6 +65,7 @@
 | 2026-10-21 12:10~12:23 | L1 수정 워커(Opus, blind): 15건 반영, 65→73개(+9, 스모크 −1), +271 −17줄 | 두 앱 73/73 red, skip 0, 기타 0, verify 0 · 1단계 117/117·infra 26 · 반증 스텁 재실행 **통과 0**. 메인 확인: 73개 @Test·1단계·main 소스·금지영역 무변경 → 커밋. 루프 2 리뷰로 |
 | 2026-10-21 | 리뷰 루프 2 착수: packet base `a8a3556`(누적) + loopfix diff(6a5a69c..86dc2fa), OUT `scratchpad/rv.WYYN`, 미러 `mirror.U26p`, 스캔 0 | Opus ∥ codex |
 | 2026-10-21 | 리뷰 루프 2 회수: codex 4건+OQ 1 · Opus 1건+OQ 5(수정이 만든 결함 0) → 메인 종합 L2-1~6·Q2-1~4. codex 감사: A1 E7 기대값(감사는 E6 뒤로 읽음 — 원안은 "E1 뒤"라 값은 맞음, 문구를 명시로 정정) · A2 L2-2 기각 근거의 "recov가 다룸" 주장 오류 → 미검증 한계로 정정 · A3 Q2-2 기각 부당 → 채택(배치 금액 불일치) · A4 L2-4 주입 순서 → "실제 두 번째 INSERT"에서 실패 | ADR §12 E6·E7, 가짜 PG 취소 DECLINE 추가. 수정 워커에 L2 브리핑 |
+| 2026-10-21 12:33~12:44 | L2 수정 워커(Opus, blind): 7건, 73→80개, infra 26→27(FakePg DECLINE), +178 −2 | 두 앱 80/80 red, skip 0, 기타 0, verify 0 · 1단계 117/117·infra 27 · 반증 스텁 통과 0, 원자성 트리거·함수 잔여 0. 메인 확인: 80개 @Test·1단계 무변경·FakePg diff(+3 −1) → 커밋. 루프 3(마지막)으로 |
 
 ## DB 표면 대조 (가정 1 — 조사 워커 회수본 요약, 근거 T=tables.sql·V=verify.sql·G=seedgen.py)
 
