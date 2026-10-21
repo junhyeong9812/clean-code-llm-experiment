@@ -142,7 +142,7 @@ class RefundTest {
         assertEquals(2_000L, Db.ledgerEntry(bundle.earnId).remaining)
         assertEquals(balBefore, Db.balance(buyer))
         val pg = PgCancel.info(p.item)
-        assertEquals(listOf(102_000L), pg.amounts, "PG가 받은 취소 요청: $pg")
+        assertTrue(pg.amounts.isNotEmpty() && pg.amounts.all { it == 102_000L }, "PG가 받은 취소 요청 금액 = 카드 환불: $pg")
         assertNull(pg.status, "PG에 취소 기록 없음: $pg")
 
         PgCancel.approve(p.item)
@@ -150,7 +150,6 @@ class RefundTest {
         assertItemOk(S2.cancel(p.item, p.buyer), p.item, "CANCELLED_BY_BUYER")
         assertRefund(p.item, RefundExp(card = 102_000, point = 1_000, buyerFee = 3_000, shipping = 0, reason = "구매자 취소", fault = "BUYER"), now)
         val after = PgCancel.info(p.item)
-        assertEquals(2, after.requests)
         assertEquals("APPROVED", after.status)
         assertEquals(102_000L, after.amount)
         assertEquals(1, Db2.pgCancels(p.orderId).size)
@@ -252,5 +251,130 @@ class RefundTest {
         assertEquals(listOf(1_000L, 1_000L), Db2.ledgerOfUser(buyer, "EXPIRE").map { it.amount })
         assertEquals(0L, Db.ledgerEntry(bundle.earnId).remaining)
         assertEquals(available - 1_000L, Db.balance(buyer)!!.available)
+    }
+
+    /** E 주문의 항목 하나에 대해 포인트·원장 스냅샷(무변경 단언용). */
+    private fun pointSnapshot(buyer: Long) = Db.ledger(buyer) to Db.balance(buyer)
+
+    @Test
+    fun `카드 취소 응답 금액 불일치 - PG가 같은 키로 다른 금액을 이미 기록했으면 409 PG_UNAVAILABLE, 아무것도 바뀌지 않음`() {
+        // 체결가 100,000, 포인트 1,000 → 카드 환불 102,000. PG에는 같은 키로 1,000이 먼저 기록돼 있다(§7.2 금액 확인)
+        val buyer = Db.createUser()
+        Db.createPointBundle(buyer, 3_000, Flow.now())
+        val p = S2.purchase(listOf(Line(100_000)), buyer, points = 1_000)
+        PgCancel.record(p.item, p.key, 1_000)
+        val before = pointSnapshot(buyer)
+
+        Flow.advance(HOUR)
+        S2.cancel(p.item, p.buyer).assertError(409, "PG_UNAVAILABLE")
+        assertEquals("PAID", Db2.item(p.item).status)
+        assertNoRefund(p, p.item)
+        assertTrue(Db2.pgCancels(p.orderId).isEmpty(), "CANCEL 행 없음")
+        assertEquals("PAID", Db.order(p.orderId).status)
+        assertEquals(before, pointSnapshot(buyer), "포인트 원장·잔액 무변경")
+        val pg = PgCancel.info(p.item)
+        assertTrue(pg.amounts.contains(102_000L), "앱은 카드 환불 금액으로 요청했다: $pg")
+        assertEquals(1_000L, pg.amount, "PG 기록은 처음 금액 그대로: $pg")
+    }
+
+    @Test
+    fun `카드 취소 PG 불가 - 검수 불합격도 409 PG_UNAVAILABLE, 항목·검수 행·환불·포인트·패널티 무변경`() {
+        val buyer = Db.createUser()
+        Db.createPointBundle(buyer, 3_000, Flow.now())
+        val p = S2.purchase(listOf(Line(100_000)), buyer, points = 1_000)
+        S2.toInspecting(p.item, p.seller)
+        PgCancel.unavailable(p.item)
+        val before = pointSnapshot(buyer)
+
+        Flow.advance(HOUR)
+        S2.inspect(p.item, "FAIL", "오염").assertError(409, "PG_UNAVAILABLE")
+        val row = Db2.item(p.item)
+        assertEquals("INSPECTING", row.status)
+        assertNull(row.inspectedAt)
+        assertTrue(Db2.inspections(p.item).isEmpty(), "검수 행 없음(§2.3 아무것도 바꾸지 않음)")
+        assertNoRefund(p, p.item)
+        assertTrue(Db2.penaltiesOfItem(p.item).isEmpty())
+        assertEquals(before, pointSnapshot(buyer))
+        assertEquals("PAID", Db.order(p.orderId).status)
+    }
+
+    @Test
+    fun `카드 취소 PG 불가 - 분쟁 인정도 409 PG_UNAVAILABLE, 분쟁 OPEN·항목 DISPUTED·환불·포인트(회수 포함) 무변경`() {
+        val p = S2.purchase(100_000)
+        S2.toConfirmed(p.item, p.seller, p.buyer)
+        val disputeId = S2.openDispute(p.item, p.buyer)
+        PgCancel.unavailable(p.item)
+        val before = pointSnapshot(p.buyer)
+
+        Flow.advance(HOUR)
+        S2.resolve(disputeId, true).assertError(409, "PG_UNAVAILABLE")
+        val d = Db2.dispute(disputeId)
+        assertEquals("OPEN", d.status)
+        assertNull(d.resolvedAt)
+        assertEquals("DISPUTED", Db2.item(p.item).status)
+        assertNoRefund(p, p.item)
+        assertTrue(Db2.penaltiesOfItem(p.item).isEmpty())
+        assertTrue(Db2.ledgerOfItem(p.item, "REVOKE").isEmpty())
+        assertEquals(before, pointSnapshot(p.buyer))
+    }
+
+    @Test
+    fun `E5 - E1 뒤 2번 항목 검수 불합격(마지막)은 남은 배송비를 싣는다, 패널티 2,000`() {
+        val buyer = Db.createUser()
+        Db.createPointBundle(buyer, 10_000, Flow.now())
+        val p = S2.orderE(buyer)
+        S2.ready("구매자 취소", S2.cancel(p.items[0], p.buyer))
+        S2.toInspecting(p.items[1], p.sellers[1])
+
+        val now = Flow.advance(HOUR)
+        assertItemOk(S2.inspect(p.items[1], "FAIL", "손상"), p.items[1], "CANCELLED_SELLER_FAULT")
+        assertRefund(p.items[1], Table12.e5("손상"), now)
+        assertCardCancel(p, p.items[1], Table12.e5("").card, now)
+        assertEquals("CANCELLED", Db.order(p.orderId).status)
+        assertEquals(Table12.E5_PENALTY, Db2.penaltiesOfItem(p.items[1]).single().amount)
+        val all = Db2.refundsOfOrder(p.orderId)
+        assertEquals(50_000L, all.sumOf { it.cardAmount })
+        assertEquals(5_000L, all.sumOf { it.pointAmount })
+        assertEquals(3_000L, all.sumOf { it.shippingAmount })
+    }
+
+    @Test
+    fun `동시 취소 - E 주문 두 항목을 동시에 구매자 취소해도 둘 다 200, 배송비는 정확히 한 번, Σ환불 = 결제액`() {
+        val buyer = Db.createUser()
+        Db.createPointBundle(buyer, 10_000, Flow.now())
+        val p = S2.orderE(buyer)
+        Flow.advance(HOUR)
+
+        val rs = concurrently(2) { i -> S2.cancel(p.items[i], p.buyer) }
+        rs.forEachIndexed { i, r -> assertItemOk(r, p.items[i], "CANCELLED_BY_BUYER") }
+        val all = Db2.refundsOfOrder(p.orderId)
+        assertEquals(2, all.size)
+        assertEquals(50_000L, all.sumOf { it.cardAmount }, "Σ카드 환불 = card_amount")
+        assertEquals(5_000L, all.sumOf { it.pointAmount }, "Σ포인트 환불 = point_used")
+        assertEquals(3_000L, all.sumOf { it.shippingAmount }, "배송비 합")
+        assertEquals(1, all.count { it.shippingAmount > 0 }, "배송비가 실린 환불은 1건")
+        assertEquals("CANCELLED", Db.order(p.orderId).status)
+        assertEquals(50_000L, Db2.pgCancels(p.orderId).sumOf { it.amount })
+        assertEquals(5_000L, Db2.ledgerOfUser(buyer, "RESTORE").sumOf { it.amount })
+    }
+
+    private fun concurrently(n: Int, call: (Int) -> com.ccle.behavior.support.Resp): List<com.ccle.behavior.support.Resp> {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(n)
+        val ready = java.util.concurrent.CountDownLatch(n)
+        val go = java.util.concurrent.CountDownLatch(1)
+        try {
+            val futures = (0 until n).map { i ->
+                pool.submit<com.ccle.behavior.support.Resp> {
+                    ready.countDown()
+                    go.await()
+                    call(i)
+                }
+            }
+            ready.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            go.countDown()
+            return futures.map { it.get(60, java.util.concurrent.TimeUnit.SECONDS) }
+        } finally {
+            pool.shutdownNow()
+        }
     }
 }

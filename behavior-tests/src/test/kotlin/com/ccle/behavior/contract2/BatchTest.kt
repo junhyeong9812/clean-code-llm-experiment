@@ -81,6 +81,19 @@ class BatchTest {
     }
 
     @Test
+    fun `auto-confirm - delivered_at + 7일 정각이면 CONFIRMED, confirmed_at = delivered_at + 7일`() {
+        val p = S2.purchase(100_000)
+        S2.toDelivered(p.item, p.seller)
+        val due = Db2.item(p.item).deliveredAt!!.plus(days(7))
+        Flow.moveTo(due)
+        S2.runBatch("auto-confirm")
+        val row = Db2.item(p.item)
+        assertEquals("CONFIRMED", row.status)
+        assertEquals(due, row.confirmedAt)
+        assertEquals(due.plus(days(365)), Db.earnOfItem(p.item).single().expiresAt)
+    }
+
+    @Test
     fun `auto-confirm - 구매자가 먼저 확정한 항목은 바꾸지 않는다(confirmed_at 그대로)`() {
         val p = S2.purchase(100_000)
         S2.toDelivered(p.item, p.seller)
@@ -127,13 +140,5 @@ class BatchTest {
         Flow.advance(HOUR)
         S2.runBatch("point-expiry")
         assertEquals(1, Db2.ledgerOfUser(buyer, "EXPIRE").size)
-    }
-
-    @Test
-    fun `배치 이름 - 2단계 배치 5종이 모두 200 processed 정수(grade-recalc는 기준일 00시에)`() {
-        Flow.moveTo(Kst.at(Kst.nextMonthStart(Flow.now())))
-        for (name in listOf("shipment-deadline", "auto-confirm", "point-expiry", "grade-recalc", "weekly-settlement")) {
-            S2.runBatch(name)
-        }
     }
 }

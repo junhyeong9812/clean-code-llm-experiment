@@ -60,10 +60,14 @@ class BuyerActionTest {
         val p = S2.purchase(50)
         assertTrue(Db.earnOfItem(p.item).isEmpty(), "준비(1단계): 적립 0이면 EARN 행 없음")
         S2.toDelivered(p.item, p.seller)
+        val before = points(p.buyer)
         assertItemOk(S2.confirm(p.item, p.buyer), p.item, "CONFIRMED")
         assertTrue(Db.ledger(p.buyer).isEmpty())
-        assertNull(Db.balance(p.buyer))
+        assertEquals(before, points(p.buyer), "available·pending 그대로(잔액 행 없음 = 0)")
     }
+
+    /** (available, pending). point_balances 행이 없으면 0, 0. */
+    private fun points(user: Long): Pair<Long, Long> = Db.balance(user).let { (it?.available ?: 0L) to (it?.pending ?: 0L) }
 
     @Test
     fun `구매자 취소 - PAID 항목 CANCELLED_BY_BUYER·cancelled_at = 현재, 환불 fault BUYER·reason 구매자 취소, 체결 PAID·입찰 MATCHED 유지`() {
@@ -231,13 +235,29 @@ class BuyerActionTest {
     }
 
     @Test
-    fun `분쟁 응답 - openedAt·resolvedAt은 오프셋 포함 ISO-8601`() {
+    fun `분쟁 응답 - openedAt·resolvedAt은 오프셋 포함 ISO-8601이고 disputes 행·시계와 같다`() {
         val p = S2.purchase(price)
         S2.toConfirmed(p.item, p.seller, p.buyer)
+        val openedAt = Flow.advance(HOUR)
         val r = S2.dispute(p.item, p.buyer).assertStatus(201)
         val iso = Regex(""".*T.*([+-]\d{2}:\d{2}|Z)$""")
         assertTrue(iso.matches(r.json.textAt("openedAt")), r.toString())
-        val res = S2.resolve(r.json.longAt("disputeId"), false).assertStatus(200)
+        val disputeId = r.json.longAt("disputeId")
+        val d = Db2.disputes(p.item).single()
+        assertEquals(d.id, disputeId, "disputes.id = 응답 disputeId")
+        assertEquals("OPEN", d.status)
+        assertEquals(openedAt, d.openedAt, "opened_at = 그때 시계")
+        assertEquals(d.openedAt, r.json.instantOrNull("openedAt"), "응답 openedAt = opened_at")
+        assertEquals("DISPUTED", Db2.item(p.item).status)
+
+        val resolvedAt = Flow.advance(HOUR)
+        val res = S2.resolve(disputeId, false).assertStatus(200)
         assertTrue(iso.matches(res.json.textAt("resolvedAt")), res.toString())
+        val after = Db2.dispute(disputeId)
+        assertEquals("REJECTED", after.status)
+        assertEquals(resolvedAt, after.resolvedAt, "resolved_at = 그때 시계")
+        assertEquals(after.resolvedAt, res.json.instantOrNull("resolvedAt"), "응답 resolvedAt = resolved_at")
+        assertEquals(after.openedAt, res.json.instantOrNull("openedAt"))
+        assertEquals("CONFIRMED", Db2.item(p.item).status)
     }
 }

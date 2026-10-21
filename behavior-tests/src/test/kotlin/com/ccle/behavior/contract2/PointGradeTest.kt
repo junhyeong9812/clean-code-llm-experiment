@@ -125,5 +125,35 @@ class PointGradeTest {
         assertRefund(a.items[0], RefundExp(card = 119_964, point = 3_636, buyerFee = 3_600, shipping = 0, reason = "분쟁 인정", fault = "DISPUTE"), now)
         assertEquals("PARTIALLY_CANCELLED", Db.order(a.orderId).status)
         assertEquals(3_636L, Db.balance(buyer)!!.available)
+
+        // 회수로 0이 된 묶음에도 다른 주문의 복구는 돌아온다(§7.3): 1,000P를 쓴 주문을 취소 → RESTORE 1,000 → remaining 1,000
+        Flow.advance(HOUR)
+        S2.ready("구매자 취소", S2.cancel(other.item, buyer))
+        val back = Db2.ledgerOfItem(other.item, "RESTORE").single()
+        assertEquals(1_000L, back.amount)
+        assertEquals(mapOf(earn.id to 1_000L), allocMap(back.id))
+        assertEquals(1_000L, Db.ledgerEntry(earn.id).remaining)
+        assertEquals("AVAILABLE", Db.ledgerEntry(earn.id).status)
+    }
+
+    @Test
+    fun `회수 - 적립을 전부 써서 remaining = 0이면 분쟁 인정에 REVOKE 행이 없다`() {
+        // 체결가 100,000(포인트 0) → EARN 1,000. 확정 뒤 다른 주문이 1,000P를 모두 쓴다
+        val buyer = Db.createUser()
+        val d = S2.purchase(listOf(Line(100_000)), buyer)
+        S2.toConfirmed(d.item, d.seller, buyer)
+        val earn = Db.earnOfItem(d.item).single()
+        assertEquals(1_000L, earn.amount)
+        S2.purchase(listOf(Line(30_000)), buyer, points = 1_000)
+        assertEquals(0L, Db.ledgerEntry(earn.id).remaining, "준비(1단계) 적립 전부 사용")
+
+        val disputeId = S2.openDispute(d.item, buyer)
+        Flow.advance(HOUR)
+        S2.ready("분쟁 인정", S2.resolve(disputeId, true))
+        assertEquals("REFUNDED_AFTER_CONFIRM", Db2.item(d.item).status)
+        assertTrue(Db2.ledgerOfItem(d.item, "REVOKE").isEmpty(), "남은 양이 없으면 회수 행 없음")
+        assertEquals(0L, Db.ledgerEntry(earn.id).remaining)
+        assertEquals("AVAILABLE", Db.ledgerEntry(earn.id).status)
+        assertEquals(0L, Db.balance(buyer)!!.available)
     }
 }

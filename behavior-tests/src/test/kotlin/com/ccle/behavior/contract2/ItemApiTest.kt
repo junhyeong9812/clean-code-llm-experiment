@@ -13,7 +13,8 @@ import kotlin.test.assertNull
 /**
  * ADR-0004 §2 공통: 새 오류 코드(§2.1), 403 NOT_OWNER·404 NOT_FOUND·401, 판정 순서(401 → 400 → 404 → 403 → 409),
  * 주문 항목 응답 모양(§2.2), GET /orders의 2단계 상태.
- * 오류 단언이 라우트 없는 404로 통과하지 않게, 오류를 보는 테스트마다 같은 엔드포인트 계열의 성공 경로를 먼저 단언한다.
+ * 오류 단언이 라우트 없는 404로 통과하지 않게, 404·401 테스트는 GET /order-items/{id}(401은 GET /me/settlements도)의 성공을
+ * 대조군으로 단언한다. 그 밖의 오류 테스트는 같은 테스트 안의 성공 호출(준비 단계의 2단계 호출 포함)이 라우트 존재를 보인다.
  */
 @Contract2Test
 class ItemApiTest {
@@ -119,6 +120,25 @@ class ItemApiTest {
         S2.ship(q.item, q.seller).assertError(409, "ITEM_STATE_CONFLICT")
         assertEquals("SHIPPED_TO_CENTER", Db2.item(q.item).status)
         assertNoRefund(q, q.item)
+    }
+
+    @Test
+    fun `상태 위반이 기한 위반보다 먼저 - 발송된 항목의 기한 뒤 재발송, DISPUTED 항목의 기간 뒤 재제기는 409 ITEM_STATE_CONFLICT`() {
+        val shipped = S2.purchase(70_000)
+        S2.toShipped(shipped.item, shipped.seller)
+        val disputed = S2.purchase(70_000)
+        S2.toConfirmed(disputed.item, disputed.seller, disputed.buyer)
+        S2.openDispute(disputed.item, disputed.buyer)
+        val confirmedAt = Db2.item(disputed.item).confirmedAt!!
+
+        Flow.moveTo(shipped.paidAt.plus(days(3)).plus(HOUR))
+        S2.ship(shipped.item, shipped.seller).assertError(409, "ITEM_STATE_CONFLICT")
+        assertEquals("SHIPPED_TO_CENTER", Db2.item(shipped.item).status)
+
+        Flow.moveTo(confirmedAt.plus(days(14)).plus(SEC))
+        S2.dispute(disputed.item, disputed.buyer).assertError(409, "ITEM_STATE_CONFLICT")
+        assertEquals("DISPUTED", Db2.item(disputed.item).status)
+        assertEquals(1, Db2.disputes(disputed.item).size)
     }
 
     @Test

@@ -8,7 +8,6 @@ import com.ccle.behavior.support.SettlementItemRow
 import com.ccle.behavior.support.longAt
 import com.ccle.behavior.support.textAt
 import org.junit.jupiter.api.Test
-import java.time.LocalDate
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -36,8 +35,8 @@ class SettlementTest {
         db.forEachIndexed { i, s ->
             val j = arr[i]
             assertEquals(s.id, j.longAt("settlementId"), "[$i] settlementId(period_start 오름차순): $r")
-            assertEquals(s.periodStart, LocalDate.parse(j.textAt("periodStart").take(10)), "[$i] periodStart: $r")
-            assertEquals(s.periodEnd, LocalDate.parse(j.textAt("periodEnd").take(10)), "[$i] periodEnd: $r")
+            assertEquals(s.periodStart.toString(), j.textAt("periodStart"), "[$i] periodStart \"YYYY-MM-DD\": $r")
+            assertEquals(s.periodEnd.toString(), j.textAt("periodEnd"), "[$i] periodEnd \"YYYY-MM-DD\": $r")
             assertEquals(s.gross, j.longAt("gross"))
             assertEquals(s.feeTotal, j.longAt("feeTotal"))
             assertEquals(s.penaltyTotal, j.longAt("penaltyTotal"))
@@ -95,6 +94,16 @@ class SettlementTest {
         assertSettlement(all[1], Table12.S4, Kst.date(c1))
         assertEquals(listOf(item("CLAWBACK", p.items[0], -120_000, -7_200)), rows(Db2.settlementItems(all[1].id)))
         assertSettlementsBody(seller)
+
+        // 한 주 더: CLAWBACK은 다시 쓰지 않는다(INCLUDED 수 = CLAWBACK 수), 이월만 있는 행
+        val c3 = c2.plus(days(7))
+        Flow.moveTo(c3)
+        S2.runBatch("weekly-settlement")
+        val three = Db2.settlementsOfSeller(seller)
+        assertEquals(3, three.size)
+        assertSettlement(three[2], Table12.Settle(0, 0, 0, -112_800, -112_800, 0, -112_800, "CARRIED"), Kst.date(c2))
+        assertTrue(Db2.settlementItems(three[2].id).isEmpty())
+        assertEquals(1, Db2.settlementItemsOfItem(p.items[0]).count { it.status == "CLAWBACK" }, "CLAWBACK은 1회")
     }
 
     @Test
@@ -258,5 +267,36 @@ class SettlementTest {
         assertEquals("REFUNDED_AFTER_CONFIRM", Db2.item(p.item).status)
         assertTrue(Db2.settlementItemsOfItem(p.item).isEmpty())
         assertTrue(Db2.settlementsOfSeller(seller).isEmpty(), "대상·패널티·이월이 없으면 행을 만들지 않는다")
+    }
+
+    @Test
+    fun `마감 경계 - confirmed_at = 마감 정각이면 그 주에 INCLUDED·HELD가 없고 다음 주에 생긴다`() {
+        val included = S2.purchase(listOf(Line(120_000, "SHOES")))
+        val held = S2.purchase(listOf(Line(45_000, "APPAREL")))
+        S2.toDelivering(included.item, included.seller)
+        S2.toDelivering(held.item, held.seller)
+        val c1 = Kst.cutoffOf(Flow.now())
+
+        Flow.moveTo(c1)
+        for (p in listOf(included, held)) {
+            S2.ready("배송 완료", S2.deliver(p.item))
+            S2.ready("구매 확정", S2.confirm(p.item, p.buyer))
+            assertEquals(c1, Db2.item(p.item).confirmedAt, "준비(2단계) confirmed_at = 마감 정각")
+        }
+        S2.openDispute(held.item, held.buyer)
+        S2.runBatch("weekly-settlement")
+        for (p in listOf(included, held)) {
+            assertTrue(Db2.settlementItemsOfItem(p.item).isEmpty(), "confirmed_at < cutoff가 아니므로 마감 c1의 주에는 없다")
+            assertTrue(Db2.settlementsOfSeller(p.seller).isEmpty())
+        }
+
+        Flow.moveTo(c1.plus(days(7)))
+        S2.runBatch("weekly-settlement")
+        val si = Db2.settlementsOfSeller(included.seller).single()
+        assertEquals(Kst.date(c1), si.periodStart)
+        assertEquals(listOf(item("INCLUDED", included.item, 120_000, 7_200)), rows(Db2.settlementItems(si.id)))
+        val sh = Db2.settlementsOfSeller(held.seller).single()
+        assertEquals(Kst.date(c1), sh.periodStart)
+        assertEquals(listOf(item("HELD", held.item, 0, 0)), rows(Db2.settlementItems(sh.id)))
     }
 }
