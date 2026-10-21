@@ -32,6 +32,8 @@
 | 2026-10-21 | post-fix 재점검(codex, packet base `e792eea`, OUT `scratchpad/rv.bicV`): D1~D10·P2 전부 해소, **신규 0** | ADR-0004 리뷰 종료(설계 문서 = 설계 선검증+듀얼 1패스 상한). 사용자 합의 요청 |
 | 2026-10-21 | 사용자: ADR-0004 "채택" | 상태 채택. §11.1 → ADR-0003 §9의 8, §11.2~9 → ADR-0002 §9.7 개정 항목으로 옮김(명세 §4 방식). task 02 완료 → task 03(테스트 기반) |
 | 2026-10-21 11:17~11:28 | task 03 워커(Opus): `contract2Test` 태스크(태그 contract2 + 패키지 필터, contractTest에서 contract2 패키지 제외), FakePg `POST /cancellations`·`UNAVAILABLE`·`GET /_control/cancellations/{key}`, `@Contract2Test`, FakePgCancellationTest 8개. run.sh 수정 없음(두 번째 인자로 태스크) | run.sh god·layered exit 0(infra 26 = 18+8, contract 117/117, skip 0, verify 0). contract2Test 0개 → exit 1(No tests found — 0건 통과 위장 없음, 메인: 유지). 메인 확인: build.gradle diff 열람·금지영역 diff 0 → 코드 커밋. 보조 제어 엔드포인트는 ADR §7.2에 1줄 추가. 동시에 다른 세션의 무관한 부하 프로세스(`/tmp/tmp.k7g7Rydr7o/scripts/run.sh`)가 돌고 있었음 — 결과에 영향 없음 |
+| 2026-10-21 11:29~11:54 | task 04 워커(Opus, blind — god/layered 미열람): contract2 테스트 10클래스 65개 + Stage2.kt·Db2.kt·PgCancel.kt(2,152줄). 기존 파일 변경 0 | 두 앱 65/65 red, skip 0, verify 0. 원인: 셋업 2단계 엔드포인트 404 41 · 셋업 배치 400 4 · 대상 엔드포인트 404 12 · 대상 배치 400 5 · §8.1 미반영 3(의도 — ADR-0003 §9.8 미구현) · 기타 0. 1단계 god 117/117·infra 26. 메인 확인: 65개 @Test·기존 테스트·금지영역 무변경 → 커밋 |
+| 2026-10-21 | 워커 OQ 3건 메인 판정(ADR 문구 보강, 결정 아님 — 판정 순서·형식): 상태 위반이 기한 위반보다 먼저 · date 열 `YYYY-MM-DD` · 문자열은 받은 값 그대로 저장 | ADR §2.1 3줄. 테스트 쪽 단언 보강은 task 05 리뷰에서 |
 
 ## DB 표면 대조 (가정 1 — 조사 워커 회수본 요약, 근거 T=tables.sql·V=verify.sql·G=seedgen.py)
 
