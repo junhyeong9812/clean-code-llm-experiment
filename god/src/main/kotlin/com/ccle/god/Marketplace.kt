@@ -34,6 +34,8 @@ import org.springframework.transaction.support.TransactionTemplate
 import java.math.BigInteger
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 
 /**
  * 거래소의 절차·규칙·저장 전부(ADR-0003 1단계: 입찰·체결·결제·포인트·배치).
@@ -593,6 +595,26 @@ class Marketplace(
     }
 
     /**
+     * 적립률의 등급(ADR-0004 §8.1). 주문 생성 날짜(KST) 이전 effective_from의 최신 이력 → 이력이 모두 그 날짜 뒤면 BRONZE
+     * → 이력이 없으면 users.grade. 승인이 늦어도(pg-inquiry) 주문 생성 날짜로 정한다.
+     */
+    private fun gradeOnOrderDate(order: PurchaseOrder): String =
+        em.createNativeQuery(
+            """
+            SELECT coalesce(
+                       (SELECT h.grade FROM user_grade_history h
+                         WHERE h.user_id = u.id AND h.effective_from <= :orderDate
+                         ORDER BY h.effective_from DESC LIMIT 1),
+                       (SELECT 'BRONZE' FROM user_grade_history h WHERE h.user_id = u.id LIMIT 1),
+                       u.grade)
+              FROM users u
+             WHERE u.id = :user
+            """,
+        ).setParameter("orderDate", LocalDate.ofInstant(order.createdAt, ZoneOffset.ofHours(9)))
+            .setParameter("user", order.buyerId)
+            .singleResult as String
+
+    /**
      * 승인 반영(§5.1 표). 주문·항목 PAID(paid_at), 체결 PAID, USE CONFIRMED, 항목별 EARN PENDING(적립 > 0만), 잔액 pending 증가.
      * 적립 = floor(floor(카드 몫 × 체결가 ÷ 기준액) × 등급 적립률). paidAt은 PG가 승인한 시각(재조회 승인이면 요청 시각).
      */
@@ -603,7 +625,7 @@ class Marketplace(
         order.paidAt = paidAt
 
         // 등급 적립률(ADR-0002 §5.2): BRONZE 1% · SILVER 1.5% · GOLD 2% · VIP 3%
-        val grade = em.find(User::class.java, order.buyerId).grade
+        val grade = gradeOnOrderDate(order)
         val ratePermille = when (grade) {
             "BRONZE" -> 10L
             "SILVER" -> 15L
