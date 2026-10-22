@@ -3,8 +3,10 @@ package com.ccle.layered.api
 import com.ccle.layered.domain.Bid
 import com.ccle.layered.domain.Book
 import com.ccle.layered.domain.OrderSnapshot
+import com.ccle.layered.domain.Refund
 import com.ccle.layered.domain.Trade
 import com.ccle.layered.service.BidDetail
+import com.ccle.layered.service.ItemDetail
 import com.ccle.layered.service.PlacedBid
 import com.ccle.layered.service.PointsSummary
 import java.time.Instant
@@ -111,4 +113,47 @@ data class OrderView(
 
 data class PointsView(val available: Long, val pending: Long, val usable: Long) {
     constructor(summary: PointsSummary) : this(summary.available, summary.pending, summary.usable)
+}
+
+/** 주문 항목 응답(ADR-0004 §2.2). 조회와 항목 상태를 바꾸는 엔드포인트가 같이 쓴다. refund = 환불 행, 없으면 null. */
+data class ItemView(
+    val orderItemId: Long,
+    val orderId: Long,
+    val tradeId: Long,
+    val status: String,
+    val price: Long,
+    val buyerFee: Long,
+    val cardShare: Long,
+    val pointShare: Long,
+    val shippingShare: Long,
+    val paidAt: Instant?,
+    val shippedAt: Instant?,
+    val inspectedAt: Instant?,
+    val deliveredAt: Instant?,
+    val confirmedAt: Instant?,
+    val cancelledAt: Instant?,
+    val refund: RefundView?,
+) {
+    constructor(detail: ItemDetail) : this(
+        orderItemId = detail.item.id!!,
+        orderId = detail.item.orderId,
+        tradeId = detail.item.tradeId,
+        status = detail.item.status,
+        price = detail.item.price,
+        buyerFee = detail.item.buyerFee,
+        cardShare = detail.item.cardShare,
+        pointShare = detail.item.pointShare,
+        shippingShare = detail.item.shippingShare,
+        paidAt = detail.item.paidAt,
+        shippedAt = detail.item.shippedAt,
+        inspectedAt = detail.item.inspectedAt,
+        deliveredAt = detail.item.deliveredAt,
+        confirmedAt = detail.item.confirmedAt,
+        cancelledAt = detail.item.cancelledAt,
+        refund = detail.refund?.let { RefundView(it) },
+    )
+}
+
+data class RefundView(val cardAmount: Long, val pointAmount: Long, val buyerFeeAmount: Long, val shippingAmount: Long, val fault: String) {
+    constructor(refund: Refund) : this(refund.cardAmount, refund.pointAmount, refund.buyerFeeAmount, refund.shippingAmount, refund.fault)
 }

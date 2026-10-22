@@ -49,12 +49,24 @@ class JpaOrderRepository(private val em: EntityManager) : OrderRepository {
                     " WHERE i.trade_id = :trade AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING')",
             ).setParameter("trade", tradeId).singleResult as Number
             ).toLong()
+
+    override fun lock(id: Long) {
+        em.createNativeQuery("SELECT id FROM orders WHERE id = :id FOR UPDATE").setParameter("id", id).resultList
+    }
 }
 
 @Component
 class JpaOrderItemRepository(private val em: EntityManager) : OrderItemRepository {
 
     override fun add(item: OrderItem) = em.persist(item)
+
+    override fun find(id: Long): OrderItem? = em.find(OrderItem::class.java, id)
+
+    override fun lock(id: Long) {
+        em.createNativeQuery("SELECT id FROM order_items WHERE id = :id FOR UPDATE").setParameter("id", id).resultList
+    }
+
+    override fun reload(item: OrderItem) = em.refresh(item)
 
     override fun listOf(orderId: Long): List<OrderItem> =
         em.createQuery("SELECT i FROM OrderItem i WHERE i.orderId = :order ORDER BY i.id", OrderItem::class.java)

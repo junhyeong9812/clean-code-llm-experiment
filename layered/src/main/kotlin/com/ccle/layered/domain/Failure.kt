@@ -15,6 +15,8 @@ enum class Failure {
     IDEMPOTENCY_KEY_REUSED,
     CLOCK_BACKWARD,
     POINT_RULE_VIOLATION,
+    ITEM_STATE_CONFLICT,
+    DEADLINE_PASSED,
 }
 
 class MarketException(val failure: Failure, message: String) : RuntimeException(message)

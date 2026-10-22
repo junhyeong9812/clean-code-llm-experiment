@@ -2,6 +2,7 @@ package com.ccle.layered.api
 
 import com.ccle.layered.service.BatchService
 import com.ccle.layered.service.ClockService
+import com.ccle.layered.service.FulfillmentService
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -12,10 +13,14 @@ import org.springframework.web.bind.annotation.RestController
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 
-/** 관리 엔드포인트(ADR-0003 §7, 헤더 불필요). */
+/** 관리 엔드포인트(ADR-0003 §7, 헤더 불필요)와 센터 절차(ADR-0004 §3). */
 @RestController
 @RequestMapping("/admin")
-class AdminController(private val clock: ClockService, private val batches: BatchService) {
+class AdminController(
+    private val clock: ClockService,
+    private val batches: BatchService,
+    private val fulfillment: FulfillmentService,
+) {
 
     @GetMapping("/clock")
     fun clock(): Map<String, String> = mapOf("now" to iso(clock.now()))
@@ -33,4 +38,16 @@ class AdminController(private val clock: ClockService, private val batches: Batc
 
     @PostMapping("/batches/{name}")
     fun runBatch(@PathVariable name: String): Map<String, Int> = mapOf("processed" to batches.run(name))
+
+    @PostMapping("/order-items/{itemId}/receipt")
+    fun receive(@PathVariable itemId: String): ItemView = ItemView(fulfillment.receive(pathId(itemId)))
+
+    @PostMapping("/order-items/{itemId}/inspection")
+    fun inspect(@PathVariable itemId: String, @RequestBody(required = false) body: String?): ItemView {
+        val json = parseObject(body)
+        return ItemView(fulfillment.inspect(pathId(itemId), json.textOrNull("result"), json.textOrNull("reason")))
+    }
+
+    @PostMapping("/order-items/{itemId}/delivery")
+    fun deliver(@PathVariable itemId: String): ItemView = ItemView(fulfillment.deliver(pathId(itemId)))
 }

@@ -5,6 +5,7 @@ import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
 import jakarta.persistence.Table
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -208,9 +209,9 @@ class OrderItem(
     var shippingShare: Long,
     status: String,
     paidAt: Instant? = null,
-    var shippedAt: Instant? = null,
-    var inspectedAt: Instant? = null,
-    var deliveredAt: Instant? = null,
+    shippedAt: Instant? = null,
+    inspectedAt: Instant? = null,
+    deliveredAt: Instant? = null,
     var confirmedAt: Instant? = null,
     var cancelledAt: Instant? = null,
 ) {
@@ -218,6 +219,15 @@ class OrderItem(
         private set
 
     var paidAt: Instant? = paidAt
+        private set
+
+    var shippedAt: Instant? = shippedAt
+        private set
+
+    var inspectedAt: Instant? = inspectedAt
+        private set
+
+    var deliveredAt: Instant? = deliveredAt
         private set
 
     /** 승인 반영(§5.1 표): 항목 PAID(paid_at). 적립 예정(§5.2): 적립액 > 0이면 EARN PENDING 행을 돌려준다(아니면 null). */
@@ -232,10 +242,65 @@ class OrderItem(
         status = "PAYMENT_FAILED"
     }
 
+    /** 그 체결의 구매자 또는 판매자만(ADR-0004 §2.2 조회). */
+    fun requireParty(trade: Trade, userId: Long) {
+        if (userId != trade.buyerId && userId != trade.sellerId) {
+            throw MarketException(Failure.NOT_OWNER, "구매자도 판매자도 아닌 주문 항목: $id")
+        }
+    }
+
+    /** 그 체결의 판매자만(§3 발송). */
+    fun requireSeller(trade: Trade, userId: Long) {
+        if (trade.sellerId != userId) throw MarketException(Failure.NOT_OWNER, "판매자가 아닌 주문 항목: $id")
+    }
+
+    /** 발송 등록(§3): PAID → SHIPPED_TO_CENTER, 현재 < paid_at + 3일. 상태 위반(409)이 기한 위반(409 DEADLINE_PASSED)보다 먼저다(§2.1). */
+    fun ship(now: Instant) {
+        requireStatus("PAID")
+        val deadline = paidAt!!.plus(SHIP_WITHIN)
+        if (!now.isBefore(deadline)) throw MarketException(Failure.DEADLINE_PASSED, "발송 기한($deadline)이 지났다: $id")
+        status = "SHIPPED_TO_CENTER"
+        shippedAt = now
+    }
+
+    /** 입고(§3): SHIPPED_TO_CENTER → INSPECTING. 입고 시각 열은 없다(inspected_at은 검수 때 쓴다). */
+    fun receive() {
+        requireStatus("SHIPPED_TO_CENTER")
+        status = "INSPECTING"
+    }
+
+    /**
+     * 검수(§3): INSPECTING만. 합격이면 DELIVERING, inspected_at = 현재, inspections PASS 행(reason NULL)을 돌려준다.
+     * 불합격(§6 판매자 귀책)은 아직 처리하지 않는다 — 상태 확인까지 한 뒤 계약 밖 오류로 끝낸다.
+     */
+    fun inspect(request: InspectionRequest, now: Instant): Inspection {
+        requireStatus("INSPECTING")
+        if (!request.passed) throw UnsupportedOperationException("검수 불합격(판매자 귀책)은 아직 처리하지 않는다: $id")
+        status = "DELIVERING"
+        inspectedAt = now
+        return Inspection(orderItemId = id!!, result = "PASS", reason = null, inspectedAt = now)
+    }
+
+    /** 배송 완료(§3): DELIVERING → DELIVERED, delivered_at = 현재. */
+    fun deliver(now: Instant) {
+        requireStatus("DELIVERING")
+        status = "DELIVERED"
+        deliveredAt = now
+    }
+
+    /** 항목 절차의 상태 확인(§2.1): 기대 상태가 아니면 409 ITEM_STATE_CONFLICT. 주문·항목을 잠그고 다시 읽은 뒤 부른다. */
+    private fun requireStatus(expected: String) {
+        if (status != expected) throw MarketException(Failure.ITEM_STATE_CONFLICT, "${expected}가 아닌 주문 항목: $id ($status)")
+    }
+
     /** 적립액 = floor(floor(카드 몫 × 체결가 ÷ 기준액) × 적립률), 기준액 = 체결가 + 수수료 + 배송비 몫. */
     private fun earnAmount(ratePermille: Long): Long {
         val base = Math.addExact(Math.addExact(price, buyerFee), shippingShare)
         return mulDiv(mulDiv(cardShare, price, base), ratePermille, 1000)
+    }
+
+    companion object {
+        private val SHIP_WITHIN: Duration = Duration.ofDays(3)
     }
 }
 
@@ -255,6 +320,9 @@ interface OrderRepository {
 
     /** 그 체결에 걸린(항목이 PAYMENT_FAILED가 아닌) 결과 미정(UNKNOWN·PAYING) 주문 수. */
     fun countUndecidedFor(tradeId: Long): Long
+
+    /** 주문 행 잠금(`SELECT … FOR UPDATE`). 같은 주문의 항목 변경은 이 잠금으로 줄을 선다(ADR-0004 §2.3). */
+    fun lock(id: Long)
 }
 
 /** 다른 요청이 같은 멱등 키로 주문을 먼저 만들었다(유일 제약 위반). 다시 하면 멱등 키 조회에서 판정된다. */
@@ -262,6 +330,14 @@ class DuplicateIdempotencyKeyException(key: String, cause: Throwable) : RuntimeE
 
 interface OrderItemRepository {
     fun add(item: OrderItem)
+
+    fun find(id: Long): OrderItem?
+
+    /** 항목 행 잠금(`SELECT … FOR UPDATE`). 주문 잠금 뒤, 사용자 잠금 전에 한다(잠금 순서 주문 → 항목 → 사용자). */
+    fun lock(id: Long)
+
+    /** 잠금을 기다리는 사이에 바뀌었을 수 있으므로 잠근 뒤 DB의 현재 값으로 다시 읽는다. */
+    fun reload(item: OrderItem)
 
     /** 주문의 항목, id 순. */
     fun listOf(orderId: Long): List<OrderItem>
