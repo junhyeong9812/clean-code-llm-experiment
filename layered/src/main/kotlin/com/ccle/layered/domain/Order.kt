@@ -6,6 +6,11 @@ import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
 import jakarta.persistence.Table
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+
+/** 날짜 판정의 시간대(ADR-0003 §2). */
+private val KST: ZoneOffset = ZoneOffset.ofHours(9)
 
 /** 결제 요청의 값(§5.1). Idempotency-Key 1~64자, tradeIds 1개 이상·중복 없음, pointToUse ≥ 0(생략 = 0). */
 class OrderRequest private constructor(val idempotencyKey: String, val tradeIds: List<Long>, val point: Long) {
@@ -148,6 +153,9 @@ class PurchaseOrder(
     fun requireBuyer(userId: Long) {
         if (buyerId != userId) throw MarketException(Failure.NOT_OWNER, "남의 주문: $id")
     }
+
+    /** 적립률 등급을 정하는 날짜(ADR-0004 §8.1): 주문 생성 시각의 KST 날짜. 승인이 늦어도(pg-inquiry·기동 전환) 이 날짜다. */
+    fun gradeDate(): LocalDate = LocalDate.ofInstant(createdAt, KST)
 
     /** 승인(§5.1 표): PAYING·UNKNOWN → PAID. paidAt = PG가 승인한 시각(재조회 승인이면 요청 시각). */
     fun approve(paidAt: Instant) {

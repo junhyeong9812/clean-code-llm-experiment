@@ -5,6 +5,7 @@ import com.ccle.layered.domain.OrderRepository
 import com.ccle.layered.domain.PointLedgerEntry
 import com.ccle.layered.domain.PointRepository
 import com.ccle.layered.domain.TradeRepository
+import com.ccle.layered.domain.User
 import com.ccle.layered.domain.UserRepository
 import org.springframework.stereotype.Component
 import java.time.Instant
@@ -28,7 +29,7 @@ class PaymentOutcomes(
         users.lock(order.buyerId)
         order.approve(paidAt)
 
-        val rate = users.find(order.buyerId)!!.earnRatePermille()
+        val rate = User.earnRatePermille(users.gradeOn(order.buyerId, order.gradeDate()))
         val earns = mutableListOf<PointLedgerEntry>()
         for (item in items.listOf(orderId)) {
             val earn = item.markPaid(paidAt, order.buyerId, rate)

@@ -7,6 +7,7 @@ import jakarta.persistence.Id
 import jakarta.persistence.Table
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 
 // 도메인 객체 = JPA 엔티티(1단계가 쓰는 테이블의 행). 스키마는 docker/schema/tables.sql 이 정본이고 앱은 validate만 한다.
 // 연관(@ManyToOne 등) 없이 외래 키는 id 값 그대로 둔다. 상태·종류 같은 enum 값은 DB와 같은 문자열로 둔다.
@@ -52,15 +53,6 @@ class User(
         if (counted >= WARNINGS_TO_RESTRICT) purchaseRestrictedUntil = now.plus(PURCHASE_RESTRICTION)
     }
 
-    /** 등급 적립률(ADR-0002 §5.2, 천분율): BRONZE 1% · SILVER 1.5% · GOLD 2% · VIP 3%. 결제 요청 시각의 등급(1단계 전제, ADR-0003 §10). */
-    fun earnRatePermille(): Long = when (grade) {
-        "BRONZE" -> 10L
-        "SILVER" -> 15L
-        "GOLD" -> 20L
-        "VIP" -> 30L
-        else -> throw IllegalStateException("알 수 없는 등급: $grade")
-    }
-
     companion object {
         private val WARNING_WINDOW: Duration = Duration.ofDays(30)
         private val PURCHASE_RESTRICTION: Duration = Duration.ofDays(7)
@@ -68,6 +60,15 @@ class User(
 
         /** 제한 판정에 세는 경고의 시작(이 시각 초과). */
         fun warningWindowStart(now: Instant): Instant = now.minus(WARNING_WINDOW)
+
+        /** 등급 적립률(ADR-0002 §5.2, 천분율): BRONZE 1% · SILVER 1.5% · GOLD 2% · VIP 3%. 등급은 주문 생성 날짜의 등급(ADR-0004 §8.1). */
+        fun earnRatePermille(grade: String): Long = when (grade) {
+            "BRONZE" -> 10L
+            "SILVER" -> 15L
+            "GOLD" -> 20L
+            "VIP" -> 30L
+            else -> throw IllegalStateException("알 수 없는 등급: $grade")
+        }
     }
 }
 
@@ -79,4 +80,10 @@ interface UserRepository {
 
     /** 잠금을 기다리는 사이에 바뀌었을 수 있으므로 DB의 현재 값으로 다시 읽는다. */
     fun reload(user: User)
+
+    /**
+     * 그 날짜의 등급(ADR-0004 §8.1): `effective_from ≤ date`인 최신 등급 이력 → 이력이 모두 그 날짜 뒤면 BRONZE(첫 이력 이전 등급)
+     * → 이력이 없으면 users.grade.
+     */
+    fun gradeOn(userId: Long, date: LocalDate): String
 }
