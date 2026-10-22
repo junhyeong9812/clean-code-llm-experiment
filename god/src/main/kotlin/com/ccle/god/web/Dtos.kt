@@ -1,6 +1,7 @@
 package com.ccle.god.web
 
 import java.time.Instant
+import java.time.LocalDate
 
 // 응답 본문 모양(ADR-0003·ADR-0004). Marketplace가 채워서 돌려주고 컨트롤러가 그대로 JSON으로 쓴다. Instant는 KST ISO-8601로 나간다(Json.kt).
 
@@ -85,3 +86,22 @@ data class DisputeOpened(val disputeId: Long, val orderItemId: Long, val status:
 
 /** 분쟁 판정 응답(ADR-0004 §4.4). */
 data class DisputeView(val disputeId: Long, val orderItemId: Long, val status: String, val openedAt: Instant, val resolvedAt: Instant?)
+
+/** 판매자 정산 조회 응답 1행(ADR-0004 §10.3). periodStart·periodEnd는 "YYYY-MM-DD". items는 orderItemId 오름차순. */
+data class SettlementView(
+    val settlementId: Long,
+    val periodStart: LocalDate,
+    val periodEnd: LocalDate,
+    val gross: Long,
+    val feeTotal: Long,
+    val penaltyTotal: Long,
+    val carryIn: Long,
+    val net: Long,
+    val payout: Long,
+    val carryOut: Long,
+    val status: String,
+    val paidAt: Instant?,
+    val items: List<SettlementItemView>,
+)
+
+data class SettlementItemView(val orderItemId: Long, val amount: Long, val fee: Long, val status: String)

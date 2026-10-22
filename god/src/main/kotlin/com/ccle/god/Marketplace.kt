@@ -14,6 +14,8 @@ import com.ccle.god.entity.ProductSize
 import com.ccle.god.entity.PurchaseOrder
 import com.ccle.god.entity.Refund
 import com.ccle.god.entity.SellerPenalty
+import com.ccle.god.entity.Settlement
+import com.ccle.god.entity.SettlementItem
 import com.ccle.god.entity.Trade
 import com.ccle.god.entity.User
 import com.ccle.god.web.ApiException
@@ -29,6 +31,8 @@ import com.ccle.god.web.OrderView
 import com.ccle.god.web.PaymentResult
 import com.ccle.god.web.PointsView
 import com.ccle.god.web.RefundView
+import com.ccle.god.web.SettlementItemView
+import com.ccle.god.web.SettlementView
 import com.ccle.god.web.TradeView
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
@@ -40,13 +44,15 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.support.TransactionTemplate
 import java.math.BigInteger
+import java.time.DayOfWeek
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.time.temporal.TemporalAdjusters
 
 /**
- * 거래소의 절차·규칙·저장 전부(ADR-0003 1단계: 입찰·체결·결제·포인트·배치, ADR-0004 2단계: 주문 항목 이후 절차).
+ * 거래소의 절차·규칙·저장 전부(ADR-0003 1단계: 입찰·체결·결제·포인트·배치, ADR-0004 2단계: 주문 항목 이후 절차·주간 정산).
  *
  * 컨트롤러는 요청을 파싱해 여기 메서드를 부르고 결과를 JSON으로 바꾸기만 한다.
  * 행 읽기·쓰기는 EntityManager로 하고, 잠금·호가 조회·배치처럼 SQL이 자연스러운 곳은 네이티브 SQL을 쓴다.
@@ -1254,11 +1260,11 @@ class Marketplace(
         )
     }
 
-    // ---- 배치: bid-expiry·payment-due·pg-inquiry (ADR-0003 §7), shipment-deadline·auto-confirm·point-expiry·grade-recalc (ADR-0004 §5) ----
+    // ---- 배치: bid-expiry·payment-due·pg-inquiry (ADR-0003 §7), shipment-deadline·auto-confirm·point-expiry·grade-recalc·weekly-settlement (ADR-0004 §5) ----
 
     /**
-     * `POST /admin/batches/{name}`: 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수). 알 수 없는 이름은 400.
-     * 대상 1건 = 트랜잭션 하나. 카드 취소 실패(409 PG_UNAVAILABLE)는 그 대상만 건너뛰고(ADR-0004 §7.2), 그 밖의 예외는 배치를 멈춘다(앞 대상은 커밋된 채).
+     * `POST /admin/batches/{name}`: 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수, weekly-settlement는 만든 정산 행 수).
+     * 알 수 없는 이름은 400. 대상 1건 = 트랜잭션 하나(weekly-settlement는 한 주 = 트랜잭션 하나). 카드 취소 실패(409 PG_UNAVAILABLE)는 그 대상만 건너뛰고(ADR-0004 §7.2), 그 밖의 예외는 배치를 멈춘다(앞 대상은 커밋된 채).
      */
     fun runBatch(name: String): Int {
         val now = clock.now()
@@ -1271,6 +1277,7 @@ class Marketplace(
             "auto-confirm" -> autoConfirmItems(now)
             "point-expiry" -> expirePoints(now)
             "grade-recalc" -> recalcGrades(now)
+            "weekly-settlement" -> settleWeeks(now)
             else -> badRequest("알 수 없는 배치: $name")
         }
         log.info("배치 {} (현재 {}): processed={}, {}ms", name, now, processed, (System.nanoTime() - started) / 1_000_000)
@@ -1543,6 +1550,154 @@ class Marketplace(
             }!!
         }
     }
+
+    // ---- 주간 정산 (ADR-0004 §10) ----
+
+    private val kst: ZoneOffset = ZoneOffset.ofHours(9)
+
+    /**
+     * 정산 주(마감 :cutoff)의 대상 항목 조건(§10.2, 별칭 i). 경계는 모두 cutoff 배타.
+     * INCLUDED·HELD: CONFIRMED·DISPUTED이고 confirmed_at < cutoff, 아직 INCLUDED가 없는 것(HELD는 주마다 다시 쓴다).
+     * CLAWBACK: REFUNDED_AFTER_CONFIRM이고 cancelled_at < cutoff, INCLUDED 수 > CLAWBACK 수.
+     */
+    private val settlementTargetSql =
+        "(i.status IN ('CONFIRMED', 'DISPUTED') AND i.confirmed_at < :cutoff" +
+            " AND NOT EXISTS (SELECT 1 FROM settlement_items s WHERE s.order_item_id = i.id AND s.status = 'INCLUDED'))" +
+            " OR (i.status = 'REFUNDED_AFTER_CONFIRM' AND i.cancelled_at < :cutoff" +
+            " AND (SELECT count(*) FILTER (WHERE s.status = 'INCLUDED') - count(*) FILTER (WHERE s.status = 'CLAWBACK')" +
+            "      FROM settlement_items s WHERE s.order_item_id = i.id) > 0)"
+
+    /**
+     * weekly-settlement(§10.1): 먼저 auto-confirm을 수행하고(소급 확정 시각이 이미 마감된 주에 들어가지 않게), 정산할 주를 오래된 주부터 정산한다.
+     * 마감 = 월요일 00:00 KST. 정산할 주 = 마감 ≤ 현재이고 마감이 지금까지 만든 정산의 마지막 마감(max(period_start) + 7일)보다 뒤인 주.
+     * 정산 행이 하나도 없으면 현재 직전 마감 1주만. 한 주 = 모든 판매자를 트랜잭션 하나로(§9.2 — 실패하면 그 주 전체가 커밋되지 않는다).
+     */
+    private fun settleWeeks(now: Instant): Int {
+        autoConfirmItems(now)
+        val latest = LocalDate.ofInstant(now, kst).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        val lastPeriodStart = em.createQuery("SELECT max(s.periodStart) FROM Settlement s", LocalDate::class.java).singleResult
+        var cutoff = lastPeriodStart?.plusDays(14) ?: latest
+        var processed = 0
+        while (!cutoff.isAfter(latest)) {
+            val week = cutoff
+            processed += tx.execute { settleWeek(week) }!!
+            cutoff = cutoff.plusDays(7)
+        }
+        return processed
+    }
+
+    /**
+     * 한 주(마감일 cutoffDate)의 정산(§10.2). 반환 = 만든 정산 행 수.
+     * 잠금(§9.1): 대상 항목 행을 id 순으로 잠근 뒤(order_items만 — 다른 테이블 행은 잠그지 않는다) 새 문장으로 대상 조건을 다시 평가한다.
+     * 정산 행 INSERT는 판매자 users 행에 FK 잠금을 거는데, 그 전에 항목을 모두 잠갔으므로 주문 → 항목 → 사용자 순서의 항목 처리와 교착하지 않는다.
+     * 판매자 = 대상·미정산 패널티(created_at < cutoff)·음수 이월(직전 정산 carry_out < 0) 중 하나라도 있는 판매자, id 순.
+     * 금액: INCLUDED (체결가, floor(체결가 × 카테고리 수수료율)), HELD (0, 0), CLAWBACK (−체결가, −수수료).
+     * net = gross − fee_total − penalty_total + carry_in, payout = max(net, 0), carry_out = min(net, 0),
+     * payout > 0이면 PAID·paid_at = period_start + 9일 00:00 KST(그 주 다음 수요일), 아니면 CARRIED·paid_at NULL.
+     */
+    private fun settleWeek(cutoffDate: LocalDate): Int {
+        val cutoff = cutoffDate.atStartOfDay(kst).toInstant()
+        val periodStart = cutoffDate.minusDays(7)
+        em.createNativeQuery("SELECT i.id FROM order_items i WHERE $settlementTargetSql ORDER BY i.id FOR UPDATE")
+            .setParameter("cutoff", cutoff).resultList
+
+        // 수수료는 DB에서 계산한다: sale_fee_rate가 numeric이라 체결가 × 율이 정확하고 floor가 verify와 같은 식이다
+        val targets = em.createNativeQuery(
+            "SELECT i.id, t.seller_id, i.status, i.price, CAST(floor(i.price * c.sale_fee_rate) AS bigint)" +
+                " FROM order_items i JOIN trades t ON t.id = i.trade_id JOIN product_sizes ps ON ps.id = t.product_size_id" +
+                " JOIN products p ON p.id = ps.product_id JOIN categories c ON c.id = p.category_id" +
+                " WHERE $settlementTargetSql ORDER BY i.id",
+        ).setParameter("cutoff", cutoff).resultList.map { row ->
+            row as Array<*>
+            val price = (row[3] as Number).toLong()
+            val fee = (row[4] as Number).toLong()
+            val (status, amount, itemFee) = when (row[2]) {
+                "CONFIRMED" -> Triple("INCLUDED", price, fee)
+                "DISPUTED" -> Triple("HELD", 0L, 0L)
+                else -> Triple("CLAWBACK", -price, -fee)
+            }
+            (row[1] as Number).toLong() to
+                SettlementItem(settlementId = 0, orderItemId = (row[0] as Number).toLong(), amount = amount, fee = itemFee, status = status)
+        }.groupBy({ it.first }, { it.second })
+        val penalties = em.createQuery(
+            "SELECT p FROM SellerPenalty p WHERE p.settlementId IS NULL AND p.createdAt < :cutoff ORDER BY p.id",
+            SellerPenalty::class.java,
+        ).setParameter("cutoff", cutoff).resultList.groupBy { it.sellerId }
+        // 판매자의 직전 정산 = period_start가 가장 늦은 정산. carry_out이 0이면 carry_in 0이므로 음수만 읽는다
+        val carries = em.createNativeQuery(
+            "SELECT s.seller_id, s.carry_out FROM settlements s WHERE s.carry_out < 0" +
+                " AND s.period_start = (SELECT max(s2.period_start) FROM settlements s2 WHERE s2.seller_id = s.seller_id)",
+        ).resultList.associate { row ->
+            row as Array<*>
+            (row[0] as Number).toLong() to (row[1] as Number).toLong()
+        }
+
+        val sellers = (targets.keys + penalties.keys + carries.keys).sorted()
+        for (sellerId in sellers) {
+            val items = targets[sellerId].orEmpty()
+            val sellerPenalties = penalties[sellerId].orEmpty()
+            val gross = items.sumOf { it.amount }
+            val feeTotal = items.sumOf { it.fee }
+            val penaltyTotal = sellerPenalties.sumOf { it.amount }
+            val carryIn = carries[sellerId] ?: 0L
+            val net = gross - feeTotal - penaltyTotal + carryIn
+            val payout = maxOf(net, 0L)
+            val settlement = Settlement(
+                sellerId = sellerId,
+                periodStart = periodStart,
+                periodEnd = periodStart.plusDays(6),
+                gross = gross,
+                feeTotal = feeTotal,
+                penaltyTotal = penaltyTotal,
+                carryIn = carryIn,
+                net = net,
+                payout = payout,
+                carryOut = minOf(net, 0L),
+                status = if (payout > 0) "PAID" else "CARRIED",
+                paidAt = if (payout > 0) periodStart.plusDays(9).atStartOfDay(kst).toInstant() else null,
+            )
+            em.persist(settlement)
+            for (item in items) {
+                item.settlementId = settlement.id!!
+                em.persist(item)
+            }
+            sellerPenalties.forEach { it.settlementId = settlement.id }
+        }
+        return sellers.size
+    }
+
+    /** `GET /me/settlements`(§10.3): 본인 정산, period_start 오름차순, 각 정산의 항목은 orderItemId 오름차순. 한 스냅샷에서 읽는다. */
+    fun listSettlements(userId: Long): List<SettlementView> = snapshotTx.execute {
+        val settlements = em.createQuery(
+            "SELECT s FROM Settlement s WHERE s.sellerId = :seller ORDER BY s.periodStart",
+            Settlement::class.java,
+        ).setParameter("seller", userId).resultList
+        val items = if (settlements.isEmpty()) {
+            emptyMap()
+        } else {
+            em.createQuery(
+                "SELECT i FROM SettlementItem i WHERE i.settlementId IN :ids ORDER BY i.orderItemId, i.id",
+                SettlementItem::class.java,
+            ).setParameter("ids", settlements.map { it.id!! }).resultList.groupBy { it.settlementId }
+        }
+        settlements.map { s ->
+            SettlementView(
+                settlementId = s.id!!,
+                periodStart = s.periodStart,
+                periodEnd = s.periodEnd,
+                gross = s.gross,
+                feeTotal = s.feeTotal,
+                penaltyTotal = s.penaltyTotal,
+                carryIn = s.carryIn,
+                net = s.net,
+                payout = s.payout,
+                carryOut = s.carryOut,
+                status = s.status,
+                paidAt = s.paidAt,
+                items = items[s.id].orEmpty().map { SettlementItemView(it.orderItemId, it.amount, it.fee, it.status) },
+            )
+        }
+    }!!
 
     // ---- 기동 (ADR-0003 §9의 7) ----
 

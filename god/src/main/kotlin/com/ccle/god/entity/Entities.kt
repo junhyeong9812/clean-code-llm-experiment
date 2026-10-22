@@ -6,6 +6,7 @@ import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
 import jakarta.persistence.Table
 import java.time.Instant
+import java.time.LocalDate
 
 // 1단계(ADR-0003)·2단계(ADR-0004)가 쓰는 테이블의 행 매핑. 스키마는 docker/schema/tables.sql 이 정본이고 앱은 validate만 한다.
 // 연관(@ManyToOne 등) 없이 외래 키는 id 값 그대로 둔다. 상태·종류 같은 enum 값은 DB와 같은 문자열로 둔다.
@@ -222,4 +223,35 @@ class SellerPenalty(
     var amount: Long,
     var settlementId: Long? = null,
     var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "settlements")
+class Settlement(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var sellerId: Long,
+    var periodStart: LocalDate,
+    var periodEnd: LocalDate,
+    var gross: Long,
+    var feeTotal: Long,
+    var penaltyTotal: Long,
+    var carryIn: Long,
+    var net: Long,
+    var payout: Long,
+    var carryOut: Long,
+    var status: String,
+    var paidAt: Instant? = null,
+)
+
+@Entity
+@Table(name = "settlement_items")
+class SettlementItem(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var settlementId: Long,
+    var orderItemId: Long,
+    var amount: Long,
+    var fee: Long,
+    var status: String,
 )

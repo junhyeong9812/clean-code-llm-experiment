@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RestController
 
-/** 주문 결제·조회(ADR-0003 §5.1·§5.3)와 포인트 조회(§5.2). */
+/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2), 판매자 정산 조회(ADR-0004 §10.3). */
 @RestController
 class OrderController(private val marketplace: Marketplace) {
 
@@ -44,5 +44,11 @@ class OrderController(private val marketplace: Marketplace) {
     fun points(@RequestHeader("X-User-Id", required = false) userHeader: String?): PointsView {
         val userId = marketplace.requireUser(userHeader)
         return marketplace.getPoints(userId)
+    }
+
+    @GetMapping("/me/settlements")
+    fun settlements(@RequestHeader("X-User-Id", required = false) userHeader: String?): List<SettlementView> {
+        val userId = marketplace.requireUser(userHeader)
+        return marketplace.listSettlements(userId)
     }
 }
