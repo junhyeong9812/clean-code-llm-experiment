@@ -40,10 +40,137 @@
 |----|-----------------|--------|------|-------------|--------|---------------|
 | R1-1 | 1 | opus(+감사 근거 정정) | Marketplace.kt:956(패널티 persist가 :1001 PG 뒤), tables.sql:248, Marketplace.kt:128(price > 0만) — 체결가 1~9원 → 0원 패널티 CHECK 위반 → 카드만 취소 | 채택(도달 가능, 단 시드·테스트·verify 밖) | fixed(ADR §6 계약 밖 개정 — 사용자 결정) | 1 |
 | R1-2 | 1 | opus | Marketplace.kt:994-1001, :1055-1072, ADR-0004 §7.2 — PG 기록 후 무응답 사이 다른 항목 환불로 금액 변경 → 409 반복 | open question → 사용자 결정 | fixed(ADR §7.2 계약 밖 확장) | 1 |
-| R1-F2 | 1 | opus(+감사) | Marketplace.kt:1292-1306, :1441-1458 — PG_UNAVAILABLE 외 예외면 배치 전체 정지 | open question | user-deferred(NEXT N3 기존 질문 '배치 대상 1건 실패 시 전체 중단'에 2단계 배치 포함으로 기록) | — |
-| R1-3 | 1 | opus | Marketplace.kt:787 isNullOrBlank vs "앞뒤 공백" 문자 집합 미정 | open question | user-deferred(NEXT — layered가 같은 판정을 쓰는지 N2에서 확인) | — |
+| R1-F2 | 1 | opus(+감사) | Marketplace.kt:1292-1306, :1441-1458 — PG_UNAVAILABLE 외 예외면 배치 전체 정지 | open question | user-deferred(NEXT N2 기존 질문 '배치 대상 1건 실패 시 전체 중단'에 2단계 배치 포함으로 기록) | — |
+| R1-3 | 1 | opus | Marketplace.kt:787 isNullOrBlank vs "앞뒤 공백" 문자 집합 미정 | open question | user-deferred(NEXT N1 — layered가 같은 판정을 쓰는지 확인) | — |
 | R1-4 | 1 | opus | Marketplace.kt:1563-1605 OR 조건 순차 스캔 — 500k 정산 시간 | 범위 밖(spec 가정 2는 1k) | user-deferred(NEXT) | — |
 | R1-5 | 1 | opus | Marketplace.kt:1606, 1617 CLAWBACK fee 재계산 | 기각(율 변경 경로 없음 — 도달 불가) | — | — |
+| R2-OQ2 | 2 | opus | Marketplace.kt:1423-1427, :1442 — 늦은 승인 주문의 발송 기한이 승인 시점에 이미 경과 가능 | open question | user-deferred(NEXT N2) | — |
+| R2-OQ3 | 2 | opus | Marketplace.kt:1001-1039 — PG 취소 성공 뒤 커밋 예외 | open question(§7.2 계약 밖과 같은 종류로 해석) | user-deferred(NEXT N2) | — |
 | R1-6 | 1 | opus | Marketplace.kt:1601 vs 1605 잠금·재평가 스냅샷 차이 | 기각(auto-confirm 선행·기각 항목은 HELD로 잠김 — 도달 불가, 감사 동의) | — | — |
 
-- codex 루프 1: findings 0, 렌즈 8개 applicable·확인. codex 실행: 1회차 bwrap 실패(exit 0 '판정 불가') → 재시도 try1 bwrap, try2 정상.
+- codex 루프 1: findings 0, 렌즈 8개 applicable·확인. 루프 2: codex findings 0(OQ = R1-4), Opus findings 0. codex 실행: 1회차 bwrap 실패(exit 0 '판정 불가') → 재시도 try1 bwrap, try2 정상.
+| 2026-10-22 13:00 | 리뷰 루프 2 packet — BASE c3d7c22, OUT=scratchpad/rv.np6E, MIRROR=scratchpad/mirror.iYB9(루프 1 미러 삭제) · equiv all 착수 | 누적 diff 9파일 +987/−9(ADR 개정 포함), untracked 0. Opus ∥ codex 병렬 |
+| 2026-10-22 13:08 | codex 루프 2 회수(try 1 정상, 보안 스캔 0) | findings 0, OQ 1(대규모 정산 시간 — R1-4와 같음), 렌즈 8 applicable·확인 |
+| 2026-10-22 13:15 | Opus 루프 2 회수 | findings 0, OQ 4: ①공백 문자 집합(=R1-3) ②늦게 승인된 주문(pg-inquiry·기동 전환)은 승인 시점에 이미 paid_at+3일 경과 가능 → 다음 shipment-deadline이 발송 기회 없이 판매자 귀책(ADR 문자대로) ③PG 취소 성공 뒤 커밋 실패(§7.2 계약 밖과 같은 종류) ④0행 주에서 마지막 마감 미전진(스모크 ② 4회차 processed 0으로 실측 — 닫힘). 렌즈 8 applicable·verified |
+| 2026-10-22 13:16 | **리뷰 종료(루프 2)** | 종료식: open(채택·미수정) 0 · 루프 2 신규 채택 0 · 대칭 부담 — 렌즈 8개 전부 applicable, opus·codex 양쪽 모두 file:line 근거로 verified(비대칭 아님). OQ ②③은 NEXT N2에 사용자 판단 항목으로 |
+| 2026-10-22 12:50 | equiv all(scratchpad/t6-equiv.log) rc 1 — 같음: run·errors / 차이: batch·pay·recov·conc·fail | **응답 계층 7개 시나리오 전부 같음.** SQL·pg 문장 차이는 전부 §8.1: users 엔티티 조회 → 등급 이력 네이티브 쿼리, 그 쿼리의 auto-flush로 `update orders`가 앞당겨짐(batch·pay·recov·conc는 이 세 패턴 외 차이 0줄, conc 1줄 = god 등급 쿼리 1회 — layered는 컨텍스트의 사용자 재사용). fail: 단계 B 트리거(`fail.sh:50` BEFORE UPDATE orders PAID)가 god에선 auto-flush 시점에 터져 EARN INSERT 전 실패, layered는 커밋 flush라 EARN INSERT(시퀀스 소비) 뒤 롤백 → 새 행 계층에서 point_ledger id가 1 밀림(stage C·restart·inquiry), 금액·상태·건수 같음. **예상 차이로 분류**(spec: 하네스 무수정). layered 2단계 때 §8.1을 넣으면 SQL 패턴은 그쪽 구현에 따라 다시 비교 |
+| 2026-10-22 13:40 | 마감 문서 — 완료 요약(Opus 워커 초안, 메인이 스니펫 1개 실파일 대조·NEXT 번호 반영), NEXT·README·measurement-log | 시작 줄 수는 1,672(c3d7c22 추적 13파일 — 메인이 사용자에게 1,690이라 말한 것은 정정) |
+
+## 완료 요약
+
+### 결과
+
+`god`가 ADR-0004(2단계)와 §8.1 적립률을 구현했다. `run.sh god contract2Test` 82/82(2회 연속 green, skip 0). 1단계 `run.sh god`는 exit 0(infra 28·contract 117·verify 위반 0). `run.sh layered`는 rc 0에 같은 수치라 layered 무변경. 루트 `./gradlew build` 통과. 수동 스모크 2건 통과: ①기동 전환 적립률(EARN 2,000 = 주문일 등급 GOLD 2%) ②정산 0건 분기(첫 주 195행·재실행 0·경계 시각 2건). 카드 취소 무응답은 재현할 수 없어 코드 리뷰로 판정했다. `equiv all`은 응답 계층 7개 시나리오가 모두 같다. SQL·pg 문장과 fail 시나리오의 point_ledger id 1칸 밀림은 전부 §8.1(등급 이력 네이티브 쿼리와 그 쿼리의 auto-flush)로 설명되어 예상 차이로 분류했다. 듀얼 리뷰는 루프 2에서 끝났다(open 채택 0, 루프 2 신규 채택 0, 렌즈 8개 양쪽 verified).
+
+### task별
+
+| task | 커밋 | 파일 +/− | contract2 누적 green | 핵심 |
+|---|---|---|---|---|
+| 01 | ea0ff42 | 1파일 +23/−1 | 3/82 | §8.1 적립률 등급 = 주문 생성일(KST) 등급 이력(네이티브 SQL 1문장), 승인 경로 3개 공용 |
+| 02 | dc106a4 | 5파일 +214/−4 | 8/82 | 2단계 엔티티, `GET /order-items/{id}`, 발송·입고·검수 PASS·배송 완료 |
+| 03 | 8c397ce | 6파일 +413/−7 | 49/82 | 확정·취소·분쟁·판정, 판매자 귀책·패널티, 환불·카드 취소·포인트 복구·회수. 설계 선검증에서 수정 A(항목 FOR UPDATE)·B(분쟁 응답 4필드) |
+| 04 | f375b3e | 1파일 +127/−2 | 69/82 | 배치 shipment-deadline·auto-confirm·point-expiry·grade-recalc(최장 point-expiry 26.7s) |
+| 05 | 3637456 | 4파일 +218/−5 | 82/82 | weekly-settlement(한 주 = 트랜잭션 1개)·`GET /me/settlements`(최장 2,416ms) |
+
+- 파일 +/−는 `git show --stat` 기준이다(타임라인의 task 04·05 수치는 워커 보고값 그대로 — 사후 수정하지 않는다). 누적 diff `c3d7c22..HEAD -- god/`는 7파일 +984/−8이다.
+
+### 핵심 diff (실파일 발췌, HEAD 3637456 = Marketplace.kt 최종)
+
+①적립률 등급. `god/src/main/kotlin/com/ccle/god/Marketplace.kt:647`(ea0ff42 당시 :628), 조회 함수는 `:620-634` `gradeOnOrderDate`:
+
+```kotlin
+         // 등급 적립률(ADR-0002 §5.2): BRONZE 1% · SILVER 1.5% · GOLD 2% · VIP 3%
+-        val grade = em.find(User::class.java, order.buyerId).grade
++        val grade = gradeOnOrderDate(order)
+```
+
+```kotlin
+    private fun gradeOnOrderDate(order: PurchaseOrder): String =
+        em.createNativeQuery(
+            """
+            SELECT coalesce(
+                       (SELECT h.grade FROM user_grade_history h
+                         WHERE h.user_id = u.id AND h.effective_from <= :orderDate
+                         ORDER BY h.effective_from DESC LIMIT 1),
+                       (SELECT 'BRONZE' FROM user_grade_history h WHERE h.user_id = u.id LIMIT 1),
+                       u.grade)
+              FROM users u
+             WHERE u.id = :user
+            """,
+        ).setParameter("orderDate", LocalDate.ofInstant(order.createdAt, ZoneOffset.ofHours(9)))
+            .setParameter("user", order.buyerId)
+            .singleResult as String
+```
+
+②주문 → 항목 잠금. `Marketplace.kt:822-828` `lockOrderOf`(dc106a4에서 만들고 8c397ce에서 수정 A로 항목 FOR UPDATE를 추가):
+
+```kotlin
+     private fun lockOrderOf(itemId: Long): OrderItem {
+         val item = em.find(OrderItem::class.java, itemId) ?: notFound("없는 주문 항목: $itemId")
+         em.createNativeQuery("SELECT id FROM orders WHERE id = :id FOR UPDATE").setParameter("id", item.orderId).resultList
++        em.createNativeQuery("SELECT id FROM order_items WHERE id = :id FOR UPDATE").setParameter("id", itemId).resultList
+         em.refresh(item)
+         return item
+     }
+```
+
+③환불: PG를 부른 뒤 사용자를 잠근다. `Marketplace.kt:1001-1003` `refundItem`(8c397ce 신규, 이전 코드 없음). PG 호출 전에는 쓰기가 없어서 409면 롤백해도 DB가 바뀌지 않는다:
+
+```kotlin
+        val pgTxId = if (card > 0) cancelCard(order, item.id!!, card) else null
+
+        if (fault == "SELLER") lockUsers(order.buyerId, em.find(Trade::class.java, item.tradeId).sellerId) else lockUser(order.buyerId)
+```
+
+④주간 정산: 한 주에 트랜잭션 하나, 대상 항목을 먼저 잠근다. `Marketplace.kt:1575-1603`(3637456 신규, 이전 코드 없음):
+
+```kotlin
+    private fun settleWeeks(now: Instant): Int {
+        autoConfirmItems(now)
+        val latest = LocalDate.ofInstant(now, kst).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        val lastPeriodStart = em.createQuery("SELECT max(s.periodStart) FROM Settlement s", LocalDate::class.java).singleResult
+        var cutoff = lastPeriodStart?.plusDays(14) ?: latest
+        var processed = 0
+        while (!cutoff.isAfter(latest)) {
+            val week = cutoff
+            processed += tx.execute { settleWeek(week) }!!
+            cutoff = cutoff.plusDays(7)
+        }
+        return processed
+    }
+```
+
+```kotlin
+    private fun settleWeek(cutoffDate: LocalDate): Int {
+        val cutoff = cutoffDate.atStartOfDay(kst).toInstant()
+        val periodStart = cutoffDate.minusDays(7)
+        em.createNativeQuery("SELECT i.id FROM order_items i WHERE $settlementTargetSql ORDER BY i.id FOR UPDATE")
+            .setParameter("cutoff", cutoff).resultList
+```
+
+### 계약 개정 (2603394, ADR-0004 계약 밖 2건 — 재합의 1, 코드 변경 없음)
+
+- §6: 체결가가 10원 미만인 항목의 판매자 귀책은 패널티가 0원이 되어 `amount > 0` CHECK·verify와 맞지 않는다. 이 경우는 계약 밖으로 두었다(R1-1).
+- §7.2: PG가 취소를 기록한 뒤 응답하지 않은 사이에 같은 주문의 다른 항목이 환불되면 "마지막 환불" 여부가 바뀐다. 그러면 재요청 금액이 첫 기록과 달라 409가 반복된다. 이 경우를 기존 '계약 밖'에 포함했다(R1-2).
+
+### 미해결·이월 (NEXT로)
+
+- R1-F2: 배치 대상 1건에서 PG_UNAVAILABLE이 아닌 예외가 나면 배치 전체가 멈춘다(`:1292-1306`, `:1441-1458`). NEXT N2의 기존 질문에 2단계 배치를 포함했다.
+- R1-3: 사유 판정 `isNullOrBlank`(`:787`)와 "앞뒤 공백"의 문자 집합이 정해지지 않았다. NEXT N1(layered 2단계)에서 layered가 같은 판정을 쓰는지 확인한다.
+- R2-OQ2: pg-inquiry나 기동 전환으로 늦게 승인된 주문은 승인 시점에 이미 발송 기한이 지났을 수 있다. 그러면 다음 shipment-deadline에서 발송 기회 없이 판매자 귀책이 된다(ADR 문자대로, NEXT N2).
+- R2-OQ3: PG 취소가 성공한 뒤 커밋에서 예외가 나는 경우. §7.2 계약 밖과 같은 종류로 해석했다(NEXT N2).
+- 성능(R1-4): 정산 대상 SQL의 OR 조건이 순차 스캔이 된다(`:1563-1568`). 정산 행도 행 단위로 persist한다. 500k 시드에서의 정산 시간은 측정하지 않았다(spec 가정 2는 1k 기준). point-expiry는 1k에서 26.7s로 배치 중 가장 오래 걸려 500k에서 위험하다.
+- 한계: 카드 취소 무응답(PG가 기록한 뒤 타임아웃되는 경로)은 저장소 테스트로도 수동 스모크로도 재현하지 못했다. 코드 리뷰로만 판정했다. 근거는 `refundItem` PG 호출 전 쓰기 0, `cancelCard` 금액 불일치 409, 키 `cancel-<id>` 단일이다.
+
+### 규모 (god main `.kt`)
+
+| | c3d7c22 | HEAD |
+|---|---|---|
+| 파일 | 13 | 14 (+ItemController.kt) |
+| 줄 | 1,672 | 2,648 |
+| Marketplace.kt | 984 | 1,735 |
+
+### 사이클 마감
+
+- NEXT 갱신(N1 = layered 2단계, N2 = 1·2단계 open question), README 진행 행, measurement-log 1행.
+- CS 이슈 아카이브: study-note 쓰기 금지(금지영역)라 보류 — NEXT '보류·이월'에 기록.
