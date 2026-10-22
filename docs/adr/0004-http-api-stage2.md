@@ -108,6 +108,7 @@
 - 항목 `CANCELLED_SELLER_FAULT`, `cancelled_at` = 현재 → §7 환불(`fault = SELLER`, 전액).
 - 패널티: `seller_penalties` 1행(`seller_id` = 체결 판매자, `order_item_id`, `amount = floor(체결가 × 10%)` **[verify]**, `settlement_id` NULL, `created_at` = 현재).
 - 판매자 귀책 처리는 판매자 사용자 행을 잠근다(§9.1 — 동시 귀책의 횟수 누락 방지).
+- **계약 밖(사용자 결정 2026-10-22):** 체결가 < 10원인 항목의 판매자 귀책. 패널티가 0원이 되어 `seller_penalties.amount > 0`·verify `penalty_per_seller_fault`와 맞지 않는다(시드·테스트·verify는 체결가 ≥ 10을 전제한다). 이 경우 처리는 정하지 않는다 — 구현에 따라 카드 취소 뒤 반영이 실패할 수 있다.
 - 판매 제한: 패널티를 쓴 뒤, 그 판매자의 패널티 중 `created_at > 현재 − 30일`이고 `created_at > coalesce(sale_restricted_until − 30일, -∞)`인 것이 3건 이상이면 `users.sale_restricted_until = 현재 + 30일`. 구매 경고(ADR-0003 §7)와 같은 해석이다. **[기본값 — 생성기와 같은 해석]**
 
 ## 7. 환불
@@ -127,7 +128,7 @@
 - 카드 환불 > 0일 때만. 앱 → PG `POST {PG_URL}/cancellations` `{"idempotencyKey": "cancel-<orderItemId>", "approvalKey": <주문 멱등 키>, "amount": <카드 환불>}` → `200 {"pgTxId", "status": "APPROVED"}`. 같은 키의 두 번째 요청은 첫 기록을 그대로 돌려준다.
 - 성공이면 `pg_transactions` 1행: `kind = CANCEL`, `amount` = 카드 환불, `status = APPROVED`, `pg_tx_id` = PG 값, `idempotency_key = cancel-<orderItemId>`, `requested_at` = `responded_at` = 현재 **[verify — Σ카드 환불 = Σ승인 CANCEL]**.
 - PG가 응답하지 않거나(`PG_TIMEOUT_MS`·연결 실패·5xx), APPROVED가 아니거나, **응답의 `amount`가 요청한 금액과 다르면**: 요청이면 409 `PG_UNAVAILABLE`, 배치면 그 대상을 건너뛴다. 어느 쪽이든 DB는 바뀌지 않는다. 키는 항목당 하나(사유와 무관)라, 다시 보내거나 다른 사유로 보내도 PG에 취소가 두 번 생기지 않는다. 가짜 PG 응답: `200 {"pgTxId", "status": "APPROVED", "amount"}`(같은 키면 첫 기록의 금액). **[기본값]**
-- **계약 밖(사용자 결정 2026-10-21):** PG가 취소를 기록한 뒤 앱이 DB에 반영하기 전에 프로세스가 죽는 경우. 같은 요청을 다시 보내면 반영되지만, 그 사이 항목이 다른 상태로 바뀌면 카드 취소만 남는다(스키마에 환불 진행 상태가 없다). 위 금액 확인은 이 상태에서 다른 금액이 기록되는 것만 막는다.
+- **계약 밖(사용자 결정 2026-10-21):** PG가 취소를 기록한 뒤 앱이 DB에 반영하기 전에 프로세스가 죽는 경우. 같은 요청을 다시 보내면 반영되지만, 그 사이 항목이 다른 상태로 바뀌면 카드 취소만 남는다(스키마에 환불 진행 상태가 없다). 같은 종류로, PG가 취소를 기록한 뒤 응답이 없는(409) 사이 같은 주문의 다른 항목이 환불되어 "마지막 환불"(§7.1) 여부가 바뀌면 재요청 금액이 첫 기록과 달라져 409가 반복되고 카드 취소만 남는다(사용자 결정 2026-10-22 — 계약 밖). 위 금액 확인은 이 상태에서 다른 금액이 기록되는 것만 막는다.
 - 테스트 → PG: `POST /_control/outcomes` `{"idempotencyKey": "cancel-<id>", "outcome": "UNAVAILABLE"|"DECLINE"}` = 그 키의 취소 요청에 503 / `200 {"status": "DECLINED"}`(둘 다 기록하지 않음). 지정이 없으면 승인.
 - 테스트 → PG 조회(보조): `GET /_control/cancellations/{key}` → `{"requests", "amounts", "approvalKeys", "record": {"pgTxId", "status", "amount", "approvalKey"} | null}` — 앱이 보낸 취소 요청 수·금액과 기록.
 
