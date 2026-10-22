@@ -277,7 +277,7 @@ class GradeRecalcBatch(
                 val review = users.gradeReview(userId, period)
                 if (!review.changesGrade()) return@execute false
                 users.addGradeHistory(userId, review.grade, period, review.basis)
-                users.find(userId)!!.grade = review.grade
+                users.find(userId)!!.regrade(review)
                 true
             }!!
         }

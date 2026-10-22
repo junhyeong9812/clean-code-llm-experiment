@@ -75,10 +75,10 @@ class SellerStatement(
      * payout = max(net, 0), carry_out = min(net, 0), payout > 0이면 PAID·paid_at = 그 주 지급 시각, 아니면 CARRIED·paid_at NULL.
      */
     fun settlement(week: SettlementWeek): Settlement {
-        val gross = lines.fold(0L) { sum, l -> Math.addExact(sum, l.amount) }
-        val feeTotal = lines.fold(0L) { sum, l -> Math.addExact(sum, l.fee) }
-        val penaltyTotal = penalties.fold(0L) { sum, p -> Math.addExact(sum, p.amount) }
-        val net = Math.addExact(Math.subtractExact(Math.subtractExact(gross, feeTotal), penaltyTotal), carryIn)
+        val gross = lines.sumOf { it.amount }
+        val feeTotal = lines.sumOf { it.fee }
+        val penaltyTotal = penalties.sumOf { it.amount }
+        val net = gross - feeTotal - penaltyTotal + carryIn
         val payout = maxOf(net, 0L)
         return Settlement(
             sellerId = sellerId,

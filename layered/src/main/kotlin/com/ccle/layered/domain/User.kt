@@ -21,11 +21,14 @@ class User(
     var id: Long? = null,
     var email: String,
     var name: String,
-    var grade: String,
+    grade: String,
     purchaseRestrictedUntil: Instant? = null,
     saleRestrictedUntil: Instant? = null,
     var createdAt: Instant,
 ) {
+    var grade: String = grade
+        private set
+
     var purchaseRestrictedUntil: Instant? = purchaseRestrictedUntil
         private set
 
@@ -40,6 +43,12 @@ class User(
         if (side == "SELL" && saleRestrictedUntil?.isAfter(now) == true) {
             throw MarketException(Failure.SALE_RESTRICTED, "판매 제한 중: ${saleRestrictedUntil}까지")
         }
+    }
+
+    /** 등급 재산정 반영(ADR-0004 §8.5): 기준일 이력이 없고 등급이 바뀌는 재산정 값만 users.grade에 반영한다. */
+    fun regrade(review: GradeReview) {
+        check(review.changesGrade()) { "등급이 바뀌지 않는 재산정 값: ${review.grade}" }
+        grade = review.grade
     }
 
     /**

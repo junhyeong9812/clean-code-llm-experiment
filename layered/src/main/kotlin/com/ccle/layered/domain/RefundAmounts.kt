@@ -5,11 +5,12 @@ import java.time.Instant
 /**
  * 환불 사유(ADR-0004 §7). 이름이 refunds.fault 값이다. itemStatus = 환불 뒤 항목 상태, fromStatuses = 그 사유로 환불할 수 있는 상태.
  * 판매자 귀책은 발송 기한 초과(PAID)와 검수 불합격(INSPECTING) 두 경로다.
+ * revokesEarn = 적립 처리: 분쟁 인정은 확정 뒤라 지급된 적립을 회수(§8.4), 그 밖은 적립 예정 취소(§7.3).
  */
-enum class RefundFault(val itemStatus: String, val fromStatuses: Set<String>) {
-    BUYER("CANCELLED_BY_BUYER", setOf("PAID")),
-    SELLER("CANCELLED_SELLER_FAULT", setOf("PAID", "INSPECTING")),
-    DISPUTE("REFUNDED_AFTER_CONFIRM", setOf("DISPUTED")),
+enum class RefundFault(val itemStatus: String, val fromStatuses: Set<String>, val revokesEarn: Boolean) {
+    BUYER("CANCELLED_BY_BUYER", setOf("PAID"), revokesEarn = false),
+    SELLER("CANCELLED_SELLER_FAULT", setOf("PAID", "INSPECTING"), revokesEarn = false),
+    DISPUTE("REFUNDED_AFTER_CONFIRM", setOf("DISPUTED"), revokesEarn = true),
     ;
 
     companion object {

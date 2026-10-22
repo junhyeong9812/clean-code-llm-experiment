@@ -57,7 +57,7 @@ class ItemRefunder(
         refunds.add(amounts.refund(item, reason, now))
         if (pgTxId != null) pgTransactions.add(PgTransaction.cancellation(order.id!!, item.id!!, amounts.card, pgTxId, now))
         // 회수(§8.4)가 복구(RESTORE)보다 먼저다
-        if (fault == RefundFault.DISPUTE) pointBook.revokeEarn(item, now) else pointBook.cancelPendingEarn(item, now)
+        if (fault.revokesEarn) pointBook.revokeEarn(item, now) else pointBook.cancelPendingEarn(item, now)
         if (amounts.point > 0) pointBook.restore(order, item, amounts.point, now)
         order.recordItemRefund(amounts.last)
     }
