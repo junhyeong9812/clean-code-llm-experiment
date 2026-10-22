@@ -3,6 +3,7 @@ package com.ccle.god
 import com.ccle.god.entity.Bid
 import com.ccle.god.entity.BidEvent
 import com.ccle.god.entity.BuyerWarning
+import com.ccle.god.entity.Dispute
 import com.ccle.god.entity.Inspection
 import com.ccle.god.entity.OrderItem
 import com.ccle.god.entity.PgTransaction
@@ -12,6 +13,7 @@ import com.ccle.god.entity.PointLedgerEntry
 import com.ccle.god.entity.ProductSize
 import com.ccle.god.entity.PurchaseOrder
 import com.ccle.god.entity.Refund
+import com.ccle.god.entity.SellerPenalty
 import com.ccle.god.entity.Trade
 import com.ccle.god.entity.User
 import com.ccle.god.web.ApiException
@@ -19,6 +21,8 @@ import com.ccle.god.web.BidCancelled
 import com.ccle.god.web.BidPlaced
 import com.ccle.god.web.BidView
 import com.ccle.god.web.BookView
+import com.ccle.god.web.DisputeOpened
+import com.ccle.god.web.DisputeView
 import com.ccle.god.web.ItemView
 import com.ccle.god.web.OrderItemView
 import com.ccle.god.web.OrderView
@@ -598,6 +602,11 @@ class Marketplace(
         em.createNativeQuery("SELECT id FROM users WHERE id = :id FOR UPDATE").setParameter("id", userId).resultList
     }
 
+    /** 사용자 행 여러 개를 id 오름차순으로 잠근다(ADR-0004 §9.1 — 구매자·판매자가 서로 바뀐 두 처리가 교착하지 않게). */
+    private fun lockUsers(vararg userIds: Long) {
+        userIds.distinct().sorted().forEach { lockUser(it) }
+    }
+
     /**
      * 적립률의 등급(ADR-0004 §8.1). 주문 생성 날짜(KST) 이전 effective_from의 최신 이력 → 이력이 모두 그 날짜 뒤면 BRONZE
      * → 이력이 없으면 users.grade. 승인이 늦어도(pg-inquiry) 주문 생성 날짜로 정한다.
@@ -763,7 +772,8 @@ class Marketplace(
     /**
      * 검수(§3). result는 PASS|FAIL, FAIL이면 reason이 필요하다(앞뒤 공백을 뺀 값이 비면 400). reason은 받은 그대로 저장한다.
      * PASS: inspections PASS(reason은 무시하고 NULL) + 항목 DELIVERING, inspected_at = 현재.
-     * FAIL(판매자 귀책 §6)은 아직 처리하지 않는다 — 상태 확인까지 한 뒤 계약 밖 오류로 끝낸다.
+     * FAIL: §6 판매자 귀책(환불 reason = 검수 reason) + inspections FAIL, inspected_at = cancelled_at = 현재.
+     * 카드 취소가 실패하면 409 PG_UNAVAILABLE이고 검수 행도 쓰지 않는다(§2.3).
      */
     fun inspectItem(itemId: Long, result: String?, reason: String?): ItemView {
         if (result == null) badRequest("result가 필요하다")
@@ -774,9 +784,13 @@ class Marketplace(
         return tx.execute {
             val item = lockOrderOf(itemId)
             requireItemStatus(item, "INSPECTING")
-            if (result == "FAIL") throw UnsupportedOperationException("검수 불합격(판매자 귀책)은 아직 처리하지 않는다: $itemId")
-            em.persist(Inspection(orderItemId = itemId, result = "PASS", reason = null, inspectedAt = now))
-            item.status = "DELIVERING"
+            if (result == "FAIL") {
+                sellerFault(item, reason!!, now)
+                em.persist(Inspection(orderItemId = itemId, result = "FAIL", reason = reason, inspectedAt = now))
+            } else {
+                em.persist(Inspection(orderItemId = itemId, result = "PASS", reason = null, inspectedAt = now))
+                item.status = "DELIVERING"
+            }
             item.inspectedAt = now
             itemView(item)
         }!!
@@ -795,12 +809,14 @@ class Marketplace(
     }
 
     /**
-     * 항목을 바꾸는 처리의 1단계(§2.3·§9.1): 그 항목의 주문 행을 잠그고, 잠근 뒤의 항목을 돌려준다.
+     * 항목을 바꾸는 처리의 1단계(§2.3·§9.1): 그 항목의 주문 행, 이어서 항목 행을 잠그고, 잠근 뒤의 항목을 돌려준다.
      * 같은 주문의 항목 변경은 이 잠금으로 줄을 서므로, 잠금을 기다리는 사이에 바뀐 상태를 다시 읽어 확인한다. 없는 항목이면 404.
+     * 항목 행을 사용자 행보다 먼저 잠가 잠금 순서를 주문 → 항목 → 사용자로 고정한다(항목을 잠근 채 판매자 행에 FK를 거는 정산과 교착하지 않게).
      */
     private fun lockOrderOf(itemId: Long): OrderItem {
         val item = em.find(OrderItem::class.java, itemId) ?: notFound("없는 주문 항목: $itemId")
         em.createNativeQuery("SELECT id FROM orders WHERE id = :id FOR UPDATE").setParameter("id", item.orderId).resultList
+        em.createNativeQuery("SELECT id FROM order_items WHERE id = :id FOR UPDATE").setParameter("id", itemId).resultList
         em.refresh(item)
         return item
     }
@@ -833,6 +849,222 @@ class Marketplace(
             cancelledAt = item.cancelledAt,
             refund = refund?.let { RefundView(it.cardAmount, it.pointAmount, it.buyerFeeAmount, it.shippingAmount, it.fault) },
         )
+    }
+
+    private fun requireBuyer(item: OrderItem, userId: Long) {
+        if (em.find(PurchaseOrder::class.java, item.orderId).buyerId != userId) {
+            throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "구매자가 아닌 주문 항목: ${item.id}")
+        }
+    }
+
+    // ---- 구매자 절차 (ADR-0004 §4) ----
+
+    /** 구매 확정(§4.1). 구매자만, DELIVERED만. confirmed_at = min(현재, delivered_at + 7일)(7일 뒤의 확정은 자동 확정과 같다) → §8.2. */
+    fun confirmOrderItem(userId: Long, itemId: Long): ItemView {
+        val now = clock.now()
+        return tx.execute {
+            val item = lockOrderOf(itemId)
+            requireBuyer(item, userId)
+            requireItemStatus(item, "DELIVERED")
+            val lastDay = item.deliveredAt!!.plus(Duration.ofDays(7))
+            confirmItem(item, confirmedAt = if (now.isBefore(lastDay)) now else lastDay, now = now)
+            itemView(item)
+        }!!
+    }
+
+    /** 확정 반영(§4.1·auto-confirm 공용): 항목 CONFIRMED + 포인트 확정. 주문·항목을 잠근 트랜잭션 안에서 부르고, 구매자 행을 잠근다. */
+    private fun confirmItem(item: OrderItem, confirmedAt: Instant, now: Instant) {
+        val buyerId = em.find(PurchaseOrder::class.java, item.orderId).buyerId
+        lockUser(buyerId)
+        item.status = "CONFIRMED"
+        item.confirmedAt = confirmedAt
+        confirmEarn(item, buyerId, confirmedAt, now)
+    }
+
+    /** 구매자 취소(§4.2). 구매자만, PAID만(발송 기한이 지나도 배치 전이면 PAID라 취소된다) → §7 환불(fault BUYER). */
+    fun cancelOrderItem(userId: Long, itemId: Long): ItemView {
+        val now = clock.now()
+        return tx.execute {
+            val item = lockOrderOf(itemId)
+            requireBuyer(item, userId)
+            requireItemStatus(item, "PAID")
+            refundItem(item, fault = "BUYER", reason = "구매자 취소", now = now)
+            itemView(item)
+        }!!
+    }
+
+    /** 분쟁 제기(§4.3). 구매자만, CONFIRMED이고 현재 ≤ confirmed_at + 14일. 상태 위반이 기한 위반보다 먼저다. */
+    fun openDispute(userId: Long, itemId: Long): DisputeOpened {
+        val now = clock.now()
+        return tx.execute {
+            val item = lockOrderOf(itemId)
+            requireBuyer(item, userId)
+            requireItemStatus(item, "CONFIRMED")
+            val deadline = item.confirmedAt!!.plus(Duration.ofDays(14))
+            if (now.isAfter(deadline)) {
+                throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "분쟁 기간($deadline)이 지났다: $itemId")
+            }
+            val dispute = Dispute(orderItemId = itemId, status = "OPEN", openedAt = now)
+            em.persist(dispute)
+            item.status = "DISPUTED"
+            DisputeOpened(dispute.id!!, itemId, dispute.status, dispute.openedAt)
+        }!!
+    }
+
+    /**
+     * 분쟁 판정(§4.4). OPEN만. 기각: REJECTED, 항목 CONFIRMED(confirmed_at 그대로).
+     * 인정: §7 환불(fault DISPUTE, 전액, cancelled_at = resolved_at) + §8.4 회수, 패널티 없음. 카드 취소가 실패하면 409 PG_UNAVAILABLE, 분쟁은 OPEN 그대로.
+     * 잠금 순서: 분쟁 조회 → 주문 → 항목 → 분쟁을 다시 읽어 상태 확인.
+     */
+    fun resolveDispute(disputeId: Long, accept: Boolean?): DisputeView {
+        if (accept == null) badRequest("accept가 필요하다")
+        val now = clock.now()
+        return tx.execute {
+            val dispute = em.find(Dispute::class.java, disputeId) ?: notFound("없는 분쟁: $disputeId")
+            val item = lockOrderOf(dispute.orderItemId)
+            em.refresh(dispute)
+            if (dispute.status != "OPEN") {
+                throw ApiException(HttpStatus.CONFLICT, "DISPUTE_NOT_OPEN", "OPEN이 아닌 분쟁: $disputeId (${dispute.status})")
+            }
+            if (accept) {
+                refundItem(item, fault = "DISPUTE", reason = "분쟁 인정", now = now)
+            } else {
+                item.status = "CONFIRMED"
+            }
+            dispute.status = if (accept) "ACCEPTED" else "REJECTED"
+            dispute.resolvedAt = now
+            DisputeView(dispute.id!!, dispute.orderItemId, dispute.status, dispute.openedAt, dispute.resolvedAt)
+        }!!
+    }
+
+    // ---- 판매자 귀책 (ADR-0004 §6) ----
+
+    /**
+     * 판매자 귀책(검수 불합격·발송 기한 초과 공용). 주문·항목을 잠그고 상태를 확인한 트랜잭션 안에서, 아직 아무것도 쓰지 않은 상태로 부른다.
+     * §7 환불(fault SELLER, 전액 — 판매자 행도 잠근다) → 패널티 1행(floor(체결가 × 10%)) → 판매 제한:
+     * 최근 30일 안이면서 마지막 제한을 건 시각(sale_restricted_until − 30일) 뒤의 패널티가 3건 이상이면 현재 + 30일.
+     */
+    private fun sellerFault(item: OrderItem, reason: String, now: Instant) {
+        refundItem(item, fault = "SELLER", reason = reason, now = now)
+        val sellerId = em.find(Trade::class.java, item.tradeId).sellerId
+        em.persist(SellerPenalty(sellerId = sellerId, orderItemId = item.id!!, amount = mulDiv(item.price, 10, 100), createdAt = now))
+        val seller = em.find(User::class.java, sellerId)
+        em.refresh(seller)
+        val lastRestrictedAt = seller.saleRestrictedUntil?.minus(Duration.ofDays(30))
+        val recentPenalties = em.createQuery(
+            "SELECT p.createdAt FROM SellerPenalty p WHERE p.sellerId = :seller AND p.createdAt > :from",
+            Instant::class.java,
+        ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+            .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+        if (recentPenalties >= 3) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
+    }
+
+    // ---- 환불 (ADR-0004 §7) ----
+
+    /**
+     * 항목 환불(§7). 주문·항목을 잠그고 상태를 확인한 트랜잭션 안에서, 아직 아무것도 쓰지 않은 상태로 부른다(§2.3의 3·4단계).
+     * 순서: 금액 → 카드 취소(PG) → 사용자 잠금(구매자, 판매자 귀책이면 판매자도, id 오름차순) → 항목 상태·cancelled_at,
+     * refunds 1행, pg_transactions CANCEL 1행, 적립 예정 취소(분쟁 인정이면 회수), RESTORE, 주문 상태.
+     * 카드 취소가 실패하면 409 PG_UNAVAILABLE을 던지고, 그때까지 쓴 것이 없으므로 롤백 뒤 DB는 그대로다.
+     * PG는 주문 잠금을 쥔 채 부른다: 같은 주문의 다른 항목 환불이 끼어들어 금액(마지막 환불)을 바꾸지 못하게.
+     * 사용자 잠금은 PG 뒤에 잡아, PG를 기다리는 동안 같은 사용자의 결제·입찰을 막지 않는다.
+     *
+     * 금액(§7.1): s = 배송비(첫 항목 = id가 가장 작은 항목에 귀속), s_c = floor(s × c_1 / b_1), s_p = s − s_c.
+     * 구매자 취소는 그 항목의 몫에서 (첫 항목이면) 배송비 부분을 빼고, 판매자 귀책·분쟁 인정은 몫 전부(첫 항목이면 배송비 s 포함).
+     * 이 환불로 주문의 모든 항목이 환불되고 배송비가 아직 환불되지 않았으면 s_c·s_p를 더하고 배송비 s를 싣는다.
+     */
+    private fun refundItem(item: OrderItem, fault: String, reason: String, now: Instant) {
+        val order = em.find(PurchaseOrder::class.java, item.orderId)
+        val items = orderItems(item.orderId)
+        val first = items.first()
+        val isFirst = first.id == item.id
+        val shipping = order.shippingFee
+        val shipCard = mulDiv(shipping, first.cardShare, first.price + first.buyerFee + first.shippingShare)
+        val shipPoint = shipping - shipCard
+        val keepsShipping = isFirst && fault == "BUYER"
+        var card = item.cardShare - (if (keepsShipping) shipCard else 0L)
+        var point = item.pointShare - (if (keepsShipping) shipPoint else 0L)
+        var shippingAmount = if (isFirst && !keepsShipping) shipping else 0L
+        val last = items.count { it.id != item.id && it.status in refundedStatuses } == items.size - 1
+        if (last && shippingAmount == 0L && shipping > 0 && shippingRefunded(item.orderId) == 0L) {
+            card += shipCard
+            point += shipPoint
+            shippingAmount = shipping
+        }
+
+        val pgTxId = if (card > 0) cancelCard(order, item.id!!, card) else null
+
+        if (fault == "SELLER") lockUsers(order.buyerId, em.find(Trade::class.java, item.tradeId).sellerId) else lockUser(order.buyerId)
+        item.status = when (fault) {
+            "BUYER" -> "CANCELLED_BY_BUYER"
+            "SELLER" -> "CANCELLED_SELLER_FAULT"
+            else -> "REFUNDED_AFTER_CONFIRM"
+        }
+        item.cancelledAt = now
+        em.persist(
+            Refund(
+                orderItemId = item.id!!,
+                cardAmount = card,
+                pointAmount = point,
+                buyerFeeAmount = item.buyerFee,
+                shippingAmount = shippingAmount,
+                reason = reason,
+                fault = fault,
+                createdAt = now,
+            ),
+        )
+        if (pgTxId != null) {
+            em.persist(
+                PgTransaction(
+                    orderId = order.id!!,
+                    kind = "CANCEL",
+                    amount = card,
+                    status = "APPROVED",
+                    pgTxId = pgTxId,
+                    idempotencyKey = "cancel-${item.id}",
+                    requestedAt = now,
+                    respondedAt = now,
+                ),
+            )
+        }
+        // 회수(§8.4)가 복구(RESTORE)보다 먼저다
+        if (fault == "DISPUTE") revokeEarn(item, now) else cancelPendingEarn(item, now)
+        if (point > 0) restorePoints(order, item, point, now)
+        order.status = if (last) "CANCELLED" else "PARTIALLY_CANCELLED"
+    }
+
+    private val refundedStatuses = setOf("CANCELLED_BY_BUYER", "CANCELLED_SELLER_FAULT", "REFUNDED_AFTER_CONFIRM")
+
+    /** 그 주문의 환불 행에 이미 실린 배송비 합. */
+    private fun shippingRefunded(orderId: Long): Long =
+        em.createQuery(
+            "SELECT coalesce(sum(r.shippingAmount), 0) FROM Refund r WHERE r.orderItemId IN (SELECT i.id FROM OrderItem i WHERE i.orderId = :order)",
+            Long::class.javaObjectType,
+        ).setParameter("order", orderId).singleResult
+
+    /**
+     * 카드 취소(§7.2): `cancel-<항목 id>` 키(항목당 하나, 사유와 무관)로 주문 승인 키와 금액을 보낸다. 반환 = PG의 pgTxId.
+     * 응답 없음(타임아웃·연결 실패·예외)·200이 아님·APPROVED가 아님·pgTxId 없음·응답 금액이 요청 금액과 다름 → 409 PG_UNAVAILABLE.
+     */
+    private fun cancelCard(order: PurchaseOrder, itemId: Long, amount: Long): String {
+        val key = "cancel-$itemId"
+        val response = callPg("취소 $key") { pg.postCancellation(key, order.idempotencyKey, amount) }
+        val node = if (response?.status == 200) {
+            try {
+                json.readTree(response.body)
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        val pgTxId = node?.path("pgTxId")?.takeIf { it.isTextual }?.asText()
+        val respondedAmount = node?.path("amount")?.takeIf { it.isIntegralNumber }?.asLong()
+        if (node?.path("status")?.asText() != "APPROVED" || pgTxId == null || respondedAmount != amount) {
+            log.warn("카드 취소 실패({}, 요청 {}): {}", key, amount, response)
+            throw ApiException(HttpStatus.CONFLICT, "PG_UNAVAILABLE", "카드 취소를 PG가 처리하지 못했다: $key")
+        }
+        return pgTxId
     }
 
     // ---- 포인트 (§5.2) ----
@@ -901,6 +1133,104 @@ class Marketplace(
         em.createQuery("SELECT l FROM PointLedgerEntry l WHERE l.orderId = :order AND l.kind = 'USE'", PointLedgerEntry::class.java)
             .setParameter("order", orderId)
             .resultList.firstOrNull()
+
+    private fun earnOf(itemId: Long): PointLedgerEntry? =
+        em.createQuery("SELECT l FROM PointLedgerEntry l WHERE l.orderItemId = :item AND l.kind = 'EARN'", PointLedgerEntry::class.java)
+            .setParameter("item", itemId)
+            .resultList.firstOrNull()
+
+    /** 적립 확정(§8.2): 그 항목의 EARN이 PENDING이면 AVAILABLE, expires_at = confirmed_at + 365일, pending → available. 적립 행이 없으면 그대로. */
+    private fun confirmEarn(item: OrderItem, buyerId: Long, confirmedAt: Instant, now: Instant) {
+        val earn = earnOf(item.id!!) ?: return
+        if (earn.status != "PENDING") return
+        earn.status = "AVAILABLE"
+        earn.expiresAt = confirmedAt.plus(Duration.ofDays(365))
+        changeBalance(buyerId, availableDelta = earn.amount, pendingDelta = -earn.amount, now = now)
+    }
+
+    /** 적립 예정 취소(§7.3): 그 항목의 EARN이 PENDING이면 CANCELLED, pending 감소. remaining은 그대로(= amount). */
+    private fun cancelPendingEarn(item: OrderItem, now: Instant) {
+        val earn = earnOf(item.id!!) ?: return
+        if (earn.status != "PENDING") return
+        earn.status = "CANCELLED"
+        changeBalance(earn.userId, availableDelta = 0, pendingDelta = -earn.amount, now = now)
+    }
+
+    /** 회수(§8.4): 그 항목의 EARN 묶음에 남은 양 전부를 REVOKE(배분 1행), remaining 0, available 감소. 이미 쓴 부분은 그대로. EARN은 AVAILABLE. */
+    private fun revokeEarn(item: OrderItem, now: Instant) {
+        val earn = earnOf(item.id!!) ?: return
+        val left = earn.remaining!!
+        if (earn.status != "AVAILABLE" || left == 0L) return
+        val revoke = PointLedgerEntry(
+            userId = earn.userId,
+            kind = "REVOKE",
+            status = "DONE",
+            amount = left,
+            orderItemId = item.id,
+            orderId = item.orderId,
+            createdAt = now,
+        )
+        em.persist(revoke)
+        em.persist(PointAllocation(entryId = revoke.id!!, earnEntryId = earn.id!!, amount = left))
+        earn.remaining = 0
+        changeBalance(earn.userId, availableDelta = -left, pendingDelta = 0, now = now)
+    }
+
+    /**
+     * 복구(§7.3): RESTORE 1행 + 배분. 되돌릴 묶음 = 그 주문의 CONFIRMED USE가 빠져나간 묶음, 만료가 늦은 묶음부터(같으면 id 큰 것부터),
+     * 묶음마다 "그 USE가 가져간 양 − 이 주문의 앞선 RESTORE가 이미 되돌린 양"까지. 되돌린 묶음이 이미 만료됐으면(expires_at ≤ 현재)
+     * RESTORE 뒤에 같은 시각으로 되돌린 양만큼 EXPIRE 1행 + 배분을 쓴다(remaining은 복구 전 값, 원래 남은 양은 point-expiry가 처리).
+     * 구매자 행을 잠근 트랜잭션 안에서 부른다.
+     */
+    private fun restorePoints(order: PurchaseOrder, item: OrderItem, amount: Long, now: Instant) {
+        val restore = PointLedgerEntry(
+            userId = order.buyerId,
+            kind = "RESTORE",
+            status = "DONE",
+            amount = amount,
+            orderItemId = item.id,
+            orderId = order.id,
+            createdAt = now,
+        )
+        em.persist(restore)
+        val rows = em.createNativeQuery(
+            """
+            SELECT u.earn_entry_id, u.used - coalesce(r.back, 0)
+              FROM (SELECT a.earn_entry_id, sum(a.amount) AS used
+                      FROM point_allocations a JOIN point_ledger l ON l.id = a.entry_id
+                     WHERE l.order_id = :order AND l.kind = 'USE' AND l.status = 'CONFIRMED'
+                     GROUP BY a.earn_entry_id) u
+              LEFT JOIN (SELECT a.earn_entry_id, sum(a.amount) AS back
+                           FROM point_allocations a JOIN point_ledger l ON l.id = a.entry_id
+                          WHERE l.order_id = :order AND l.kind = 'RESTORE'
+                          GROUP BY a.earn_entry_id) r ON r.earn_entry_id = u.earn_entry_id
+              JOIN point_ledger e ON e.id = u.earn_entry_id
+             ORDER BY e.expires_at DESC, e.id DESC
+            """,
+        ).setParameter("order", order.id).resultList
+        var need = amount
+        val expired = mutableListOf<Pair<PointLedgerEntry, Long>>()
+        for (row in rows) {
+            if (need == 0L) break
+            val cols = row as Array<*>
+            val take = minOf((cols[1] as Number).toLong(), need)
+            if (take <= 0) continue
+            val bundle = em.find(PointLedgerEntry::class.java, (cols[0] as Number).toLong())
+            bundle.remaining = bundle.remaining!! + take
+            need -= take
+            em.persist(PointAllocation(entryId = restore.id!!, earnEntryId = bundle.id!!, amount = take))
+            if (!bundle.expiresAt!!.isAfter(now)) expired += bundle to take
+        }
+        // 환불 포인트는 그 주문이 쓴 포인트를 넘지 않으므로(§7.1) 모자랄 수 없다
+        check(need == 0L) { "복구 대상 부족: order ${order.id}, 부족 $need" }
+        for ((bundle, take) in expired) {
+            val expire = PointLedgerEntry(userId = order.buyerId, kind = "EXPIRE", status = "DONE", amount = take, createdAt = now)
+            em.persist(expire)
+            em.persist(PointAllocation(entryId = expire.id!!, earnEntryId = bundle.id!!, amount = take))
+            bundle.remaining = bundle.remaining!! - take
+        }
+        changeBalance(order.buyerId, availableDelta = amount - expired.sumOf { it.second }, pendingDelta = 0, now = now)
+    }
 
     /** point_balances 캐시 갱신. 행이 없는 사용자는 처음 바뀔 때 만든다. updated_at = 바꾼 시각. */
     private fun changeBalance(userId: Long, availableDelta: Long, pendingDelta: Long, now: Instant) {

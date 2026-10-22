@@ -46,6 +46,18 @@ class PgClient(
         return PgResponse(response.statusCode(), response.body() ?: "")
     }
 
+    /** 카드 취소(ADR-0004 §7.2): `POST {PG_URL}/cancellations {"idempotencyKey","approvalKey","amount"}`. */
+    fun postCancellation(idempotencyKey: String, approvalKey: String, amount: Long): PgResponse {
+        val body = json.writeValueAsString(mapOf("idempotencyKey" to idempotencyKey, "approvalKey" to approvalKey, "amount" to amount))
+        val request = HttpRequest.newBuilder(URI.create("$baseUrl/cancellations"))
+            .timeout(timeout)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build()
+        val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+        return PgResponse(response.statusCode(), response.body() ?: "")
+    }
+
     /** 재조회: `GET {PG_URL}/approvals/{idempotencyKey}`. */
     fun getApproval(idempotencyKey: String): PgResponse {
         val path = URLEncoder.encode(idempotencyKey, StandardCharsets.UTF_8).replace("+", "%20")

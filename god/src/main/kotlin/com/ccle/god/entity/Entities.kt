@@ -200,3 +200,26 @@ class Inspection(
     var reason: String? = null,
     var inspectedAt: Instant,
 )
+
+@Entity
+@Table(name = "disputes")
+class Dispute(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var orderItemId: Long,
+    var status: String,
+    var openedAt: Instant,
+    var resolvedAt: Instant? = null,
+)
+
+@Entity
+@Table(name = "seller_penalties")
+class SellerPenalty(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var sellerId: Long,
+    var orderItemId: Long,
+    var amount: Long,
+    var settlementId: Long? = null,
+    var createdAt: Instant,
+)

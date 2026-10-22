@@ -79,3 +79,9 @@ data class ItemView(
 )
 
 data class RefundView(val cardAmount: Long, val pointAmount: Long, val buyerFeeAmount: Long, val shippingAmount: Long, val fault: String)
+
+/** 분쟁 제기 응답(ADR-0004 §4.3). */
+data class DisputeOpened(val disputeId: Long, val orderItemId: Long, val status: String, val openedAt: Instant)
+
+/** 분쟁 판정 응답(ADR-0004 §4.4). */
+data class DisputeView(val disputeId: Long, val orderItemId: Long, val status: String, val openedAt: Instant, val resolvedAt: Instant?)
