@@ -76,6 +76,11 @@ class SellerPenalty(
     var settlementId: Long? = null,
     var createdAt: Instant,
 ) {
+    /** 주간 정산 행에 붙인다(ADR-0004 §10.2 — settlement_id 갱신). 저장한 정산 행(id 있음)에만. */
+    fun attachTo(settlement: Settlement) {
+        settlementId = settlement.id!!
+    }
+
     companion object {
         /**
          * 판매자 귀책 패널티 1행(ADR-0004 §6): amount = floor(체결가 × 10%), settlement_id NULL, created_at = 현재.
@@ -91,4 +96,7 @@ interface SellerPenaltyRepository {
 
     /** 그 판매자의 패널티 중 created_at > from 인 것의 created_at. */
     fun createdAtAfter(sellerId: Long, from: Instant): List<Instant>
+
+    /** 아직 정산에 붙지 않았고 created_at < cutoff 인 패널티, id 순(§10.2). */
+    fun unsettledBefore(cutoff: Instant): List<SellerPenalty>
 }

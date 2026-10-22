@@ -28,4 +28,10 @@ class JpaSellerPenaltyRepository(private val em: EntityManager) : SellerPenaltyR
             "SELECT p.createdAt FROM SellerPenalty p WHERE p.sellerId = :seller AND p.createdAt > :from",
             Instant::class.java,
         ).setParameter("seller", sellerId).setParameter("from", from).resultList
+
+    override fun unsettledBefore(cutoff: Instant): List<SellerPenalty> =
+        em.createQuery(
+            "SELECT p FROM SellerPenalty p WHERE p.settlementId IS NULL AND p.createdAt < :cutoff ORDER BY p.id",
+            SellerPenalty::class.java,
+        ).setParameter("cutoff", cutoff).resultList
 }

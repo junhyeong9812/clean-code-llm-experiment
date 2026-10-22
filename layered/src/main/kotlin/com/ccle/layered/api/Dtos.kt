@@ -5,12 +5,15 @@ import com.ccle.layered.domain.Book
 import com.ccle.layered.domain.Dispute
 import com.ccle.layered.domain.OrderSnapshot
 import com.ccle.layered.domain.Refund
+import com.ccle.layered.domain.SettlementItem
 import com.ccle.layered.domain.Trade
 import com.ccle.layered.service.BidDetail
 import com.ccle.layered.service.ItemDetail
 import com.ccle.layered.service.PlacedBid
 import com.ccle.layered.service.PointsSummary
+import com.ccle.layered.service.SettlementDetail
 import java.time.Instant
+import java.time.LocalDate
 
 // 응답 본문 모양(ADR-0003). 서비스 결과(도메인 객체)를 읽어 채운다. Instant는 KST ISO-8601로 나간다(Json.kt).
 
@@ -167,4 +170,41 @@ data class DisputeOpened(val disputeId: Long, val orderItemId: Long, val status:
 /** 분쟁 판정 응답(ADR-0004 §4.4). */
 data class DisputeView(val disputeId: Long, val orderItemId: Long, val status: String, val openedAt: Instant, val resolvedAt: Instant?) {
     constructor(dispute: Dispute) : this(dispute.id!!, dispute.orderItemId, dispute.status, dispute.openedAt, dispute.resolvedAt)
+}
+
+/** 판매자 정산 조회 응답 1행(ADR-0004 §10.3). periodStart·periodEnd는 "YYYY-MM-DD". items는 orderItemId 오름차순. */
+data class SettlementView(
+    val settlementId: Long,
+    val periodStart: LocalDate,
+    val periodEnd: LocalDate,
+    val gross: Long,
+    val feeTotal: Long,
+    val penaltyTotal: Long,
+    val carryIn: Long,
+    val net: Long,
+    val payout: Long,
+    val carryOut: Long,
+    val status: String,
+    val paidAt: Instant?,
+    val items: List<SettlementItemView>,
+) {
+    constructor(detail: SettlementDetail) : this(
+        settlementId = detail.settlement.id!!,
+        periodStart = detail.settlement.periodStart,
+        periodEnd = detail.settlement.periodEnd,
+        gross = detail.settlement.gross,
+        feeTotal = detail.settlement.feeTotal,
+        penaltyTotal = detail.settlement.penaltyTotal,
+        carryIn = detail.settlement.carryIn,
+        net = detail.settlement.net,
+        payout = detail.settlement.payout,
+        carryOut = detail.settlement.carryOut,
+        status = detail.settlement.status,
+        paidAt = detail.settlement.paidAt,
+        items = detail.items.map { SettlementItemView(it) },
+    )
+}
+
+data class SettlementItemView(val orderItemId: Long, val amount: Long, val fee: Long, val status: String) {
+    constructor(item: SettlementItem) : this(item.orderItemId, item.amount, item.fee, item.status)
 }

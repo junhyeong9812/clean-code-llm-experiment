@@ -16,6 +16,10 @@ import com.ccle.layered.domain.PgTransaction
 import com.ccle.layered.domain.PgTransactionRepository
 import com.ccle.layered.domain.PointRepository
 import com.ccle.layered.domain.ProductSizeRepository
+import com.ccle.layered.domain.SellerPenaltyRepository
+import com.ccle.layered.domain.SellerStatement
+import com.ccle.layered.domain.SettlementRepository
+import com.ccle.layered.domain.SettlementWeek
 import com.ccle.layered.domain.TradeRepository
 import com.ccle.layered.domain.User
 import com.ccle.layered.domain.UserRepository
@@ -27,8 +31,8 @@ import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 
 /**
- * `POST /admin/batches/{name}`(§7, ADR-0004 §5): 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수).
- * 알 수 없는 이름은 400. 대상 1건 = 트랜잭션 하나. 카드 취소 실패(409 PG_UNAVAILABLE)는 그 대상만 건너뛰고(ADR-0004 §7.2),
+ * `POST /admin/batches/{name}`(§7, ADR-0004 §5): 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수, weekly-settlement는 만든 정산 행 수).
+ * 알 수 없는 이름은 400. 대상 1건 = 트랜잭션 하나(weekly-settlement는 한 주 = 트랜잭션 하나). 카드 취소 실패(409 PG_UNAVAILABLE)는 그 대상만 건너뛰고(ADR-0004 §7.2),
  * 그 밖의 예외는 배치를 멈춘다(앞 대상은 커밋된 채).
  */
 @Service
@@ -41,6 +45,7 @@ class BatchService(
     private val autoConfirm: AutoConfirmBatch,
     private val pointExpiry: PointExpiryBatch,
     private val gradeRecalc: GradeRecalcBatch,
+    private val weeklySettlement: WeeklySettlementBatch,
 ) {
     private val log = LoggerFactory.getLogger(BatchService::class.java)
 
@@ -55,6 +60,7 @@ class BatchService(
             "auto-confirm" -> autoConfirm.run(now)
             "point-expiry" -> pointExpiry.run(now)
             "grade-recalc" -> gradeRecalc.run(now)
+            "weekly-settlement" -> weeklySettlement.run(now)
             else -> invalidRequest("알 수 없는 배치: $name")
         }
         log.info("배치 {} (현재 {}): processed={}, {}ms", name, now, processed, (System.nanoTime() - started) / 1_000_000)
@@ -275,5 +281,47 @@ class GradeRecalcBatch(
                 true
             }!!
         }
+    }
+}
+
+/**
+ * weekly-settlement(ADR-0004 §10): 먼저 auto-confirm을 수행하고(소급 확정 시각이 이미 마감된 주에 들어가지 않게), 정산할 주를 오래된 주부터 정산한다.
+ * 한 주 = 모든 판매자를 트랜잭션 하나로(§9.2 — 실패하면 그 주 전체가 롤백되고 예외가 전파된다. 앞 주는 커밋된 채).
+ */
+@Component
+class WeeklySettlementBatch(
+    private val tx: TransactionTemplate,
+    private val autoConfirm: AutoConfirmBatch,
+    private val settlements: SettlementRepository,
+    private val penalties: SellerPenaltyRepository,
+) {
+    fun run(now: Instant): Int {
+        autoConfirm.run(now)
+        var processed = 0
+        for (week in SettlementWeek.pending(settlements.lastPeriodStart(), now)) {
+            processed += tx.execute { settle(week) }!!
+        }
+        return processed
+    }
+
+    /**
+     * 한 주의 정산(§10.2). 반환 = 만든 정산 행 수.
+     * 잠금(§9.1): 대상 항목 행을 id 순으로 잠근 뒤(order_items만 — 다른 테이블 행은 잠그지 않는다) 새 문장으로 대상 조건을 다시 평가한다.
+     * 정산 행 INSERT는 판매자 users 행에 FK 잠금을 거는데, 그 전에 항목을 모두 잠갔으므로 주문 → 항목 → 사용자 순서의 항목 처리(ItemLocker)와 교착하지 않는다.
+     * 엔티티 변경(패널티 settlement_id)은 마지막 조회(네이티브 — 실행 전 flush) 뒤에만 하고, 커밋 때 패널티 id 순으로 UPDATE된다.
+     */
+    private fun settle(week: SettlementWeek): Int {
+        settlements.lockTargets(week.cutoff)
+        val targets = settlements.targets(week.cutoff)
+        val unsettled = penalties.unsettledBefore(week.cutoff)
+        val carries = settlements.negativeCarries()
+        val statements = SellerStatement.of(targets, unsettled, carries)
+        for (statement in statements) {
+            val settlement = statement.settlement(week)
+            settlements.add(settlement)
+            statement.items(settlement).forEach { settlements.addItem(it) }
+            statement.attachPenalties(settlement)
+        }
+        return statements.size
     }
 }

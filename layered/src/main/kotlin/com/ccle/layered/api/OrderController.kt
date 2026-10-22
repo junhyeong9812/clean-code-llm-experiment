@@ -3,6 +3,7 @@ package com.ccle.layered.api
 import com.ccle.layered.service.OrderQueryService
 import com.ccle.layered.service.PaymentService
 import com.ccle.layered.service.PointQueryService
+import com.ccle.layered.service.SettlementQueryService
 import com.ccle.layered.service.UserService
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -13,13 +14,14 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RestController
 
-/** 주문 결제·조회(ADR-0003 §5.1·§5.3)와 포인트 조회(§5.2). */
+/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2)와 판매자 정산 조회(ADR-0004 §10.3). */
 @RestController
 class OrderController(
     private val users: UserService,
     private val payment: PaymentService,
     private val orderQuery: OrderQueryService,
     private val pointQuery: PointQueryService,
+    private val settlementQuery: SettlementQueryService,
 ) {
 
     @PostMapping("/orders")
@@ -52,5 +54,11 @@ class OrderController(
     fun points(@RequestHeader("X-User-Id", required = false) userHeader: String?): PointsView {
         val userId = users.requireUser(userIdOf(userHeader))
         return PointsView(pointQuery.summary(userId))
+    }
+
+    @GetMapping("/me/settlements")
+    fun settlements(@RequestHeader("X-User-Id", required = false) userHeader: String?): List<SettlementView> {
+        val userId = users.requireUser(userIdOf(userHeader))
+        return settlementQuery.list(userId).map { SettlementView(it) }
     }
 }
