@@ -1254,9 +1254,12 @@ class Marketplace(
         )
     }
 
-    // ---- 배치: bid-expiry·payment-due·pg-inquiry (§7) ----
+    // ---- 배치: bid-expiry·payment-due·pg-inquiry (ADR-0003 §7), shipment-deadline·auto-confirm·point-expiry·grade-recalc (ADR-0004 §5) ----
 
-    /** `POST /admin/batches/{name}`: 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수. 알 수 없는 이름은 400. */
+    /**
+     * `POST /admin/batches/{name}`: 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수). 알 수 없는 이름은 400.
+     * 대상 1건 = 트랜잭션 하나. 카드 취소 실패(409 PG_UNAVAILABLE)는 그 대상만 건너뛰고(ADR-0004 §7.2), 그 밖의 예외는 배치를 멈춘다(앞 대상은 커밋된 채).
+     */
     fun runBatch(name: String): Int {
         val now = clock.now()
         val started = System.nanoTime() // 소요 시간 로그용(업무 시각 아님)
@@ -1264,6 +1267,10 @@ class Marketplace(
             "bid-expiry" -> expireBids(now)
             "payment-due" -> expireUnpaidTrades(now)
             "pg-inquiry" -> inquireUnknownOrders(now)
+            "shipment-deadline" -> cancelUnshippedItems(now)
+            "auto-confirm" -> autoConfirmItems(now)
+            "point-expiry" -> expirePoints(now)
+            "grade-recalc" -> recalcGrades(now)
             else -> badRequest("알 수 없는 배치: $name")
         }
         log.info("배치 {} (현재 {}): processed={}, {}ms", name, now, processed, (System.nanoTime() - started) / 1_000_000)
@@ -1418,6 +1425,124 @@ class Marketplace(
                 }!!
             }
         }
+
+    /**
+     * shipment-deadline(ADR-0004 §5): PAID이고 paid_at + 3일 ≤ 현재인 항목을 id 순으로 §6 판매자 귀책(사유 `발송 기한 초과`).
+     * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자 취소·발송됐으면 건너뜀).
+     * 카드 취소 실패(409 PG_UNAVAILABLE)면 그 트랜잭션을 롤백하고 건너뛴다(§7.2) — 다음 실행의 대상으로 남는다.
+     */
+    private fun cancelUnshippedItems(now: Instant): Int =
+        forEachTarget("order_items", "t.status = 'PAID' AND t.paid_at <= :due", mapOf("due" to now.minus(Duration.ofDays(3)))) { itemId ->
+            try {
+                tx.execute {
+                    val item = lockOrderOf(itemId)
+                    if (item.status != "PAID" || item.paidAt!!.plus(Duration.ofDays(3)).isAfter(now)) {
+                        false
+                    } else {
+                        sellerFault(item, reason = "발송 기한 초과", now = now)
+                        true
+                    }
+                }!!
+            } catch (e: ApiException) {
+                if (e.code != "PG_UNAVAILABLE") throw e
+                log.warn("shipment-deadline: 항목 {} 건너뜀(카드 취소 실패)", itemId)
+                false
+            }
+        }
+
+    /**
+     * auto-confirm(ADR-0004 §5): DELIVERED이고 delivered_at + 7일 ≤ 현재인 항목을 id 순으로 CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2.
+     * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
+     */
+    private fun autoConfirmItems(now: Instant): Int =
+        forEachTarget("order_items", "t.status = 'DELIVERED' AND t.delivered_at <= :due", mapOf("due" to now.minus(Duration.ofDays(7)))) { itemId ->
+            tx.execute {
+                val item = lockOrderOf(itemId)
+                val due = item.deliveredAt?.plus(Duration.ofDays(7))
+                if (item.status != "DELIVERED" || due!!.isAfter(now)) {
+                    false
+                } else {
+                    confirmItem(item, confirmedAt = due, now = now)
+                    true
+                }
+            }!!
+        }
+
+    /**
+     * point-expiry(ADR-0004 §8.3): EARN AVAILABLE, remaining > 0, expires_at ≤ 현재인 묶음을 id 순으로 소멸.
+     * 묶음마다 EXPIRE 1행(amount = remaining, 주문 NULL, created_at = 현재) + 배분 1행, remaining 0(EARN은 AVAILABLE), available 감소.
+     * 묶음 1개 = 그 사용자 행을 잠근 트랜잭션 하나(묶음 remaining을 바꾸는 처리는 모두 이 잠금 안에서 한다). 다른 잠금은 잡지 않는다.
+     */
+    private fun expirePoints(now: Instant): Int =
+        forEachTarget(
+            "point_ledger",
+            "t.kind = 'EARN' AND t.status = 'AVAILABLE' AND t.remaining > 0 AND t.expires_at <= :now",
+            mapOf("now" to now),
+        ) { earnId ->
+            tx.execute {
+                val earn = em.find(PointLedgerEntry::class.java, earnId)
+                lockUser(earn.userId)
+                em.refresh(earn)
+                val left = earn.remaining!!
+                if (earn.status != "AVAILABLE" || left == 0L || earn.expiresAt!!.isAfter(now)) {
+                    false
+                } else {
+                    val expire = PointLedgerEntry(userId = earn.userId, kind = "EXPIRE", status = "DONE", amount = left, createdAt = now)
+                    em.persist(expire)
+                    em.persist(PointAllocation(entryId = expire.id!!, earnEntryId = earnId, amount = left))
+                    earn.remaining = 0
+                    changeBalance(earn.userId, availableDelta = -left, pendingDelta = 0, now = now)
+                    true
+                }
+            }!!
+        }
+
+    /**
+     * 등급 재산정의 기준 금액(ADR-0004 §8.5): 사용자 t가 구매자인 항목 중 CONFIRMED·DISPUTED이고 confirmed_at ∈ [:from, :to)의 체결가 합.
+     * 등급 경계: VIP ≥ 5,000,000 · GOLD ≥ 2,000,000 · SILVER ≥ 500,000 · 그 밖 BRONZE.
+     */
+    private val gradeBasisSql =
+        "(SELECT coalesce(sum(i.price), 0) FROM order_items i JOIN orders o ON o.id = i.order_id" +
+            " WHERE o.buyer_id = t.id AND i.status IN ('CONFIRMED', 'DISPUTED') AND i.confirmed_at >= :from AND i.confirmed_at < :to)"
+    private val gradeSql =
+        "(SELECT CASE WHEN b.v >= 5000000 THEN 'VIP' WHEN b.v >= 2000000 THEN 'GOLD' WHEN b.v >= 500000 THEN 'SILVER' ELSE 'BRONZE' END" +
+            " FROM (SELECT $gradeBasisSql AS v) b)"
+
+    /**
+     * grade-recalc(ADR-0004 §8.5): 기준일 D = 현재가 속한 달 1일(KST), 기간 = [D − 6개월, D)(KST 00:00).
+     * 대상 = effective_from = D 이력이 없고 계산한 등급이 users.grade와 다른 사용자(한 번의 집계 조건으로 거른다), id 순.
+     * 사용자 1명 = 그 사용자 행을 잠근 트랜잭션 하나. 잠근 뒤 이력 유무·기준 금액·users.grade를 다시 읽어 판정한다
+     * (기준 금액을 바꾸는 확정·분쟁 인정은 구매자 행을 잠그므로 잠근 뒤의 값이 최신이다). 반환 = 쓴 이력 행 수.
+     */
+    private fun recalcGrades(now: Instant): Int {
+        val kst = ZoneOffset.ofHours(9)
+        val d = LocalDate.ofInstant(now, kst).withDayOfMonth(1)
+        val params = mapOf<String, Any>(
+            "d" to d,
+            "from" to d.minusMonths(6).atStartOfDay(kst).toInstant(),
+            "to" to d.atStartOfDay(kst).toInstant(),
+        )
+        val noHistoryAtD = "NOT EXISTS (SELECT 1 FROM user_grade_history h WHERE h.user_id = t.id AND h.effective_from = :d)"
+        return forEachTarget("users", "$noHistoryAtD AND t.grade <> $gradeSql", params) { userId ->
+            tx.execute {
+                lockUser(userId)
+                val query = em.createNativeQuery(
+                    "SELECT $gradeSql, $gradeBasisSql, t.grade, $noHistoryAtD FROM users t WHERE t.id = :user",
+                ).setParameter("user", userId)
+                params.forEach { (name, value) -> query.setParameter(name, value) }
+                val row = query.singleResult as Array<*>
+                val grade = row[0] as String
+                val basis = (row[1] as Number).toLong()
+                if (row[3] != true || grade == row[2]) return@execute false
+                em.createNativeQuery(
+                    "INSERT INTO user_grade_history (user_id, grade, effective_from, basis_amount) VALUES (:user, :grade, :d, :basis)",
+                ).setParameter("user", userId).setParameter("grade", grade).setParameter("d", d).setParameter("basis", basis)
+                    .executeUpdate()
+                em.find(User::class.java, userId).grade = grade
+                true
+            }!!
+        }
+    }
 
     // ---- 기동 (ADR-0003 §9의 7) ----
 
