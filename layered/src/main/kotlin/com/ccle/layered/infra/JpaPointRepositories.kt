@@ -5,6 +5,7 @@ import com.ccle.layered.domain.PointBalance
 import com.ccle.layered.domain.PointBalanceRepository
 import com.ccle.layered.domain.PointLedgerEntry
 import com.ccle.layered.domain.PointRepository
+import com.ccle.layered.domain.RestorableBundle
 import jakarta.persistence.EntityManager
 import org.springframework.stereotype.Component
 import java.time.Instant
@@ -48,6 +49,31 @@ class JpaPointRepository(private val em: EntityManager) : PointRepository {
             .resultList
 
     override fun removeAllocation(allocation: PointAllocation) = em.remove(allocation)
+
+    override fun earnOf(orderItemId: Long): PointLedgerEntry? =
+        em.createQuery("SELECT l FROM PointLedgerEntry l WHERE l.orderItemId = :item AND l.kind = 'EARN'", PointLedgerEntry::class.java)
+            .setParameter("item", orderItemId)
+            .resultList.firstOrNull()
+
+    override fun restorableBundles(orderId: Long): List<RestorableBundle> =
+        em.createNativeQuery(
+            """
+            SELECT u.earn_entry_id, u.used - coalesce(r.back, 0)
+              FROM (SELECT a.earn_entry_id, sum(a.amount) AS used
+                      FROM point_allocations a JOIN point_ledger l ON l.id = a.entry_id
+                     WHERE l.order_id = :order AND l.kind = 'USE' AND l.status = 'CONFIRMED'
+                     GROUP BY a.earn_entry_id) u
+              LEFT JOIN (SELECT a.earn_entry_id, sum(a.amount) AS back
+                           FROM point_allocations a JOIN point_ledger l ON l.id = a.entry_id
+                          WHERE l.order_id = :order AND l.kind = 'RESTORE'
+                          GROUP BY a.earn_entry_id) r ON r.earn_entry_id = u.earn_entry_id
+              JOIN point_ledger e ON e.id = u.earn_entry_id
+             ORDER BY e.expires_at DESC, e.id DESC
+            """,
+        ).setParameter("order", orderId).resultList.map {
+            val cols = it as Array<*>
+            RestorableBundle(earnEntryId = (cols[0] as Number).toLong(), restorable = (cols[1] as Number).toLong())
+        }
 }
 
 @Component

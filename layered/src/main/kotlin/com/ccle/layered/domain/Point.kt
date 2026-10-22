@@ -5,6 +5,7 @@ import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
 import jakarta.persistence.Table
+import java.time.Duration
 import java.time.Instant
 
 // 포인트(ADR-0003 §5.2·ADR-0002 §9.6). 사용 가능액 = EARN·AVAILABLE·만료 전 묶음의 remaining 합(예약분은 이미 remaining에서 빠져 있다).
@@ -76,7 +77,77 @@ class PointLedgerEntry(
         remaining = remaining!! + amount
     }
 
+    /**
+     * 적립 확정(ADR-0004 §8.2, EARN에 부른다): PENDING이면 AVAILABLE, expires_at = confirmed_at + 365일, 잔액 영향 pending → available.
+     * PENDING이 아니면 그대로(null).
+     */
+    fun confirmEarn(confirmedAt: Instant): BalanceDelta? {
+        check(kind == "EARN") { "EARN이 아닌 행 $id 을 적립 확정하려 했다: $kind" }
+        if (status != "PENDING") return null
+        status = "AVAILABLE"
+        expiresAt = confirmedAt.plus(EARN_VALID_FOR)
+        return BalanceDelta(available = amount, pending = -amount)
+    }
+
+    /** 적립 예정 취소(§7.3, EARN에 부른다): PENDING이면 CANCELLED, pending 감소. remaining은 그대로(= amount). 아니면 null. */
+    fun cancelPending(): BalanceDelta? {
+        check(kind == "EARN") { "EARN이 아닌 행 $id 의 적립 예정을 취소하려 했다: $kind" }
+        if (status != "PENDING") return null
+        status = "CANCELLED"
+        return BalanceDelta(available = 0, pending = -amount)
+    }
+
+    /**
+     * 회수(§8.4, EARN에 부른다): AVAILABLE이고 남은 양 > 0이면 남은 양 전부의 REVOKE 행(아직 아무것도 바꾸지 않음), 아니면 null.
+     * 이미 쓴 부분은 회수하지 않는다. EARN은 AVAILABLE로 남는다.
+     */
+    fun revocation(orderId: Long, orderItemId: Long, now: Instant): PointLedgerEntry? {
+        check(kind == "EARN") { "EARN이 아닌 행 $id 을 회수하려 했다: $kind" }
+        val left = remaining!!
+        if (status != "AVAILABLE" || left == 0L) return null
+        return PointLedgerEntry(
+            userId = userId,
+            kind = "REVOKE",
+            status = "DONE",
+            amount = left,
+            orderItemId = orderItemId,
+            orderId = orderId,
+            createdAt = now,
+        )
+    }
+
+    /** 회수 반영(저장한 REVOKE 행으로): remaining 0, 배분 1행을 돌려준다. */
+    fun revokedBy(revoke: PointLedgerEntry): PointAllocation {
+        check(revoke.kind == "REVOKE" && revoke.amount == remaining) { "묶음 $id 의 남은 양과 다른 회수: ${revoke.amount}" }
+        remaining = 0
+        return PointAllocation(entryId = revoke.id!!, earnEntryId = id!!, amount = revoke.amount)
+    }
+
+    /** 소멸 반영(저장한 EXPIRE 행으로): 그 양만큼 remaining을 줄이고 배분 1행을 돌려준다(EARN은 AVAILABLE 그대로). */
+    fun expiredBy(expire: PointLedgerEntry): PointAllocation {
+        check(expire.kind == "EXPIRE") { "EXPIRE가 아닌 행 ${expire.id} 로 소멸하려 했다: ${expire.kind}" }
+        remaining = remaining!! - expire.amount
+        return PointAllocation(entryId = expire.id!!, earnEntryId = id!!, amount = expire.amount)
+    }
+
     companion object {
+        private val EARN_VALID_FOR: Duration = Duration.ofDays(365)
+
+        /** 복구(§7.3): RESTORE 1행(DONE, amount = 포인트 환불, 주문·항목, created_at = 현재). */
+        fun restoration(userId: Long, orderId: Long, orderItemId: Long, amount: Long, now: Instant) = PointLedgerEntry(
+            userId = userId,
+            kind = "RESTORE",
+            status = "DONE",
+            amount = amount,
+            orderItemId = orderItemId,
+            orderId = orderId,
+            createdAt = now,
+        )
+
+        /** 소멸(§7.3·§8.3): EXPIRE 1행(DONE, 주문·항목 NULL, created_at = 현재). */
+        fun expiry(userId: Long, amount: Long, now: Instant) =
+            PointLedgerEntry(userId = userId, kind = "EXPIRE", status = "DONE", amount = amount, createdAt = now)
+
         /** 예약(§5.2): USE RESERVED 1행, order_item_id·expires_at·remaining 없음. */
         fun reservation(userId: Long, orderId: Long, amount: Long, now: Instant) = PointLedgerEntry(
             userId = userId,
@@ -118,6 +189,44 @@ class PointAllocation(
     var earnEntryId: Long,
     var amount: Long,
 )
+
+/** 복구 대상 묶음 1개(§7.3): 그 주문의 CONFIRMED USE가 이 묶음에서 가져간 양 − 이 주문의 앞선 RESTORE가 이미 되돌린 양. */
+class RestorableBundle(val earnEntryId: Long, val restorable: Long)
+
+/**
+ * 포인트 복구(§7.3)의 배분 계산. restore = 저장한 RESTORE 행. 복구 대상 묶음을 만료가 늦은 것부터(같으면 id 큰 것부터) 받아,
+ * 묶음마다 되돌릴 수 있는 양까지 되돌린다. 되돌린 묶음이 이미 만료됐으면(expires_at ≤ 현재) 되돌린 양만큼 같은 시각에 소멸한다.
+ */
+class PointRestoration(private val restore: PointLedgerEntry, private val now: Instant) {
+    private var need = restore.amount
+    private val expiring = mutableListOf<Pair<PointLedgerEntry, Long>>()
+
+    init {
+        check(restore.kind == "RESTORE") { "RESTORE가 아닌 행 ${restore.id} 으로 복구하려 했다: ${restore.kind}" }
+    }
+
+    fun isComplete(): Boolean = need == 0L
+
+    /** 이 묶음에서 되돌릴 양(0 이하면 건너뛴다). */
+    fun takeFrom(row: RestorableBundle): Long = minOf(row.restorable, need)
+
+    /** 묶음에 take만큼 되돌리고 배분 1행을 돌려준다. */
+    fun returnTo(bundle: PointLedgerEntry, take: Long): PointAllocation {
+        bundle.restore(take)
+        need -= take
+        if (!bundle.expiresAt!!.isAfter(now)) expiring += bundle to take
+        return PointAllocation(entryId = restore.id!!, earnEntryId = bundle.id!!, amount = take)
+    }
+
+    /** 환불 포인트는 그 주문이 쓴 포인트를 넘지 않으므로(§7.1) 모자랄 수 없다. */
+    fun requireComplete() = check(need == 0L) { "복구 대상 부족: order ${restore.orderId}, 부족 $need" }
+
+    /** 되돌린 뒤 바로 소멸할 (묶음, 양), 되돌린 순서. */
+    fun expiring(): List<Pair<PointLedgerEntry, Long>> = expiring
+
+    /** 잔액 영향: available + (복구 − 소멸). */
+    fun balanceDelta(): BalanceDelta = BalanceDelta(available = restore.amount - expiring.sumOf { it.second }, pending = 0)
+}
 
 /** point_balances 캐시의 변화량. */
 data class BalanceDelta(val available: Long, val pending: Long)
@@ -173,6 +282,12 @@ interface PointRepository {
     fun allocationsOf(useEntryId: Long): List<PointAllocation>
 
     fun removeAllocation(allocation: PointAllocation)
+
+    /** 그 항목의 EARN 행(없으면 null). */
+    fun earnOf(orderItemId: Long): PointLedgerEntry?
+
+    /** 그 주문의 복구 대상 묶음(§7.3), 만료가 늦은 것부터(같으면 id 큰 것부터). */
+    fun restorableBundles(orderId: Long): List<RestorableBundle>
 }
 
 interface PointBalanceRepository {

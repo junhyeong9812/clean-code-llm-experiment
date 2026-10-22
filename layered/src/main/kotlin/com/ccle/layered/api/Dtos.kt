@@ -2,6 +2,7 @@ package com.ccle.layered.api
 
 import com.ccle.layered.domain.Bid
 import com.ccle.layered.domain.Book
+import com.ccle.layered.domain.Dispute
 import com.ccle.layered.domain.OrderSnapshot
 import com.ccle.layered.domain.Refund
 import com.ccle.layered.domain.Trade
@@ -156,4 +157,14 @@ data class ItemView(
 
 data class RefundView(val cardAmount: Long, val pointAmount: Long, val buyerFeeAmount: Long, val shippingAmount: Long, val fault: String) {
     constructor(refund: Refund) : this(refund.cardAmount, refund.pointAmount, refund.buyerFeeAmount, refund.shippingAmount, refund.fault)
+}
+
+/** 분쟁 제기 응답(ADR-0004 §4.3). */
+data class DisputeOpened(val disputeId: Long, val orderItemId: Long, val status: String, val openedAt: Instant) {
+    constructor(dispute: Dispute) : this(dispute.id!!, dispute.orderItemId, dispute.status, dispute.openedAt)
+}
+
+/** 분쟁 판정 응답(ADR-0004 §4.4). */
+data class DisputeView(val disputeId: Long, val orderItemId: Long, val status: String, val openedAt: Instant, val resolvedAt: Instant?) {
+    constructor(dispute: Dispute) : this(dispute.id!!, dispute.orderItemId, dispute.status, dispute.openedAt, dispute.resolvedAt)
 }

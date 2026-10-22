@@ -53,13 +53,30 @@ class User(
         if (counted >= WARNINGS_TO_RESTRICT) purchaseRestrictedUntil = now.plus(PURCHASE_RESTRICTION)
     }
 
+    /**
+     * 판매자 패널티에 따른 판매 제한(ADR-0004 §6): 최근 30일 안(created_at > 현재 − 30일)이면서 마지막 제한이 걸린 시각
+     * (sale_restricted_until − 30일) 뒤의 패널티가 3건 이상이면 sale_restricted_until = 현재 + 30일. 구매 경고와 같은 해석이다.
+     * recentPenaltyTimes = created_at > penaltyWindowStart(now)인 패널티의 created_at(방금 쓴 패널티 포함).
+     */
+    fun restrictIfPenalized(recentPenaltyTimes: List<Instant>, now: Instant) {
+        val lastRestrictedAt = saleRestrictedUntil?.minus(SALE_RESTRICTION)
+        val counted = recentPenaltyTimes.count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+        if (counted >= PENALTIES_TO_RESTRICT) saleRestrictedUntil = now.plus(SALE_RESTRICTION)
+    }
+
     companion object {
         private val WARNING_WINDOW: Duration = Duration.ofDays(30)
         private val PURCHASE_RESTRICTION: Duration = Duration.ofDays(7)
         private const val WARNINGS_TO_RESTRICT = 3
+        private val PENALTY_WINDOW: Duration = Duration.ofDays(30)
+        private val SALE_RESTRICTION: Duration = Duration.ofDays(30)
+        private const val PENALTIES_TO_RESTRICT = 3
 
         /** 제한 판정에 세는 경고의 시작(이 시각 초과). */
         fun warningWindowStart(now: Instant): Instant = now.minus(WARNING_WINDOW)
+
+        /** 판매 제한 판정에 세는 패널티의 시작(이 시각 초과). */
+        fun penaltyWindowStart(now: Instant): Instant = now.minus(PENALTY_WINDOW)
 
         /** 등급 적립률(ADR-0002 §5.2, 천분율): BRONZE 1% · SILVER 1.5% · GOLD 2% · VIP 3%. 등급은 주문 생성 날짜의 등급(ADR-0004 §8.1). */
         fun earnRatePermille(grade: String): Long = when (grade) {

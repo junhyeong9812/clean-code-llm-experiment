@@ -4,9 +4,10 @@ import java.time.Duration
 
 /**
  * PG 응답(ADR-0003 §6). JSON 본문은 HTTP 200일 때만 읽어 둔다: readable = 읽을 수 있었나,
- * status = 본문의 status 값(문자열로), pgTxId = 본문의 pgTxId(문자열일 때만). raw = 본문 그대로(로그용).
+ * status = 본문의 status 값(문자열로), pgTxId = 본문의 pgTxId(문자열일 때만), amount = 본문의 amount(정수일 때만, 카드 취소 응답).
+ * raw = 본문 그대로(로그용).
  */
-class PgReply(val httpStatus: Int, val raw: String, val readable: Boolean, val status: String?, val pgTxId: String?)
+class PgReply(val httpStatus: Int, val raw: String, val readable: Boolean, val status: String?, val pgTxId: String?, val amount: Long? = null)
 
 /**
  * PG HTTP 호출(ADR-0003 §6). 응답을 그대로 돌려주고, 타임아웃·연결 실패 등은 예외를 그대로 던진다.
@@ -21,6 +22,9 @@ interface PaymentGateway {
 
     /** 재조회: `GET {PG_URL}/approvals/{idempotencyKey}`. */
     fun getApproval(idempotencyKey: String): PgReply
+
+    /** 카드 취소(ADR-0004 §7.2): `POST {PG_URL}/cancellations {"idempotencyKey","approvalKey","amount"}`. */
+    fun postCancellation(idempotencyKey: String, approvalKey: String, amount: Long): PgReply
 }
 
 /** PG 결과(ADR-0003 §5.1 표의 세 갈래). 이름이 pg_transactions.status 값이다. */
@@ -47,6 +51,27 @@ class PgResult private constructor(val outcome: PgOutcome, val pgTxId: String?, 
                 "DECLINED" -> PgResult(PgOutcome.DECLINED, null, null)
                 else -> PgResult(PgOutcome.UNKNOWN, null, "PG가 알 수 없는 상태를 돌려줌: ${reply.raw}")
             }
+        }
+    }
+}
+
+/**
+ * 카드 취소 결과 해석(ADR-0004 §7.2). 키는 `cancel-<항목 id>`(항목당 하나, 사유와 무관).
+ * 응답 없음(null)·200이 아님·읽을 수 없는 본문·APPROVED가 아님·pgTxId 없음·응답 금액이 요청 금액과 다름 → 실패(pgTxId null).
+ */
+class CardCancellation private constructor(val key: String, val pgTxId: String?) {
+
+    /** 실패면 409 PG_UNAVAILABLE. 성공이면 PG의 pgTxId. */
+    fun requireApproved(): String =
+        pgTxId ?: throw MarketException(Failure.PG_UNAVAILABLE, "카드 취소를 PG가 처리하지 못했다: $key")
+
+    companion object {
+        fun keyFor(orderItemId: Long): String = "cancel-$orderItemId"
+
+        fun of(key: String, reply: PgReply?, amount: Long): CardCancellation {
+            val ok = reply != null && reply.httpStatus == 200 && reply.readable &&
+                reply.status == "APPROVED" && reply.pgTxId != null && reply.amount == amount
+            return CardCancellation(key, if (ok) reply!!.pgTxId else null)
         }
     }
 }

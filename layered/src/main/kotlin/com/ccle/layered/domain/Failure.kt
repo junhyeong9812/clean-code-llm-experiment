@@ -17,6 +17,8 @@ enum class Failure {
     POINT_RULE_VIOLATION,
     ITEM_STATE_CONFLICT,
     DEADLINE_PASSED,
+    DISPUTE_NOT_OPEN,
+    PG_UNAVAILABLE,
 }
 
 class MarketException(val failure: Failure, message: String) : RuntimeException(message)

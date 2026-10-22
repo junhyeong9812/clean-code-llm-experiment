@@ -52,4 +52,9 @@ class Refund(
 interface RefundRepository {
     /** 그 항목의 환불 행(항목당 최대 1행), 없으면 null. */
     fun findFor(orderItemId: Long): Refund?
+
+    fun add(refund: Refund)
+
+    /** 그 주문의 환불 행에 이미 실린 배송비 합. */
+    fun shippingRefunded(orderId: Long): Long
 }

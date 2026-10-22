@@ -174,6 +174,15 @@ class PurchaseOrder(
     /** PG 결과를 아직 쓰지 못한 상태(요청 처리 중이거나, 쓰지 못하고 죽은 프로세스가 남긴 것). */
     fun isPaying(): Boolean = status == "PAYING"
 
+    /**
+     * 항목 환불 뒤의 주문 상태(ADR-0004 §7.1): 이 환불로 모든 항목이 환불됐으면(last) CANCELLED, 아니면 PARTIALLY_CANCELLED.
+     * 환불 처리의 마지막 변경이다(포인트 복구 뒤).
+     */
+    fun recordItemRefund(last: Boolean) {
+        check(status == "PAID" || status == "PARTIALLY_CANCELLED") { "결제되지 않은 주문 $id 의 항목을 환불하려 했다: $status" }
+        status = if (last) "CANCELLED" else "PARTIALLY_CANCELLED"
+    }
+
     /** 결과 미정: PG 재조회로 확정할 대상(§7 pg-inquiry). */
     fun isUnknown(): Boolean = status == "UNKNOWN"
 
@@ -212,8 +221,8 @@ class OrderItem(
     shippedAt: Instant? = null,
     inspectedAt: Instant? = null,
     deliveredAt: Instant? = null,
-    var confirmedAt: Instant? = null,
-    var cancelledAt: Instant? = null,
+    confirmedAt: Instant? = null,
+    cancelledAt: Instant? = null,
 ) {
     var status: String = status
         private set
@@ -228,6 +237,12 @@ class OrderItem(
         private set
 
     var deliveredAt: Instant? = deliveredAt
+        private set
+
+    var confirmedAt: Instant? = confirmedAt
+        private set
+
+    var cancelledAt: Instant? = cancelledAt
         private set
 
     /** 승인 반영(§5.1 표): 항목 PAID(paid_at). 적립 예정(§5.2): 적립액 > 0이면 EARN PENDING 행을 돌려준다(아니면 null). */
@@ -247,6 +262,11 @@ class OrderItem(
         if (userId != trade.buyerId && userId != trade.sellerId) {
             throw MarketException(Failure.NOT_OWNER, "구매자도 판매자도 아닌 주문 항목: $id")
         }
+    }
+
+    /** 그 주문의 구매자만(ADR-0004 §4 구매자 절차). */
+    fun requireBuyer(order: PurchaseOrder, userId: Long) {
+        if (order.buyerId != userId) throw MarketException(Failure.NOT_OWNER, "구매자가 아닌 주문 항목: $id")
     }
 
     /** 그 체결의 판매자만(§3 발송). */
@@ -269,16 +289,25 @@ class OrderItem(
         status = "INSPECTING"
     }
 
-    /**
-     * 검수(§3): INSPECTING만. 합격이면 DELIVERING, inspected_at = 현재, inspections PASS 행(reason NULL)을 돌려준다.
-     * 불합격(§6 판매자 귀책)은 아직 처리하지 않는다 — 상태 확인까지 한 뒤 계약 밖 오류로 끝낸다.
-     */
-    fun inspect(request: InspectionRequest, now: Instant): Inspection {
+    /** 검수(§3)의 상태 확인: INSPECTING만. 바꾸지 않는다(불합격은 이 뒤에 판매자 귀책 환불을 한다). */
+    fun requireInspecting() = requireStatus("INSPECTING")
+
+    /** 검수 합격(§3): DELIVERING, inspected_at = 현재, inspections PASS 행(reason NULL — 요청의 reason은 무시)을 돌려준다. */
+    fun passInspection(now: Instant): Inspection {
         requireStatus("INSPECTING")
-        if (!request.passed) throw UnsupportedOperationException("검수 불합격(판매자 귀책)은 아직 처리하지 않는다: $id")
         status = "DELIVERING"
         inspectedAt = now
         return Inspection(orderItemId = id!!, result = "PASS", reason = null, inspectedAt = now)
+    }
+
+    /**
+     * 검수 불합격(§3·§6)의 기록: 판매자 귀책 환불(CANCELLED_SELLER_FAULT, cancelled_at = 현재)을 반영한 뒤 부른다.
+     * inspected_at = 현재, inspections FAIL 행(reason = 받은 그대로)을 돌려준다.
+     */
+    fun failedInspection(reason: String, now: Instant): Inspection {
+        check(status == "CANCELLED_SELLER_FAULT") { "판매자 귀책 환불 전의 항목 $id 에 불합격을 기록하려 했다: $status" }
+        inspectedAt = now
+        return Inspection(orderItemId = id!!, result = "FAIL", reason = reason, inspectedAt = now)
     }
 
     /** 배송 완료(§3): DELIVERING → DELIVERED, delivered_at = 현재. */
@@ -286,6 +315,57 @@ class OrderItem(
         requireStatus("DELIVERING")
         status = "DELIVERED"
         deliveredAt = now
+    }
+
+    /**
+     * 구매 확정(ADR-0004 §4.1)의 확인과 확정 시각: DELIVERED만, confirmed_at = min(현재, delivered_at + 7일)
+     * (7일 뒤의 확정은 자동 확정과 같다). 바꾸지 않는다 — 구매자 행을 잠근 뒤 markConfirmed.
+     */
+    fun confirmationTime(now: Instant): Instant {
+        requireStatus("DELIVERED")
+        val lastDay = deliveredAt!!.plus(CONFIRM_WITHIN)
+        return if (now.isBefore(lastDay)) now else lastDay
+    }
+
+    /** 확정 반영(§4.1·auto-confirm): CONFIRMED, confirmed_at. */
+    fun markConfirmed(confirmedAt: Instant) {
+        check(status == "DELIVERED") { "DELIVERED가 아닌 항목 $id 를 확정하려 했다: $status" }
+        status = "CONFIRMED"
+        this.confirmedAt = confirmedAt
+    }
+
+    /** 구매자 취소(§4.2)의 확인: PAID만(발송 기한이 지나도 배치 전이면 PAID라 취소된다). 바꾸지 않는다. */
+    fun requireCancellableByBuyer() = requireStatus("PAID")
+
+    /**
+     * 분쟁 제기(§4.3): CONFIRMED이고 현재 ≤ confirmed_at + 14일. 상태 위반이 기한 위반보다 먼저다.
+     * 항목 DISPUTED, OPEN 분쟁 행을 돌려준다.
+     */
+    fun openDispute(now: Instant): Dispute {
+        requireStatus("CONFIRMED")
+        val deadline = confirmedAt!!.plus(DISPUTE_WITHIN)
+        if (now.isAfter(deadline)) throw MarketException(Failure.DEADLINE_PASSED, "분쟁 기간($deadline)이 지났다: $id")
+        status = "DISPUTED"
+        return Dispute.open(id!!, now)
+    }
+
+    /** 분쟁 기각(§4.4): DISPUTED → CONFIRMED(confirmed_at 그대로). */
+    fun rejectDispute() {
+        check(status == "DISPUTED") { "분쟁 중이 아닌 항목 $id 의 분쟁을 기각하려 했다: $status" }
+        status = "CONFIRMED"
+    }
+
+    /** 환불된 항목(취소 2종 + 확정 후 환불, §7.1 주문 상태·마지막 환불 판정). */
+    fun isRefunded(): Boolean = status in RefundFault.itemStatuses
+
+    /**
+     * 환불 반영(§7): 사유별 상태(구매자 취소 CANCELLED_BY_BUYER·판매자 귀책 CANCELLED_SELLER_FAULT·분쟁 인정 REFUNDED_AFTER_CONFIRM),
+     * cancelled_at = 현재. 카드 취소와 사용자 잠금 뒤에 부른다.
+     */
+    fun markRefunded(fault: RefundFault, now: Instant) {
+        check(status in fault.fromStatuses) { "${fault}로 환불할 수 없는 항목 $id: $status" }
+        status = fault.itemStatus
+        cancelledAt = now
     }
 
     /** 항목 절차의 상태 확인(§2.1): 기대 상태가 아니면 409 ITEM_STATE_CONFLICT. 주문·항목을 잠그고 다시 읽은 뒤 부른다. */
@@ -301,6 +381,8 @@ class OrderItem(
 
     companion object {
         private val SHIP_WITHIN: Duration = Duration.ofDays(3)
+        private val CONFIRM_WITHIN: Duration = Duration.ofDays(7)
+        private val DISPUTE_WITHIN: Duration = Duration.ofDays(14)
     }
 }
 
@@ -394,6 +476,21 @@ class PgTransaction(
                 respondedAt = now,
             )
         }
+
+        /**
+         * 카드 취소 1행(ADR-0004 §7.2): CANCEL·APPROVED, amount = 카드 환불, pg_tx_id = PG 값, 키 `cancel-<항목 id>`,
+         * requested_at = responded_at = 현재.
+         */
+        fun cancellation(orderId: Long, orderItemId: Long, amount: Long, pgTxId: String, now: Instant) = PgTransaction(
+            orderId = orderId,
+            kind = "CANCEL",
+            amount = amount,
+            status = "APPROVED",
+            pgTxId = pgTxId,
+            idempotencyKey = CardCancellation.keyFor(orderItemId),
+            requestedAt = now,
+            respondedAt = now,
+        )
 
         /** 결과를 쓰지 못한 승인 요청의 UNKNOWN 1행(§9의 7). */
         fun unknownApproval(order: PurchaseOrder, requestedAt: Instant) = PgTransaction(

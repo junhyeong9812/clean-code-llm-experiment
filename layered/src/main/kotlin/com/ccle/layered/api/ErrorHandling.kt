@@ -32,7 +32,8 @@ private fun statusOf(failure: Failure): HttpStatus = when (failure) {
     Failure.NOT_OWNER, Failure.PURCHASE_RESTRICTED, Failure.SALE_RESTRICTED -> HttpStatus.FORBIDDEN
     Failure.NOT_FOUND -> HttpStatus.NOT_FOUND
     Failure.BID_NOT_ACTIVE, Failure.NO_COUNTER_BID, Failure.TRADE_NOT_PAYABLE, Failure.IDEMPOTENCY_KEY_REUSED,
-    Failure.CLOCK_BACKWARD, Failure.ITEM_STATE_CONFLICT, Failure.DEADLINE_PASSED -> HttpStatus.CONFLICT
+    Failure.CLOCK_BACKWARD, Failure.ITEM_STATE_CONFLICT, Failure.DEADLINE_PASSED, Failure.DISPUTE_NOT_OPEN, Failure.PG_UNAVAILABLE,
+    -> HttpStatus.CONFLICT
     Failure.POINT_RULE_VIOLATION -> HttpStatus.UNPROCESSABLE_ENTITY
 }
 

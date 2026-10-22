@@ -2,6 +2,7 @@ package com.ccle.layered.api
 
 import com.ccle.layered.service.BatchService
 import com.ccle.layered.service.ClockService
+import com.ccle.layered.service.DisputeService
 import com.ccle.layered.service.FulfillmentService
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
@@ -13,13 +14,14 @@ import org.springframework.web.bind.annotation.RestController
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 
-/** 관리 엔드포인트(ADR-0003 §7, 헤더 불필요)와 센터 절차(ADR-0004 §3). */
+/** 관리 엔드포인트(ADR-0003 §7, 헤더 불필요)와 센터 절차(ADR-0004 §3)·분쟁 판정(§4.4). */
 @RestController
 @RequestMapping("/admin")
 class AdminController(
     private val clock: ClockService,
     private val batches: BatchService,
     private val fulfillment: FulfillmentService,
+    private val disputes: DisputeService,
 ) {
 
     @GetMapping("/clock")
@@ -50,4 +52,10 @@ class AdminController(
 
     @PostMapping("/order-items/{itemId}/delivery")
     fun deliver(@PathVariable itemId: String): ItemView = ItemView(fulfillment.deliver(pathId(itemId)))
+
+    @PostMapping("/disputes/{disputeId}/resolution")
+    fun resolveDispute(@PathVariable disputeId: String, @RequestBody(required = false) body: String?): DisputeView {
+        val json = parseObject(body)
+        return DisputeView(disputes.resolve(pathId(disputeId), json.booleanOrNull("accept")))
+    }
 }

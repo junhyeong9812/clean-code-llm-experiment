@@ -48,6 +48,16 @@ class PgHttpClient(
         return reply(http.send(request, HttpResponse.BodyHandlers.ofString()))
     }
 
+    override fun postCancellation(idempotencyKey: String, approvalKey: String, amount: Long): PgReply {
+        val body = json.writeValueAsString(mapOf("idempotencyKey" to idempotencyKey, "approvalKey" to approvalKey, "amount" to amount))
+        val request = HttpRequest.newBuilder(URI.create("$baseUrl/cancellations"))
+            .timeout(timeout)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build()
+        return reply(http.send(request, HttpResponse.BodyHandlers.ofString()))
+    }
+
     private fun reply(response: HttpResponse<String>): PgReply {
         val raw = response.body() ?: ""
         if (response.statusCode() != 200) return PgReply(response.statusCode(), raw, readable = false, status = null, pgTxId = null)
@@ -62,6 +72,7 @@ class PgHttpClient(
             readable = true,
             status = node?.path("status")?.asText(),
             pgTxId = node?.path("pgTxId")?.takeIf { it.isTextual }?.asText(),
+            amount = node?.path("amount")?.takeIf { it.isIntegralNumber }?.asLong(),
         )
     }
 }
