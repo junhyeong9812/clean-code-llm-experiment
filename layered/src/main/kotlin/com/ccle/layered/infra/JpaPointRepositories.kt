@@ -18,6 +18,8 @@ class JpaPointRepository(private val em: EntityManager) : PointRepository {
     override fun find(entryId: Long): PointLedgerEntry =
         em.find(PointLedgerEntry::class.java, entryId) ?: throw IllegalStateException("포인트 행이 없다: $entryId")
 
+    override fun reload(entry: PointLedgerEntry) = em.refresh(entry)
+
     override fun add(entry: PointLedgerEntry) = em.persist(entry)
 
     override fun usable(userId: Long, now: Instant): Long {

@@ -2,6 +2,8 @@ package com.ccle.layered.infra
 
 import com.ccle.layered.domain.BatchTarget
 import com.ccle.layered.domain.BatchTargets
+import com.ccle.layered.domain.GradePeriod
+import com.ccle.layered.domain.OrderItem
 import jakarta.persistence.EntityManager
 import org.springframework.stereotype.Component
 import java.time.Instant
@@ -14,23 +16,39 @@ import java.time.Instant
 @Component
 class KeysetBatchTargets(private val em: EntityManager) : BatchTargets {
 
-    private class Spec(val table: String, val condition: String, val usesNow: Boolean)
+    /** params = 현재 시각에서 정한 조건 파라미터(이름 → 값). */
+    private class Spec(val table: String, val condition: String, val params: (Instant) -> Map<String, Any>)
 
     private fun spec(target: BatchTarget): Spec = when (target) {
-        BatchTarget.EXPIRED_BIDS -> Spec("bids", "t.status = 'ACTIVE' AND t.expires_at <= :now", usesNow = true)
+        BatchTarget.EXPIRED_BIDS -> Spec("bids", "t.status = 'ACTIVE' AND t.expires_at <= :now", ::nowParam)
         BatchTarget.OVERDUE_TRADES -> Spec(
             "trades",
             "t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now" +
                 " AND NOT EXISTS (SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id" +
                 "                 WHERE i.trade_id = t.id AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING'))",
-            usesNow = true,
+            ::nowParam,
         )
-        BatchTarget.UNKNOWN_ORDERS -> Spec("orders", "t.status = 'UNKNOWN'", usesNow = false)
-        BatchTarget.PAYING_ORDERS -> Spec("orders", "t.status = 'PAYING'", usesNow = false)
+        BatchTarget.UNKNOWN_ORDERS -> Spec("orders", "t.status = 'UNKNOWN'") { emptyMap() }
+        BatchTarget.PAYING_ORDERS -> Spec("orders", "t.status = 'PAYING'") { emptyMap() }
+        BatchTarget.UNSHIPPED_ITEMS -> Spec("order_items", "t.status = 'PAID' AND t.paid_at <= :due") {
+            mapOf("due" to OrderItem.shipmentOverdueCutoff(it))
+        }
+        BatchTarget.UNCONFIRMED_ITEMS -> Spec("order_items", "t.status = 'DELIVERED' AND t.delivered_at <= :due") {
+            mapOf("due" to OrderItem.autoConfirmCutoff(it))
+        }
+        BatchTarget.EXPIRED_POINTS -> Spec(
+            "point_ledger",
+            "t.kind = 'EARN' AND t.status = 'AVAILABLE' AND t.remaining > 0 AND t.expires_at <= :now",
+            ::nowParam,
+        )
+        BatchTarget.GRADE_CHANGES -> Spec("users", "$noGradeHistoryAtD AND t.grade <> $gradeSql") { gradeParams(GradePeriod.of(it)) }
     }
+
+    private fun nowParam(now: Instant): Map<String, Any> = mapOf("now" to now)
 
     override fun forEach(target: BatchTarget, now: Instant, handle: (Long) -> Boolean): Int {
         val spec = spec(target)
+        val params = spec.params(now)
         val upTo = (em.createNativeQuery("SELECT coalesce(max(id), 0) FROM ${spec.table}").singleResult as Number).toLong()
         var after = 0L
         var processed = 0
@@ -38,7 +56,7 @@ class KeysetBatchTargets(private val em: EntityManager) : BatchTargets {
             val query = em.createNativeQuery(
                 "SELECT t.id FROM ${spec.table} t WHERE (${spec.condition}) AND t.id > :after AND t.id <= :upTo ORDER BY t.id LIMIT 500",
             ).setParameter("after", after).setParameter("upTo", upTo)
-            if (spec.usesNow) query.setParameter("now", now)
+            params.forEach { (name, value) -> query.setParameter(name, value) }
             val ids = query.resultList.map { (it as Number).toLong() }
             if (ids.isEmpty()) return processed
             for (id in ids) {

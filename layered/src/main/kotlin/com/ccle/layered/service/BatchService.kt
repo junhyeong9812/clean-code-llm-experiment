@@ -6,11 +6,15 @@ import com.ccle.layered.domain.BidEventRepository
 import com.ccle.layered.domain.BidRepository
 import com.ccle.layered.domain.BuyerWarning
 import com.ccle.layered.domain.BuyerWarningRepository
+import com.ccle.layered.domain.Failure
+import com.ccle.layered.domain.GradePeriod
+import com.ccle.layered.domain.MarketException
 import com.ccle.layered.domain.MarketClock
 import com.ccle.layered.domain.OrderRepository
 import com.ccle.layered.domain.PgOutcome
 import com.ccle.layered.domain.PgTransaction
 import com.ccle.layered.domain.PgTransactionRepository
+import com.ccle.layered.domain.PointRepository
 import com.ccle.layered.domain.ProductSizeRepository
 import com.ccle.layered.domain.TradeRepository
 import com.ccle.layered.domain.User
@@ -22,13 +26,21 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 
-/** `POST /admin/batches/{name}`(§7): 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수. 알 수 없는 이름은 400. */
+/**
+ * `POST /admin/batches/{name}`(§7, ADR-0004 §5): 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수).
+ * 알 수 없는 이름은 400. 대상 1건 = 트랜잭션 하나. 카드 취소 실패(409 PG_UNAVAILABLE)는 그 대상만 건너뛰고(ADR-0004 §7.2),
+ * 그 밖의 예외는 배치를 멈춘다(앞 대상은 커밋된 채).
+ */
 @Service
 class BatchService(
     private val clock: MarketClock,
     private val bidExpiry: BidExpiryBatch,
     private val paymentDue: PaymentDueBatch,
     private val pgInquiry: PgInquiryBatch,
+    private val shipmentDeadline: ShipmentDeadlineBatch,
+    private val autoConfirm: AutoConfirmBatch,
+    private val pointExpiry: PointExpiryBatch,
+    private val gradeRecalc: GradeRecalcBatch,
 ) {
     private val log = LoggerFactory.getLogger(BatchService::class.java)
 
@@ -39,6 +51,10 @@ class BatchService(
             "bid-expiry" -> bidExpiry.run(now)
             "payment-due" -> paymentDue.run(now)
             "pg-inquiry" -> pgInquiry.run(now)
+            "shipment-deadline" -> shipmentDeadline.run(now)
+            "auto-confirm" -> autoConfirm.run(now)
+            "point-expiry" -> pointExpiry.run(now)
+            "grade-recalc" -> gradeRecalc.run(now)
             else -> invalidRequest("알 수 없는 배치: $name")
         }
         log.info("배치 {} (현재 {}): processed={}, {}ms", name, now, processed, (System.nanoTime() - started) / 1_000_000)
@@ -150,6 +166,112 @@ class PgInquiryBatch(
                 } else {
                     outcomes.decline(orderId, now)
                 }
+                true
+            }!!
+        }
+    }
+}
+
+/**
+ * shipment-deadline(ADR-0004 §5): 발송 기한이 지난 PAID 항목을 id 순으로 §6 판매자 귀책(사유 `발송 기한 초과`).
+ * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자 취소·발송됐으면 건너뜀).
+ * 카드 취소 실패(409 PG_UNAVAILABLE)면 그 트랜잭션을 롤백하고 건너뛴다(§7.2) — 다음 실행의 대상으로 남는다.
+ */
+@Component
+class ShipmentDeadlineBatch(
+    private val targets: BatchTargets,
+    private val tx: TransactionTemplate,
+    private val locker: ItemLocker,
+    private val sellerFaults: SellerFaults,
+) {
+    private val log = LoggerFactory.getLogger(ShipmentDeadlineBatch::class.java)
+
+    fun run(now: Instant): Int = targets.forEach(BatchTarget.UNSHIPPED_ITEMS, now) { itemId ->
+        try {
+            tx.execute {
+                val item = locker.lock(itemId)
+                if (!item.isShipmentOverdue(now)) {
+                    false
+                } else {
+                    sellerFaults.apply(item, reason = "발송 기한 초과", now = now)
+                    true
+                }
+            }!!
+        } catch (e: MarketException) {
+            if (e.failure != Failure.PG_UNAVAILABLE) throw e
+            log.warn("shipment-deadline: 항목 {} 건너뜀(카드 취소 실패)", itemId)
+            false
+        }
+    }
+}
+
+/**
+ * auto-confirm(ADR-0004 §5): 배송 완료 7일이 지난 DELIVERED 항목을 id 순으로 CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2.
+ * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
+ */
+@Component
+class AutoConfirmBatch(
+    private val targets: BatchTargets,
+    private val tx: TransactionTemplate,
+    private val locker: ItemLocker,
+    private val confirmer: ItemConfirmer,
+) {
+    fun run(now: Instant): Int = targets.forEach(BatchTarget.UNCONFIRMED_ITEMS, now) { itemId ->
+        tx.execute {
+            val item = locker.lock(itemId)
+            val confirmedAt = item.autoConfirmationTime(now)
+            if (confirmedAt == null) {
+                false
+            } else {
+                confirmer.confirm(item, confirmedAt, now)
+                true
+            }
+        }!!
+    }
+}
+
+/**
+ * point-expiry(ADR-0004 §8.3): 만료된 EARN 묶음을 id 순으로 소멸. 묶음 1개 = 그 사용자 행을 잠근 트랜잭션 하나
+ * (묶음 remaining을 바꾸는 처리는 모두 이 잠금 안에서 한다). 다른 잠금은 잡지 않는다.
+ */
+@Component
+class PointExpiryBatch(
+    private val targets: BatchTargets,
+    private val tx: TransactionTemplate,
+    private val users: UserRepository,
+    private val points: PointRepository,
+    private val pointBook: PointBook,
+) {
+    fun run(now: Instant): Int = targets.forEach(BatchTarget.EXPIRED_POINTS, now) { earnId ->
+        tx.execute {
+            val earn = points.find(earnId)
+            users.lock(earn.userId)
+            points.reload(earn)
+            pointBook.expire(earn, now)
+        }!!
+    }
+}
+
+/**
+ * grade-recalc(ADR-0004 §8.5): 기준일 이력이 없고 등급이 바뀌는 사용자를 id 순으로 재산정한다. 반환 = 쓴 이력 행 수.
+ * 사용자 1명 = 그 사용자 행을 잠근 트랜잭션 하나. 잠근 뒤 이력 유무·기준 금액·users.grade를 다시 읽어 판정한다
+ * (기준 금액을 바꾸는 확정·분쟁 인정은 구매자 행을 잠그므로 잠근 뒤의 값이 최신이다).
+ */
+@Component
+class GradeRecalcBatch(
+    private val targets: BatchTargets,
+    private val tx: TransactionTemplate,
+    private val users: UserRepository,
+) {
+    fun run(now: Instant): Int {
+        val period = GradePeriod.of(now)
+        return targets.forEach(BatchTarget.GRADE_CHANGES, now) { userId ->
+            tx.execute {
+                users.lock(userId)
+                val review = users.gradeReview(userId, period)
+                if (!review.changesGrade()) return@execute false
+                users.addGradeHistory(userId, review.grade, period, review.basis)
+                users.find(userId)!!.grade = review.grade
                 true
             }!!
         }

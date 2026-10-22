@@ -15,6 +15,18 @@ enum class BatchTarget {
 
     /** 기동 시 전환: 남아 있는 PAYING 주문. */
     PAYING_ORDERS,
+
+    /** shipment-deadline(ADR-0004 §5): PAID이고 paid_at + 3일 ≤ 현재인 항목. */
+    UNSHIPPED_ITEMS,
+
+    /** auto-confirm(ADR-0004 §5): DELIVERED이고 delivered_at + 7일 ≤ 현재인 항목. */
+    UNCONFIRMED_ITEMS,
+
+    /** point-expiry(ADR-0004 §8.3): EARN AVAILABLE, remaining > 0, expires_at ≤ 현재인 묶음. */
+    EXPIRED_POINTS,
+
+    /** grade-recalc(ADR-0004 §8.5): 기준일 이력이 없고 계산한 등급이 users.grade와 다른 사용자. */
+    GRADE_CHANGES,
 }
 
 interface BatchTargets {

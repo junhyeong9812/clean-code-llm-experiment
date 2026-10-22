@@ -123,6 +123,17 @@ class PointLedgerEntry(
         return PointAllocation(entryId = revoke.id!!, earnEntryId = id!!, amount = revoke.amount)
     }
 
+    /**
+     * 소멸(ADR-0004 §8.3, EARN에 부른다): AVAILABLE이고 남은 양 > 0이고 expires_at ≤ 현재면 남은 양 전부의 EXPIRE 행
+     * (아직 아무것도 바꾸지 않음 — 저장한 뒤 expiredBy), 아니면 null.
+     */
+    fun expiration(now: Instant): PointLedgerEntry? {
+        check(kind == "EARN") { "EARN이 아닌 행 $id 을 소멸하려 했다: $kind" }
+        val left = remaining!!
+        if (status != "AVAILABLE" || left == 0L || expiresAt!!.isAfter(now)) return null
+        return expiry(userId, left, now)
+    }
+
     /** 소멸 반영(저장한 EXPIRE 행으로): 그 양만큼 remaining을 줄이고 배분 1행을 돌려준다(EARN은 AVAILABLE 그대로). */
     fun expiredBy(expire: PointLedgerEntry): PointAllocation {
         check(expire.kind == "EXPIRE") { "EXPIRE가 아닌 행 ${expire.id} 로 소멸하려 했다: ${expire.kind}" }
@@ -265,6 +276,9 @@ class PointBalance(
 
 interface PointRepository {
     fun find(entryId: Long): PointLedgerEntry
+
+    /** 잠금을 기다리는 사이에 바뀌었을 수 있으므로 DB의 현재 값으로 다시 읽는다. */
+    fun reload(entry: PointLedgerEntry)
 
     fun add(entry: PointLedgerEntry)
 

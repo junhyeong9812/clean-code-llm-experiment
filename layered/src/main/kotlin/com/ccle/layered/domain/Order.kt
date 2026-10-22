@@ -11,7 +11,7 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 
 /** 날짜 판정의 시간대(ADR-0003 §2). */
-private val KST: ZoneOffset = ZoneOffset.ofHours(9)
+internal val KST: ZoneOffset = ZoneOffset.ofHours(9)
 
 /** 결제 요청의 값(§5.1). Idempotency-Key 1~64자, tradeIds 1개 이상·중복 없음, pointToUse ≥ 0(생략 = 0). */
 class OrderRequest private constructor(val idempotencyKey: String, val tradeIds: List<Long>, val point: Long) {
@@ -334,6 +334,19 @@ class OrderItem(
         this.confirmedAt = confirmedAt
     }
 
+    /** 발송 기한 초과(ADR-0004 §5 shipment-deadline): PAID이고 paid_at + 3일 ≤ 현재. 바꾸지 않는다 — 판매자 귀책은 잠금 뒤. */
+    fun isShipmentOverdue(now: Instant): Boolean = status == "PAID" && !paidAt!!.plus(SHIP_WITHIN).isAfter(now)
+
+    /**
+     * 자동 확정(ADR-0004 §5 auto-confirm)의 확정 시각: DELIVERED이고 delivered_at + 7일 ≤ 현재면 delivered_at + 7일(소급), 아니면 null.
+     * 바꾸지 않는다 — 구매자 행을 잠근 뒤 markConfirmed.
+     */
+    fun autoConfirmationTime(now: Instant): Instant? {
+        if (status != "DELIVERED") return null
+        val due = deliveredAt!!.plus(CONFIRM_WITHIN)
+        return if (due.isAfter(now)) null else due
+    }
+
     /** 구매자 취소(§4.2)의 확인: PAID만(발송 기한이 지나도 배치 전이면 PAID라 취소된다). 바꾸지 않는다. */
     fun requireCancellableByBuyer() = requireStatus("PAID")
 
@@ -383,6 +396,12 @@ class OrderItem(
         private val SHIP_WITHIN: Duration = Duration.ofDays(3)
         private val CONFIRM_WITHIN: Duration = Duration.ofDays(7)
         private val DISPUTE_WITHIN: Duration = Duration.ofDays(14)
+
+        /** shipment-deadline 대상의 paid_at 상한(이 시각 이하면 발송 기한 초과). */
+        fun shipmentOverdueCutoff(now: Instant): Instant = now.minus(SHIP_WITHIN)
+
+        /** auto-confirm 대상의 delivered_at 상한(이 시각 이하면 자동 확정). */
+        fun autoConfirmCutoff(now: Instant): Instant = now.minus(CONFIRM_WITHIN)
     }
 }
 

@@ -89,6 +89,27 @@ class User(
     }
 }
 
+/**
+ * 등급 재산정(ADR-0004 §8.5)의 기준일·기간: 기준일 D = 현재가 속한 달 1일(KST), 기준 금액 기간 = [D − 6개월, D)(KST 00:00).
+ * 기준 금액과 등급 경계는 저장소의 한 SQL에서 계산한다(대상 조건과 같은 식).
+ */
+class GradePeriod private constructor(val effectiveFrom: LocalDate, val from: Instant, val to: Instant) {
+    companion object {
+        private const val BASIS_MONTHS = 6L
+
+        fun of(now: Instant): GradePeriod {
+            val d = LocalDate.ofInstant(now, KST).withDayOfMonth(1)
+            return GradePeriod(d, d.minusMonths(BASIS_MONTHS).atStartOfDay(KST).toInstant(), d.atStartOfDay(KST).toInstant())
+        }
+    }
+}
+
+/** 사용자 1명을 잠근 뒤 다시 읽은 재산정 값: 계산한 등급·기준 금액, 현재 users.grade, 기준일 이력이 이미 있는지. */
+class GradeReview(val grade: String, val basis: Long, private val currentGrade: String, private val hasHistoryAtD: Boolean) {
+    /** 기준일 이력이 없고 계산한 등급이 현재 등급과 다르면 이력 1행 + users.grade 갱신. */
+    fun changesGrade(): Boolean = !hasHistoryAtD && grade != currentGrade
+}
+
 interface UserRepository {
     fun find(id: Long): User?
 
@@ -103,4 +124,10 @@ interface UserRepository {
      * → 이력이 없으면 users.grade.
      */
     fun gradeOn(userId: Long, date: LocalDate): String
+
+    /** 등급 재산정 값(§8.5). 사용자 행을 잠근 뒤 부른다. */
+    fun gradeReview(userId: Long, period: GradePeriod): GradeReview
+
+    /** user_grade_history 1행(effective_from = 기준일, basis_amount = 기준 금액). */
+    fun addGradeHistory(userId: Long, grade: String, period: GradePeriod, basis: Long)
 }

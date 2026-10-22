@@ -59,6 +59,18 @@ class PointBook(private val points: PointRepository, private val balances: Point
     }
 
     /**
+     * 소멸(§8.3): 만료된 EARN 묶음에 남은 양 전부를 EXPIRE 1행(주문 NULL) + 배분 1행, remaining 0(EARN은 AVAILABLE), available 감소.
+     * 사용자 행을 잠그고 묶음을 다시 읽은 뒤 부른다. 소멸할 것이 없으면(그 사이 쓰였거나 만료 전) 그대로 false.
+     */
+    fun expire(earn: PointLedgerEntry, now: Instant): Boolean {
+        val expire = earn.expiration(now) ?: return false
+        points.add(expire)
+        points.addAllocation(earn.expiredBy(expire))
+        changeBalance(earn.userId, BalanceDelta(available = -expire.amount, pending = 0), now)
+        return true
+    }
+
+    /**
      * 복구(§7.3): RESTORE 1행 → 복구 대상 묶음을 차례로 되돌리며 배분 → 이미 만료된 묶음은 되돌린 양만큼 EXPIRE 1행 + 배분 → available 증가.
      * 구매자 행을 잠근 트랜잭션 안에서 부른다.
      */
