@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RestController
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 
-/** 관리 엔드포인트(ADR-0003 §7, 헤더 불필요). */
+/** 관리 엔드포인트(ADR-0003 §7, 헤더 불필요)와 센터 절차(ADR-0004 §3). */
 @RestController
 @RequestMapping("/admin")
 class AdminController(private val marketplace: Marketplace) {
@@ -34,4 +34,16 @@ class AdminController(private val marketplace: Marketplace) {
 
     @PostMapping("/batches/{name}")
     fun runBatch(@PathVariable name: String): Map<String, Int> = mapOf("processed" to marketplace.runBatch(name))
+
+    @PostMapping("/order-items/{itemId}/receipt")
+    fun receive(@PathVariable itemId: String): ItemView = marketplace.receiveItem(pathId(itemId))
+
+    @PostMapping("/order-items/{itemId}/inspection")
+    fun inspect(@PathVariable itemId: String, @RequestBody(required = false) body: String?): ItemView {
+        val json = parseObject(body)
+        return marketplace.inspectItem(pathId(itemId), json.textOrNull("result"), json.textOrNull("reason"))
+    }
+
+    @PostMapping("/order-items/{itemId}/delivery")
+    fun deliver(@PathVariable itemId: String): ItemView = marketplace.deliverItem(pathId(itemId))
 }

@@ -3,6 +3,7 @@ package com.ccle.god
 import com.ccle.god.entity.Bid
 import com.ccle.god.entity.BidEvent
 import com.ccle.god.entity.BuyerWarning
+import com.ccle.god.entity.Inspection
 import com.ccle.god.entity.OrderItem
 import com.ccle.god.entity.PgTransaction
 import com.ccle.god.entity.PointAllocation
@@ -10,6 +11,7 @@ import com.ccle.god.entity.PointBalance
 import com.ccle.god.entity.PointLedgerEntry
 import com.ccle.god.entity.ProductSize
 import com.ccle.god.entity.PurchaseOrder
+import com.ccle.god.entity.Refund
 import com.ccle.god.entity.Trade
 import com.ccle.god.entity.User
 import com.ccle.god.web.ApiException
@@ -17,10 +19,12 @@ import com.ccle.god.web.BidCancelled
 import com.ccle.god.web.BidPlaced
 import com.ccle.god.web.BidView
 import com.ccle.god.web.BookView
+import com.ccle.god.web.ItemView
 import com.ccle.god.web.OrderItemView
 import com.ccle.god.web.OrderView
 import com.ccle.god.web.PaymentResult
 import com.ccle.god.web.PointsView
+import com.ccle.god.web.RefundView
 import com.ccle.god.web.TradeView
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
@@ -38,7 +42,7 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 
 /**
- * 거래소의 절차·규칙·저장 전부(ADR-0003 1단계: 입찰·체결·결제·포인트·배치).
+ * 거래소의 절차·규칙·저장 전부(ADR-0003 1단계: 입찰·체결·결제·포인트·배치, ADR-0004 2단계: 주문 항목 이후 절차).
  *
  * 컨트롤러는 요청을 파싱해 여기 메서드를 부르고 결과를 JSON으로 바꾸기만 한다.
  * 행 읽기·쓰기는 EntityManager로 하고, 잠금·호가 조회·배치처럼 SQL이 자연스러운 곳은 네이티브 SQL을 쓴다.
@@ -713,6 +717,121 @@ class Marketplace(
                     shippingShare = it.shippingShare,
                 )
             },
+        )
+    }
+
+    // ---- 주문 항목 조회·판매자·센터 절차 (ADR-0004 §2·§3) ----
+
+    /** `GET /order-items/{id}`(§2.2). 그 체결의 구매자 또는 판매자만. 항목과 환불 행을 한 스냅샷에서 읽는다(orderView와 같은 이유). */
+    fun getOrderItem(userId: Long, itemId: Long): ItemView = snapshotTx.execute {
+        val item = em.find(OrderItem::class.java, itemId) ?: notFound("없는 주문 항목: $itemId")
+        val trade = em.find(Trade::class.java, item.tradeId)
+        if (userId != trade.buyerId && userId != trade.sellerId) {
+            throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "구매자도 판매자도 아닌 주문 항목: $itemId")
+        }
+        itemView(item)
+    }!!
+
+    /** 발송 등록(§3). 그 체결의 판매자만, PAID이고 현재 < paid_at + 3일. 상태 위반이 기한 위반보다 먼저다(§2.1). */
+    fun shipItem(userId: Long, itemId: Long): ItemView {
+        val now = clock.now()
+        return tx.execute {
+            val item = lockOrderOf(itemId)
+            if (em.find(Trade::class.java, item.tradeId).sellerId != userId) {
+                throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "판매자가 아닌 주문 항목: $itemId")
+            }
+            requireItemStatus(item, "PAID")
+            val deadline = item.paidAt!!.plus(Duration.ofDays(3))
+            if (!now.isBefore(deadline)) {
+                throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "발송 기한($deadline)이 지났다: $itemId")
+            }
+            item.status = "SHIPPED_TO_CENTER"
+            item.shippedAt = now
+            itemView(item)
+        }!!
+    }
+
+    /** 입고(§3). SHIPPED_TO_CENTER → INSPECTING. 입고 시각 열은 없다(inspected_at은 검수 때 쓴다). */
+    fun receiveItem(itemId: Long): ItemView =
+        tx.execute {
+            val item = lockOrderOf(itemId)
+            requireItemStatus(item, "SHIPPED_TO_CENTER")
+            item.status = "INSPECTING"
+            itemView(item)
+        }!!
+
+    /**
+     * 검수(§3). result는 PASS|FAIL, FAIL이면 reason이 필요하다(앞뒤 공백을 뺀 값이 비면 400). reason은 받은 그대로 저장한다.
+     * PASS: inspections PASS(reason은 무시하고 NULL) + 항목 DELIVERING, inspected_at = 현재.
+     * FAIL(판매자 귀책 §6)은 아직 처리하지 않는다 — 상태 확인까지 한 뒤 계약 밖 오류로 끝낸다.
+     */
+    fun inspectItem(itemId: Long, result: String?, reason: String?): ItemView {
+        if (result == null) badRequest("result가 필요하다")
+        if (result != "PASS" && result != "FAIL") badRequest("result는 PASS 또는 FAIL: $result")
+        if (result == "FAIL" && reason.isNullOrBlank()) badRequest("불합격에는 reason이 필요하다")
+
+        val now = clock.now()
+        return tx.execute {
+            val item = lockOrderOf(itemId)
+            requireItemStatus(item, "INSPECTING")
+            if (result == "FAIL") throw UnsupportedOperationException("검수 불합격(판매자 귀책)은 아직 처리하지 않는다: $itemId")
+            em.persist(Inspection(orderItemId = itemId, result = "PASS", reason = null, inspectedAt = now))
+            item.status = "DELIVERING"
+            item.inspectedAt = now
+            itemView(item)
+        }!!
+    }
+
+    /** 배송 완료(§3). DELIVERING → DELIVERED, delivered_at = 현재. */
+    fun deliverItem(itemId: Long): ItemView {
+        val now = clock.now()
+        return tx.execute {
+            val item = lockOrderOf(itemId)
+            requireItemStatus(item, "DELIVERING")
+            item.status = "DELIVERED"
+            item.deliveredAt = now
+            itemView(item)
+        }!!
+    }
+
+    /**
+     * 항목을 바꾸는 처리의 1단계(§2.3·§9.1): 그 항목의 주문 행을 잠그고, 잠근 뒤의 항목을 돌려준다.
+     * 같은 주문의 항목 변경은 이 잠금으로 줄을 서므로, 잠금을 기다리는 사이에 바뀐 상태를 다시 읽어 확인한다. 없는 항목이면 404.
+     */
+    private fun lockOrderOf(itemId: Long): OrderItem {
+        val item = em.find(OrderItem::class.java, itemId) ?: notFound("없는 주문 항목: $itemId")
+        em.createNativeQuery("SELECT id FROM orders WHERE id = :id FOR UPDATE").setParameter("id", item.orderId).resultList
+        em.refresh(item)
+        return item
+    }
+
+    private fun requireItemStatus(item: OrderItem, expected: String) {
+        if (item.status != expected) {
+            throw ApiException(HttpStatus.CONFLICT, "ITEM_STATE_CONFLICT", "${expected}가 아닌 주문 항목: ${item.id} (${item.status})")
+        }
+    }
+
+    private fun itemView(item: OrderItem): ItemView {
+        val refund = em.createQuery("SELECT r FROM Refund r WHERE r.orderItemId = :item", Refund::class.java)
+            .setParameter("item", item.id)
+            .resultList.firstOrNull()
+        return ItemView(
+            orderItemId = item.id!!,
+            orderId = item.orderId,
+            tradeId = item.tradeId,
+            status = item.status,
+            price = item.price,
+            buyerFee = item.buyerFee,
+            cardShare = item.cardShare,
+            pointShare = item.pointShare,
+            shippingShare = item.shippingShare,
+            paidAt = item.paidAt,
+            shippedAt = item.shippedAt,
+            inspectedAt = item.inspectedAt,
+            deliveredAt = item.deliveredAt,
+            confirmedAt = item.confirmedAt,
+            cancelledAt = item.cancelledAt,
+            refund = refund?.let { RefundView(it.cardAmount, it.pointAmount, it.buyerFeeAmount, it.shippingAmount, it.fault) },
         )
     }
 

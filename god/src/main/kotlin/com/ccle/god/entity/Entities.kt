@@ -7,7 +7,7 @@ import jakarta.persistence.Id
 import jakarta.persistence.Table
 import java.time.Instant
 
-// 1단계(ADR-0003)가 쓰는 테이블의 행 매핑. 스키마는 docker/schema/tables.sql 이 정본이고 앱은 validate만 한다.
+// 1단계(ADR-0003)·2단계(ADR-0004)가 쓰는 테이블의 행 매핑. 스키마는 docker/schema/tables.sql 이 정본이고 앱은 validate만 한다.
 // 연관(@ManyToOne 등) 없이 외래 키는 id 값 그대로 둔다. 상태·종류 같은 enum 값은 DB와 같은 문자열로 둔다.
 // 규칙은 여기 두지 않는다(Marketplace에 있다).
 
@@ -173,4 +173,30 @@ class PointBalance(
     var available: Long,
     var pending: Long,
     var updatedAt: Instant,
+)
+
+@Entity
+@Table(name = "refunds")
+class Refund(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var orderItemId: Long,
+    var cardAmount: Long,
+    var pointAmount: Long,
+    var buyerFeeAmount: Long,
+    var shippingAmount: Long,
+    var reason: String,
+    var fault: String,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "inspections")
+class Inspection(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var orderItemId: Long,
+    var result: String,
+    var reason: String? = null,
+    var inspectedAt: Instant,
 )

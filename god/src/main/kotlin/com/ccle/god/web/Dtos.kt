@@ -2,7 +2,7 @@ package com.ccle.god.web
 
 import java.time.Instant
 
-// 응답 본문 모양(ADR-0003). Marketplace가 채워서 돌려주고 컨트롤러가 그대로 JSON으로 쓴다. Instant는 KST ISO-8601로 나간다(Json.kt).
+// 응답 본문 모양(ADR-0003·ADR-0004). Marketplace가 채워서 돌려주고 컨트롤러가 그대로 JSON으로 쓴다. Instant는 KST ISO-8601로 나간다(Json.kt).
 
 data class BidPlaced(val bidId: Long, val status: String, val tradeId: Long?, val tradePrice: Long?)
 
@@ -57,3 +57,25 @@ data class OrderView(
 data class PaymentResult(val created: Boolean, val order: OrderView)
 
 data class PointsView(val available: Long, val pending: Long, val usable: Long)
+
+/** 주문 항목 응답(ADR-0004 §2.2). 조회와 항목 상태를 바꾸는 엔드포인트가 같이 쓴다. refund = 환불 행, 없으면 null. */
+data class ItemView(
+    val orderItemId: Long,
+    val orderId: Long,
+    val tradeId: Long,
+    val status: String,
+    val price: Long,
+    val buyerFee: Long,
+    val cardShare: Long,
+    val pointShare: Long,
+    val shippingShare: Long,
+    val paidAt: Instant?,
+    val shippedAt: Instant?,
+    val inspectedAt: Instant?,
+    val deliveredAt: Instant?,
+    val confirmedAt: Instant?,
+    val cancelledAt: Instant?,
+    val refund: RefundView?,
+)
+
+data class RefundView(val cardAmount: Long, val pointAmount: Long, val buyerFeeAmount: Long, val shippingAmount: Long, val fault: String)
