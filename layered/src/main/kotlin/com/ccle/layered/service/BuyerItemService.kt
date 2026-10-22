@@ -65,7 +65,7 @@ class BuyerItemService(
         return tx.execute {
             val item = lockOwnItem(userId, itemId)
             item.requireCancellableByBuyer()
-            refunder.refund(item, RefundFault.BUYER, "구매자 취소", now)
+            refunder.refund(item, RefundFault.BUYER, RefundFault.BUYER_CANCEL_REASON, now)
             refunds.detailOf(item)
         }!!
     }
@@ -110,7 +110,7 @@ class DisputeService(
             disputes.reload(dispute)
             dispute.requireOpen()
             if (decision == DisputeDecision.ACCEPTED) {
-                refunder.refund(item, RefundFault.DISPUTE, "분쟁 인정", now)
+                refunder.refund(item, RefundFault.DISPUTE, RefundFault.DISPUTE_ACCEPTED_REASON, now)
             } else {
                 item.rejectDispute()
             }

@@ -16,6 +16,7 @@ import com.ccle.layered.domain.PgTransaction
 import com.ccle.layered.domain.PgTransactionRepository
 import com.ccle.layered.domain.PointRepository
 import com.ccle.layered.domain.ProductSizeRepository
+import com.ccle.layered.domain.RefundFault
 import com.ccle.layered.domain.SellerPenaltyRepository
 import com.ccle.layered.domain.SellerStatement
 import com.ccle.layered.domain.SettlementRepository
@@ -199,7 +200,7 @@ class ShipmentDeadlineBatch(
                 if (!item.isShipmentOverdue(now)) {
                     false
                 } else {
-                    sellerFaults.apply(item, reason = "발송 기한 초과", now = now)
+                    sellerFaults.apply(item, reason = RefundFault.SHIPMENT_OVERDUE_REASON, now = now)
                     true
                 }
             }!!

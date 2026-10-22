@@ -16,6 +16,11 @@ enum class RefundFault(val itemStatus: String, val fromStatuses: Set<String>, va
     companion object {
         /** 환불된 항목의 상태들. */
         val itemStatuses: Set<String> = entries.map { it.itemStatus }.toSet()
+
+        /** refunds.reason 고정 문구(ADR-0004 §7.1). 검수 불합격은 검수 reason을 그대로 쓴다. */
+        const val BUYER_CANCEL_REASON = "구매자 취소"
+        const val SHIPMENT_OVERDUE_REASON = "발송 기한 초과"
+        const val DISPUTE_ACCEPTED_REASON = "분쟁 인정"
     }
 }
 
