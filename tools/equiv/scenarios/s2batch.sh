@@ -18,6 +18,9 @@ q "INSERT INTO point_balances(user_id,available,pending,updated_at) VALUES ($P_,
 mo=$(q "SELECT max(id) FROM orders"); mi=$(q "SELECT max(id) FROM order_items"); mp=$(q "SELECT max(id) FROM pg_transactions"); mt=$(q "SELECT max(id) FROM trades")
 ml=$(q "SELECT max(id) FROM point_ledger"); ma=$(q "SELECT max(id) FROM point_allocations"); mh=$(q "SELECT max(id) FROM user_grade_history")
 
+# need <이름> <건수>: 시드 경로를 실제로 지났는지 — 0이면 실패(두 앱이 함께 0이어도 같음으로 끝나지 않게)
+need() { [[ $2 =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || die "경로를 지나지 않음: $1 = '$2'"; }
+sd0=$(q "SELECT count(*) FROM order_items WHERE id<=$mi AND status='DELIVERED'")   # 자동 확정 전 시드 DELIVERED 수
 start_pg 3000
 start_app 2000
 trade() { call POST /bids "$1" "{\"productSizeId\":$size,\"side\":\"SELL\",\"price\":$3,\"validDays\":30}"; call POST /bids "$2" "{\"productSizeId\":$size,\"side\":\"BUY\",\"price\":$3,\"validDays\":30}"; }
@@ -40,18 +43,21 @@ call POST "/order-items/$g4/confirm" $G_                       # 7일 뒤 구매
 mark auto-confirm
 call POST /admin/batches/auto-confirm                          # g2·g3 + 시드 DELIVERED 항목(소급 확정·적립 확정)
 call POST /admin/batches/auto-confirm                          # 대상 없음
+sd1=$(q "SELECT count(*) FROM order_items WHERE id<=$mi AND status='DELIVERED'"); need "시드 자동 확정" $((sd0 - sd1))
 call GET "/order-items/$g2" $G_
 
 call PUT /admin/clock "" '{"now":"2026-10-11T00:00:00+09:00"}'
 mark point-expiry
 call POST /admin/batches/point-expiry                          # P1(배분 있음, 남은 2000)·시드 묶음
 call POST /admin/batches/point-expiry                          # 대상 없음
+n=$(q "SELECT count(*) FROM point_ledger WHERE id>$ml AND kind='EXPIRE' AND user_id<$base"); need "시드 묶음 소멸" "$n"
 call GET /me/points $P_
 
 call PUT /admin/clock "" '{"now":"2026-11-01T00:00:00+09:00"}'
 mark grade-recalc
 call POST /admin/batches/grade-recalc                          # 기준일 11-01, 기간 [05-01, 11-01): g GOLD + 시드 사용자
 call POST /admin/batches/grade-recalc                          # 같은 달 재실행: 이력이 있어 0
+n=$(q "SELECT count(*) FROM user_grade_history WHERE id>$mh AND user_id<$base"); need "시드 등급 재산정" "$n"
 mark earn-after-grade
 trade $S_ $G_ 100000; call POST /orders $G_ "{\"tradeIds\":[$(last_trade)]}" G2           # 11-01 주문 → GOLD 2% 적립 예정
 g5=$(items G2); [[ $g5 =~ ^[0-9]+$ ]] || die "G2 항목 준비 실패: $g5"

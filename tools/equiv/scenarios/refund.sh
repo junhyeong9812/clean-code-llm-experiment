@@ -20,6 +20,10 @@ mo=$(q "SELECT max(id) FROM orders"); mi=$(q "SELECT max(id) FROM order_items");
 ml=$(q "SELECT max(id) FROM point_ledger"); ma=$(q "SELECT max(id) FROM point_allocations"); mr=$(q "SELECT max(id) FROM refunds")
 mn=$(q "SELECT max(id) FROM inspections"); md=$(q "SELECT max(id) FROM disputes"); mx=$(q "SELECT max(id) FROM seller_penalties"); mb=$(q "SELECT max(id) FROM bids")
 
+# open_dispute <항목 id>: 이 시나리오에서 만든 그 항목의 OPEN 분쟁 id(없으면 실패 — 제기가 실패한 채 다른 분쟁을 판정하지 않게)
+open_dispute() { local d; d=$(q "SELECT id FROM disputes WHERE id>$md AND order_item_id=$1 AND status='OPEN'"); [[ $d =~ ^[0-9]+$ ]] || die "분쟁 준비 실패: 항목 $1 → '$d'"; echo "$d"; }
+# need <이름> <건수>: 시드 경로를 실제로 지났는지 — 0이면 실패(두 앱이 함께 0이어도 같음으로 끝나지 않게)
+need() { [[ $2 =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || die "경로를 지나지 않음: $1 = '$2'"; }
 start_pg 3000
 start_app 2000
 # trade <판매자> <구매자> <가격>: 체결 1건(호가창이 비어 있어 바로 체결된다)
@@ -72,7 +76,7 @@ call POST "/admin/order-items/$R5a/delivery"
 call POST "/order-items/$R5a/confirm" $B2_                     # 적립 1500 AVAILABLE
 trade $S2_ $B2_ 50000; pay $B2_ R9 1000 "$(last_trade)"        # 적립 묶음에서 1000 사용
 call POST "/order-items/$R5a/disputes" $B2_
-d=$(q "SELECT max(id) FROM disputes")
+d=$(open_dispute "$R5a")
 call POST "/admin/disputes/$d/resolution" "" '{"accept":true}' # 환불(DISPUTE) + 남은 500 회수(REVOKE)
 mark inspection-fail
 to_inspecting "$R8a" $S_
@@ -90,8 +94,12 @@ outcome "cancel-$R4a" APPROVE
 call POST /admin/batches/shipment-deadline                     # R4 처리 → 판매자 s 패널티 3건 → 판매 제한
 call POST /admin/batches/shipment-deadline                     # R7만 남음(건너뜀)
 call POST /bids $S_ "{\"productSizeId\":$size,\"side\":\"SELL\",\"price\":90000,\"validDays\":30}"   # 판매 제한 403
+n=$(q "SELECT count(*) FROM refunds WHERE id>$mr AND order_item_id<=$mi AND fault='SELLER'"); need "시드 항목 발송 기한 초과" "$n"
 mark reads
-for k in R1 R2 R3 R4 R5 R6 R7 R8 R9; do call GET "/orders/$(q "SELECT id FROM orders WHERE id>$mo AND idempotency_key='$k'")" "$(q "SELECT buyer_id FROM orders WHERE id>$mo AND idempotency_key='$k'")"; done
+for k in R1 R2 R3 R4 R5 R6 R7 R8 R9; do
+  o=$(q "SELECT id FROM orders WHERE id>$mo AND idempotency_key='$k'"); u=$(q "SELECT buyer_id FROM orders WHERE id>$mo AND idempotency_key='$k'")
+  call GET "/orders/$o" "$u"
+done
 call GET /me/points $B_; call GET /me/points $B2_
 
 dump orders "SELECT id-$mo,buyer_id-$base,status,item_total,buyer_fee_total,shipping_fee,point_used,card_amount,idempotency_key,paid_at FROM orders WHERE id>$mo ORDER BY id"

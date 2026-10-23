@@ -18,6 +18,10 @@ mo=$(q "SELECT max(id) FROM orders"); mi=$(q "SELECT max(id) FROM order_items");
 ml=$(q "SELECT max(id) FROM point_ledger"); ma=$(q "SELECT max(id) FROM point_allocations"); mr=$(q "SELECT max(id) FROM refunds")
 mn=$(q "SELECT max(id) FROM inspections"); md=$(q "SELECT max(id) FROM disputes"); mx=$(q "SELECT max(id) FROM seller_penalties")
 
+# open_dispute <항목 id>: 이 시나리오에서 만든 그 항목의 OPEN 분쟁 id(없으면 실패 — 제기가 실패한 채 다른 분쟁을 판정하지 않게)
+open_dispute() { local d; d=$(q "SELECT id FROM disputes WHERE id>$md AND order_item_id=$1 AND status='OPEN'"); [[ $d =~ ^[0-9]+$ ]] || die "분쟁 준비 실패: 항목 $1 → '$d'"; echo "$d"; }
+# need <이름> <건수>: 경로를 실제로 지났는지 — 0이면 실패(두 앱이 함께 0이어도 같음으로 끝나지 않게)
+need() { [[ $2 =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ] || die "경로를 지나지 않음: $1 = '$2'"; }
 start_pg 3000
 start_app 2000
 trade() { call POST /bids $S_ "{\"productSizeId\":$size,\"side\":\"SELL\",\"price\":$1,\"validDays\":30}"; call POST /bids $B_ "{\"productSizeId\":$size,\"side\":\"BUY\",\"price\":$1,\"validDays\":30}"; }
@@ -70,8 +74,8 @@ mark dispute-open
 call POST "/order-items/$I1/disputes" $C_                     # 구매자 아님 403
 call POST "/order-items/$I4/disputes" $B_                     # PAID 분쟁 409
 call POST "/order-items/$I1/disputes" $B_                     # 201 OPEN
+d1=$(open_dispute "$I1")
 call POST "/order-items/$I1/disputes" $B_                     # DISPUTED 다시 제기 409
-d1=$(q "SELECT max(id) FROM disputes")
 mark dispute-reject
 call POST "/admin/disputes/$d1/resolution" "" '{}'            # accept 없음 400
 call POST /admin/disputes/999999999/resolution "" '{"accept":true}'   # 없는 분쟁 404
@@ -80,7 +84,7 @@ call POST "/admin/disputes/$d1/resolution" "" '{"accept":true}'       # 이미 �
 adv 3600
 mark dispute-reopen
 call POST "/order-items/$I1/disputes" $B_                     # 기각 뒤 다시 제기 201
-d2=$(q "SELECT max(id) FROM disputes")
+d2=$(open_dispute "$I1")
 mark dispute-accept
 call POST "/admin/disputes/$d2/resolution" "" '{"accept":true}'       # 인정: 환불(DISPUTE)·카드 취소·적립 회수
 call POST "/order-items/$I1/disputes" $B_                     # REFUNDED_AFTER_CONFIRM 409

@@ -38,9 +38,9 @@ tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered
 | `conc` | 같은 키 동시 2요청 × N: (a) 같은 구매자(진 요청 대기) (b) 다른 구매자(409) | 지연 1초 | + `norm_conc_pair`, `norm_set_from_mark` |
 | `errors` | 형식 오류 400, 404, 영속 예외(bids·orders INSERT 트리거 실패)의 응답 code·message | 지연 3초 | 공통만 |
 | `ful` | 2단계 이행: 발송·입고·검수 PASS/FAIL(판매자 귀책·패널티·포인트 복구)·배송·구매 확정, 분쟁 제기·기각·인정(환불·적립 회수), 409·403·404·400 | 지연 3초 | + `norm_pg_tx_id` |
-| `refund` | 2단계 환불: 구매자 취소(배송비 첫·마지막 항목), shipment-deadline(시드 PAID 포함), 패널티 3건 → 판매 제한, 분쟁 인정 회수, 카드 취소 DECLINE·UNAVAILABLE → 재시도, 계약 밖 2건(체결가 < 10원, 취소 기록 금액 불일치 409) | 지연 3초 | + `norm_pg_tx_id` |
+| `refund` | 2단계 환불: 구매자 취소(배송비 첫·마지막 항목), shipment-deadline(시드 PAID 포함), 패널티 3건 → 판매 제한, 분쟁 인정 회수, 카드 취소 DECLINE·UNAVAILABLE → 재시도, 계약 밖 2건(체결가 < 10원, 취소 기록 금액 불일치 409 — 하네스가 가짜 PG `POST /cancellations`에 같은 키·다른 금액의 기록을 먼저 만든다) | 지연 3초 | + `norm_pg_tx_id` |
 | `s2batch` | auto-confirm(시드 포함), point-expiry(배분 있는 묶음), grade-recalc → 승급 뒤 적립률, 각 재실행 0건 | 지연 3초 | + `norm_pg_tx_id` |
-| `settle` | weekly-settlement 시드 전체(좁히지 않음): 한 주 → 재실행 0 → 정산 뒤 분쟁 인정·기각·이월 → 두 주, 정산 조회. 바뀐 시드 행은 정렬 덤프 md5 | 지연 3초 | 공통만 |
+| `settle` | weekly-settlement 시드 전체(좁히지 않음): 한 주 → 재실행 0 → 정산 뒤 분쟁 인정·기각·이월 → 두 주, 정산 조회 | 지연 3초 | + `norm_pg_tx_id` |
 
 ## 비교 층 (`build/equiv/<시나리오>/{god,layered}/norm/<층>/`)
 
@@ -73,6 +73,10 @@ tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered
 | recordUnknown 트랜잭션에 `approveCount` 조회 1문 추가 | 접는 구간 밖 | exit 1, sql·pgstmt 층 차이(+3문) |
 | 같은 키 대기 루프에 `approveCount` 조회 1문 추가 | 접는 구간 안 | exit 1, 접힌 블록 2→3줄(sql)·7→8줄(pgstmt) |
 | 같은 키 대기 루프에서 스냅샷 읽기를 2회 | 접는 구간 안 | exit 0, **못 잡음**(위 한계) |
+
+2단계 시나리오(`refund`·`s2batch`·`settle`)의 배치는 시드 전체가 대상이다. 배치가 바꾼 시드 행은 정렬 덤프의 md5(`rows/seed.md5`)로, 픽스처 행은 오프셋 줄 단위로 비교한다. md5는 0행이어도 한 줄이 되므로, 시드 경로(발송 기한 초과·자동 확정·소멸·등급 재산정·시드 판매자 정산)를 지났는지는 시나리오 안의 `need`가 건수 0이면 실패(exit 2)로 확인한다. 분쟁 id는 그 항목의 OPEN 분쟁으로만 잡는다(`open_dispute`, 없으면 실패).
+
+`refund`의 금액 불일치는 ADR-0004 §7.2 계약 밖 노트의 자연 경로(취소를 기록한 PG가 응답하지 않는 사이 같은 주문의 다른 항목이 환불되어 '마지막 환불' 금액이 바뀜)가 아니라, 그 결과 상태(같은 키에 다른 금액의 기록)를 하네스가 직접 만든 것이다. 가짜 PG 취소에는 응답 없음 결과가 없다.
 
 conc의 행 층은 id·구매자 배정 순서와 무관한 집계로만 덤프한다(상태별 주문 수, 키 접두별 주문 수·금액, PG 거래 상태, 체결 상태, 재시도·예상 못 한 오류 로그 건수).
 
