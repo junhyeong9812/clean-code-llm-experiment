@@ -5,7 +5,7 @@ god와 layered에 같은 요청 순서를 보내고 결과를 비교한다. 비�
 
 ```bash
 tools/equiv/run.sh run           # 시나리오 하나
-tools/equiv/run.sh all           # 7종 전부(약 12분)
+tools/equiv/run.sh all           # 11종 전부(약 18분)
 LAYERED_JAR=/path/old.jar tools/equiv/run.sh pay   # jar 지정(GOD_JAR도 같음). 지정하지 않은 앱은 bootJar를 빌드한다
 CONC_N=10 tools/equiv/run.sh conc                  # 동시 요청 쌍 수(기본 30)
 tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered를 교대로 3회(기본 2), 판정 없음
@@ -37,6 +37,10 @@ tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered
 | `fail` | 반영 실패 주입(트리거 A·B·C), C의 같은 키 대기 상한, 정상 종료·재기동, pg-inquiry | 지연 3초 | + `norm_pg_tx_id`, `norm_poll_fold`, `norm_startup_log` |
 | `conc` | 같은 키 동시 2요청 × N: (a) 같은 구매자(진 요청 대기) (b) 다른 구매자(409) | 지연 1초 | + `norm_conc_pair`, `norm_set_from_mark` |
 | `errors` | 형식 오류 400, 404, 영속 예외(bids·orders INSERT 트리거 실패)의 응답 code·message | 지연 3초 | 공통만 |
+| `ful` | 2단계 이행: 발송·입고·검수 PASS/FAIL(판매자 귀책·패널티·포인트 복구)·배송·구매 확정, 분쟁 제기·기각·인정(환불·적립 회수), 409·403·404·400 | 지연 3초 | + `norm_pg_tx_id` |
+| `refund` | 2단계 환불: 구매자 취소(배송비 첫·마지막 항목), shipment-deadline(시드 PAID 포함), 패널티 3건 → 판매 제한, 분쟁 인정 회수, 카드 취소 DECLINE·UNAVAILABLE → 재시도, 계약 밖 2건(체결가 < 10원, 취소 기록 금액 불일치 409) | 지연 3초 | + `norm_pg_tx_id` |
+| `s2batch` | auto-confirm(시드 포함), point-expiry(배분 있는 묶음), grade-recalc → 승급 뒤 적립률, 각 재실행 0건 | 지연 3초 | + `norm_pg_tx_id` |
+| `settle` | weekly-settlement 시드 전체(좁히지 않음): 한 주 → 재실행 0 → 정산 뒤 분쟁 인정·기각·이월 → 두 주, 정산 조회. 바뀐 시드 행은 정렬 덤프 md5 | 지연 3초 | 공통만 |
 
 ## 비교 층 (`build/equiv/<시나리오>/{god,layered}/norm/<층>/`)
 
