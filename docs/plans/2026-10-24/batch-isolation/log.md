@@ -35,6 +35,7 @@
 | 2026-10-24 22:50 | 최종 검증 재발주(백그라운드, scratchpad `final2`): 행동 테스트 4회 → equiv all × 2 → 변이 iso | 진행 중 |
 | 2026-10-25 00:35 | 최종 검증 회수(scratchpad `final2`, 최종 코드): 행동 테스트 god·layered 각 test rc 0(infra 28·contract 122)·contract2Test rc 0(89), verify 4회 위반 0 / equiv `all` 1회차 rc 0 12개 같음(946초)·2회차 rc 0 12개 같음(952초) / 변이 iso(최종 코드 기준 격리 끈 layered jar) rc 1, 응답·새행·SQL·DB문장 4층 차이. 정리: red-check worktree 제거, 변이 jar 삭제, `ccle-equiv-*`·`ccle-bt-*`·`ccle-smoke-*` 컨테이너 0, 앱 프로세스 0, 디스크 50G | 검증 완료 |
 | 2026-10-25 00:40 | 사이클 마감: NEXT 갱신(N1 완료 이력으로, 배치 격리 한계 보류 항목 추가) · measurement-log 1행 · CS 이슈 아카이브는 study-note 쓰기 금지(spec §4)로 보류(NEXT 보류 목록 아홉 작업) | — |
+| 2026-10-25 00:50 | 사용자 결정: 리뷰 종료 조건 미충족(루프 3 신규 채택 R6·R7 — 수정·재점검 완료) 상태로 "병합·push 진행" — user override 기록 | ff 병합·push |
 
 ## 리뷰 ledger
 
@@ -68,7 +69,7 @@
 
 ## 생략한 검증
 
-- 없음(긴급 아님, DEBT 0). 단 리뷰 종료 조건 미충족 1건: 상한 루프 3에서 신규 채택 R6·R7(low) — 수정 + codex 타깃 재점검(R8 발견·수정)으로 open 0, 신규 채택 0인 루프는 없음 → 병합 전 사용자 판단 필요(review.md §1 "review unresolved" 경로).
+- 없음(긴급 아님, DEBT 0). 단 리뷰 종료 조건 미충족 1건: 상한 루프 3에서 신규 채택 R6·R7(low) — 수정 + codex 타깃 재점검(R8 발견·수정)으로 open 0, 신규 채택 0인 루프는 없음 → 사용자 결정(2026-10-25 00:50): 병합·push 진행(user override).
 - 절차 편차: blind 테스트 워커가 `git diff --stat`으로 god/ 파일 이름·줄 수를 봄(내용 미열람).
 
 ## 완료 요약
