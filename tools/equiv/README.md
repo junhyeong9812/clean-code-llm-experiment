@@ -5,7 +5,7 @@ god와 layered에 같은 요청 순서를 보내고 결과를 비교한다. 비�
 
 ```bash
 tools/equiv/run.sh run           # 시나리오 하나
-tools/equiv/run.sh all           # 11종 전부(약 18분)
+tools/equiv/run.sh all           # 12종 전부(약 20분)
 LAYERED_JAR=/path/old.jar tools/equiv/run.sh pay   # jar 지정(GOD_JAR도 같음). 지정하지 않은 앱은 bootJar를 빌드한다
 CONC_N=10 tools/equiv/run.sh conc                  # 동시 요청 쌍 수(기본 30)
 tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered를 교대로 3회(기본 2), 판정 없음
@@ -41,6 +41,7 @@ tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered
 | `refund` | 2단계 환불: 구매자 취소(배송비 첫·마지막 항목), shipment-deadline(시드 PAID 포함), 패널티 3건 → 판매 제한, 분쟁 인정 회수, 카드 취소 DECLINE·UNAVAILABLE → 재시도, 계약 밖 2건(체결가 < 10원, 취소 기록 금액 불일치 409 — 하네스가 가짜 PG `POST /cancellations`에 같은 키·다른 금액의 기록을 먼저 만든다) | 지연 3초 | + `norm_pg_tx_id` |
 | `s2batch` | auto-confirm(시드 포함), point-expiry(배분 있는 묶음), grade-recalc → 승급 뒤 적립률, 각 재실행 0건 | 지연 3초 | + `norm_pg_tx_id` |
 | `settle` | weekly-settlement 시드 전체(좁히지 않음): 한 주 → 재실행 0 → 정산 뒤 분쟁 인정·기각·이월 → 두 주, 정산 조회 | 지연 3초 | + `norm_pg_tx_id` |
+| `iso` | 배치 대상 1건 실패의 격리(트리거로 대상 하나만 실패): bid-expiry·point-expiry·auto-confirm(단독)은 200 `failed` 1 → 트리거 제거 뒤 재실행으로 처리, weekly-settlement는 앞 auto-confirm 실패에서 400 `UNEXPECTED_ERROR`(고정 문구)·정산 행 0 → 재실행으로 정산. 격리 실패 ERROR 로그 건수. 판정은 두 앱 비교다. 시나리오 안의 확인은 두 가지뿐이다 — 주입 경로를 지났는지(`need`), 앱마다 응답과 로그가 맞는지(카드 취소 대상이 없는 이 시나리오에서 응답 `failed` 합 = 격리 실패 ERROR 수, 400 수 ≤ 계약 밖 오류 로그 수 — 어긋나면 exit 2). 계약 자체는 행동 테스트 `BatchIsolationTest`가 단언한다 | 지연 3초 | 공통만 |
 
 ## 비교 층 (`build/equiv/<시나리오>/{god,layered}/norm/<층>/`)
 
