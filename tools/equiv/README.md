@@ -9,6 +9,7 @@ tools/equiv/run.sh all           # 12종 전부(약 20분)
 LAYERED_JAR=/path/old.jar tools/equiv/run.sh pay   # jar 지정(GOD_JAR도 같음). 지정하지 않은 앱은 bootJar를 빌드한다
 CONC_N=10 tools/equiv/run.sh conc                  # 동시 요청 쌍 수(기본 30)
 tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered를 교대로 3회(기본 2), 판정 없음
+tools/equiv/measure-batches.sh 2 # 배치 8종(평상시·몰아 처리)·포인트 예약 소요 시간 측정. EXPLAIN 전용 0회차 god + god·layered 교대 2회, 판정 없음(시드 MEASURE_SEED, 기본 500k-s42)
 ```
 
 `EQ_SQL_LOG`·`EQ_PG_LOG`는 측정 도구 전용이다. run.sh에 0으로 주면 비교할 층이 비므로 exit 2로 거부한다.
