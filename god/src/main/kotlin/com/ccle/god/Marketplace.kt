@@ -19,6 +19,7 @@ import com.ccle.god.entity.SettlementItem
 import com.ccle.god.entity.Trade
 import com.ccle.god.entity.User
 import com.ccle.god.web.ApiException
+import com.ccle.god.web.BatchResult
 import com.ccle.god.web.BidCancelled
 import com.ccle.god.web.BidPlaced
 import com.ccle.god.web.BidView
@@ -1263,53 +1264,82 @@ class Marketplace(
     // ---- 배치: bid-expiry·payment-due·pg-inquiry (ADR-0003 §7), shipment-deadline·auto-confirm·point-expiry·grade-recalc·weekly-settlement (ADR-0004 §5) ----
 
     /**
-     * `POST /admin/batches/{name}`: 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수, weekly-settlement는 만든 정산 행 수).
-     * 알 수 없는 이름은 400. 대상 1건 = 트랜잭션 하나(weekly-settlement는 한 주 = 트랜잭션 하나). 카드 취소 실패(409 PG_UNAVAILABLE)는 그 대상만 건너뛰고(ADR-0004 §7.2), 그 밖의 예외는 배치를 멈춘다(앞 대상은 커밋된 채).
+     * `POST /admin/batches/{name}`: 현재 시각 기준 1회. processed = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수, weekly-settlement는 만든 정산 행 수),
+     * failed = 커밋되지 못한 대상 수(ADR-0003 §12의 2). 알 수 없는 이름은 400. 대상 1건 = 트랜잭션 하나(weekly-settlement는 한 주 = 트랜잭션 하나).
+     * weekly-settlement만 격리하지 않는다: 예외가 나면 그 자리에서 멈추고 요청은 오류 응답으로 끝난다(ADR-0004 §15의 1).
      */
-    fun runBatch(name: String): Int {
+    fun runBatch(name: String): BatchResult {
         val now = clock.now()
         val started = System.nanoTime() // 소요 시간 로그용(업무 시각 아님)
-        val processed = when (name) {
+        val result = when (name) {
             "bid-expiry" -> expireBids(now)
             "payment-due" -> expireUnpaidTrades(now)
             "pg-inquiry" -> inquireUnknownOrders(now)
             "shipment-deadline" -> cancelUnshippedItems(now)
-            "auto-confirm" -> autoConfirmItems(now)
+            "auto-confirm" -> autoConfirmItems(now, isolatedAs = name)
             "point-expiry" -> expirePoints(now)
             "grade-recalc" -> recalcGrades(now)
-            "weekly-settlement" -> settleWeeks(now)
+            "weekly-settlement" -> BatchResult(settleWeeks(now), failed = 0)
             else -> badRequest("알 수 없는 배치: $name")
         }
-        log.info("배치 {} (현재 {}): processed={}, {}ms", name, now, processed, (System.nanoTime() - started) / 1_000_000)
-        return processed
+        log.info(
+            "배치 {} (현재 {}): processed={}, failed={}, {}ms",
+            name, now, result.processed, result.failed, (System.nanoTime() - started) / 1_000_000,
+        )
+        return result
     }
 
     /**
-     * 배치 대상 id를 id 순 키셋 페이지(500개씩)로 읽어 하나씩 처리한다. 반환 = handle이 true를 돌려준 수.
+     * 배치 대상 id를 id 순 키셋 페이지(500개씩)로 읽어 하나씩 처리한다. processed = handle이 true를 돌려준 수.
      * 배치를 시작할 때의 최대 id까지만 본다: 실행 중에 새로 생긴 행(재매칭 체결·새 주문 등)은 다음 실행의 대상이다.
      * condition은 별칭 t로 쓴 WHERE 조건, params는 그 조건의 이름 붙은 파라미터.
+     * isolatedAs(배치 이름)가 있으면 대상 1건의 예외는 그 대상의 실패로 세고 다음 대상을 계속한다(ADR-0003 §12의 2) — 대상의 트랜잭션은
+     * 롤백됐고(커밋 단계 예외면 커밋 여부 불명) 대상 조건이 그대로 남으므로 다음 실행의 대상이다. 카드 취소 실패(409 PG_UNAVAILABLE)는 WARN, 그 밖은 ERROR로 남긴다.
+     * 없으면(기동 시 전환, weekly-settlement 안의 auto-confirm) 예외가 그대로 전파된다.
      */
-    private fun forEachTarget(table: String, condition: String, params: Map<String, Any>, handle: (Long) -> Boolean): Int {
+    private fun forEachTarget(
+        table: String,
+        condition: String,
+        params: Map<String, Any>,
+        isolatedAs: String? = null,
+        handle: (Long) -> Boolean,
+    ): BatchResult {
         val upTo = (em.createNativeQuery("SELECT coalesce(max(id), 0) FROM $table").singleResult as Number).toLong()
         var after = 0L
         var processed = 0
+        var failed = 0
         while (true) {
             val query = em.createNativeQuery(
                 "SELECT t.id FROM $table t WHERE ($condition) AND t.id > :after AND t.id <= :upTo ORDER BY t.id LIMIT 500",
             ).setParameter("after", after).setParameter("upTo", upTo)
             params.forEach { (name, value) -> query.setParameter(name, value) }
             val ids = query.resultList.map { (it as Number).toLong() }
-            if (ids.isEmpty()) return processed
+            if (ids.isEmpty()) return BatchResult(processed, failed)
             for (id in ids) {
-                if (handle(id)) processed++
+                val changed = if (isolatedAs == null) {
+                    handle(id)
+                } else {
+                    try {
+                        handle(id)
+                    } catch (e: Exception) {
+                        failed++
+                        if (e is ApiException && e.code == "PG_UNAVAILABLE") {
+                            log.warn("{}: 대상 {} 건너뜀(카드 취소 실패)", isolatedAs, id)
+                        } else {
+                            log.error("{}: 대상 {} 실패(반영 안 됨 — 커밋 단계 예외면 커밋 여부 불명, 다음 실행이 다시 판정)", isolatedAs, id, e)
+                        }
+                        false
+                    }
+                }
+                if (changed) processed++
             }
             after = ids.last()
         }
     }
 
     /** bid-expiry: ACTIVE이고 expires_at ≤ 현재인 입찰을 id 순으로 EXPIRED. 입찰마다 그 사이즈를 잠근 트랜잭션 하나. */
-    private fun expireBids(now: Instant): Int =
-        forEachTarget("bids", "t.status = 'ACTIVE' AND t.expires_at <= :now", mapOf("now" to now)) { bidId ->
+    private fun expireBids(now: Instant): BatchResult =
+        forEachTarget("bids", "t.status = 'ACTIVE' AND t.expires_at <= :now", mapOf("now" to now), isolatedAs = "bid-expiry") { bidId ->
             tx.execute {
                 val bid = em.find(Bid::class.java, bidId)
                 lockProductSize(bid.productSizeId)
@@ -1331,13 +1361,14 @@ class Marketplace(
      * UNKNOWN·PAYING 주문의 항목은 모두 AWAITING_PAYMENT이므로(verify order_status_vs_items) 항목 조건
      * status <> 'PAYMENT_FAILED'를 붙여도 뜻은 같고, 부분 인덱스 order_items_live_trade_key를 탄다.
      */
-    private fun expireUnpaidTrades(now: Instant): Int =
+    private fun expireUnpaidTrades(now: Instant): BatchResult =
         forEachTarget(
             "trades",
             "t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now" +
                 " AND NOT EXISTS (SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id" +
                 "                 WHERE i.trade_id = t.id AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING'))",
             mapOf("now" to now),
+            isolatedAs = "payment-due",
         ) { tradeId -> tx.execute { expireUnpaidTrade(tradeId, now) }!! }
 
     /**
@@ -1394,8 +1425,8 @@ class Marketplace(
      * pg-inquiry: UNKNOWN 주문을 id 순으로 PG에 다시 묻는다. PG 호출 중에는 트랜잭션·잠금을 잡지 않는다.
      * 승인 → §5.1 승인 처리(paid_at = APPROVE 행의 requested_at), 404·거절 → 거절 처리, 응답 없음 → 행 없이 UNKNOWN 유지.
      */
-    private fun inquireUnknownOrders(now: Instant): Int =
-        forEachTarget("orders", "t.status = 'UNKNOWN'", emptyMap()) { orderId ->
+    private fun inquireUnknownOrders(now: Instant): BatchResult =
+        forEachTarget("orders", "t.status = 'UNKNOWN'", emptyMap(), isolatedAs = "pg-inquiry") { orderId ->
             val key = em.find(PurchaseOrder::class.java, orderId).idempotencyKey
             val (status, pgTxId) = pgResult(callPg("재조회 $key") { pg.getApproval(key) }, inquiry = true)
             if (status == "UNKNOWN") {
@@ -1436,33 +1467,38 @@ class Marketplace(
     /**
      * shipment-deadline(ADR-0004 §5): PAID이고 paid_at + 3일 ≤ 현재인 항목을 id 순으로 §6 판매자 귀책(사유 `발송 기한 초과`).
      * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자 취소·발송됐으면 건너뜀).
-     * 카드 취소 실패(409 PG_UNAVAILABLE)면 그 트랜잭션을 롤백하고 건너뛴다(§7.2) — 다음 실행의 대상으로 남는다.
+     * 카드 취소 실패(409 PG_UNAVAILABLE)면 그 트랜잭션을 롤백하고 건너뛴다(§7.2 — 격리 순회가 실패로 센다). 다음 실행의 대상으로 남는다.
      */
-    private fun cancelUnshippedItems(now: Instant): Int =
-        forEachTarget("order_items", "t.status = 'PAID' AND t.paid_at <= :due", mapOf("due" to now.minus(Duration.ofDays(3)))) { itemId ->
-            try {
-                tx.execute {
-                    val item = lockOrderOf(itemId)
-                    if (item.status != "PAID" || item.paidAt!!.plus(Duration.ofDays(3)).isAfter(now)) {
-                        false
-                    } else {
-                        sellerFault(item, reason = "발송 기한 초과", now = now)
-                        true
-                    }
-                }!!
-            } catch (e: ApiException) {
-                if (e.code != "PG_UNAVAILABLE") throw e
-                log.warn("shipment-deadline: 항목 {} 건너뜀(카드 취소 실패)", itemId)
-                false
-            }
+    private fun cancelUnshippedItems(now: Instant): BatchResult =
+        forEachTarget(
+            "order_items",
+            "t.status = 'PAID' AND t.paid_at <= :due",
+            mapOf("due" to now.minus(Duration.ofDays(3))),
+            isolatedAs = "shipment-deadline",
+        ) { itemId ->
+            tx.execute {
+                val item = lockOrderOf(itemId)
+                if (item.status != "PAID" || item.paidAt!!.plus(Duration.ofDays(3)).isAfter(now)) {
+                    false
+                } else {
+                    sellerFault(item, reason = "발송 기한 초과", now = now)
+                    true
+                }
+            }!!
         }
 
     /**
      * auto-confirm(ADR-0004 §5): DELIVERED이고 delivered_at + 7일 ≤ 현재인 항목을 id 순으로 CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2.
      * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
+     * 단독 배치는 격리하고(isolatedAs), weekly-settlement 안에서는 격리하지 않는다(ADR-0004 §15의 1 — 실패하면 정산하지 않는다).
      */
-    private fun autoConfirmItems(now: Instant): Int =
-        forEachTarget("order_items", "t.status = 'DELIVERED' AND t.delivered_at <= :due", mapOf("due" to now.minus(Duration.ofDays(7)))) { itemId ->
+    private fun autoConfirmItems(now: Instant, isolatedAs: String?): BatchResult =
+        forEachTarget(
+            "order_items",
+            "t.status = 'DELIVERED' AND t.delivered_at <= :due",
+            mapOf("due" to now.minus(Duration.ofDays(7))),
+            isolatedAs,
+        ) { itemId ->
             tx.execute {
                 val item = lockOrderOf(itemId)
                 val due = item.deliveredAt?.plus(Duration.ofDays(7))
@@ -1480,11 +1516,12 @@ class Marketplace(
      * 묶음마다 EXPIRE 1행(amount = remaining, 주문 NULL, created_at = 현재) + 배분 1행, remaining 0(EARN은 AVAILABLE), available 감소.
      * 묶음 1개 = 그 사용자 행을 잠근 트랜잭션 하나(묶음 remaining을 바꾸는 처리는 모두 이 잠금 안에서 한다). 다른 잠금은 잡지 않는다.
      */
-    private fun expirePoints(now: Instant): Int =
+    private fun expirePoints(now: Instant): BatchResult =
         forEachTarget(
             "point_ledger",
             "t.kind = 'EARN' AND t.status = 'AVAILABLE' AND t.remaining > 0 AND t.expires_at <= :now",
             mapOf("now" to now),
+            isolatedAs = "point-expiry",
         ) { earnId ->
             tx.execute {
                 val earn = em.find(PointLedgerEntry::class.java, earnId)
@@ -1521,7 +1558,7 @@ class Marketplace(
      * 사용자 1명 = 그 사용자 행을 잠근 트랜잭션 하나. 잠근 뒤 이력 유무·기준 금액·users.grade를 다시 읽어 판정한다
      * (기준 금액을 바꾸는 확정·분쟁 인정은 구매자 행을 잠그므로 잠근 뒤의 값이 최신이다). 반환 = 쓴 이력 행 수.
      */
-    private fun recalcGrades(now: Instant): Int {
+    private fun recalcGrades(now: Instant): BatchResult {
         val kst = ZoneOffset.ofHours(9)
         val d = LocalDate.ofInstant(now, kst).withDayOfMonth(1)
         val params = mapOf<String, Any>(
@@ -1530,7 +1567,7 @@ class Marketplace(
             "to" to d.atStartOfDay(kst).toInstant(),
         )
         val noHistoryAtD = "NOT EXISTS (SELECT 1 FROM user_grade_history h WHERE h.user_id = t.id AND h.effective_from = :d)"
-        return forEachTarget("users", "$noHistoryAtD AND t.grade <> $gradeSql", params) { userId ->
+        return forEachTarget("users", "$noHistoryAtD AND t.grade <> $gradeSql", params, isolatedAs = "grade-recalc") { userId ->
             tx.execute {
                 lockUser(userId)
                 val query = em.createNativeQuery(
@@ -1573,7 +1610,7 @@ class Marketplace(
      * 정산 행이 하나도 없으면 현재 직전 마감 1주만. 한 주 = 모든 판매자를 트랜잭션 하나로(§9.2 — 실패하면 그 주 전체가 커밋되지 않는다).
      */
     private fun settleWeeks(now: Instant): Int {
-        autoConfirmItems(now)
+        autoConfirmItems(now, isolatedAs = null)
         val latest = LocalDate.ofInstant(now, kst).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
         val lastPeriodStart = em.createQuery("SELECT max(s.periodStart) FROM Settlement s", LocalDate::class.java).singleResult
         var cutoff = lastPeriodStart?.plusDays(14) ?: latest
@@ -1729,7 +1766,7 @@ class Marketplace(
                 order.status = "UNKNOWN"
                 true
             }!!
-        }
+        }.processed
         if (converted > 0) log.warn("기동 시 PAYING 주문 {}건을 UNKNOWN으로 바꿨다(확정은 pg-inquiry)", converted)
     }
 }

@@ -24,20 +24,20 @@ data class ErrorBody(val code: String, val message: String)
 
 private val log = LoggerFactory.getLogger("com.ccle.god.web.Errors")
 
-/** 계약 밖 상황(버그·예상 못 한 예외)의 응답. 5xx 대신 이 code로 돌려주고, 원인은 로그에 남긴다. */
+/** 계약 밖 상황(버그·예상 못 한 예외)의 응답(ADR-0003 §12의 1). 5xx 대신 이 code와 고정 문구로 돌려주고, 원인은 로그에만 남긴다. */
 private fun unexpected(what: String, cause: Throwable?): ResponseEntity<ErrorBody> {
     log.error("예상 못 한 오류: {}", what, cause)
-    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorBody("UNEXPECTED_ERROR", what))
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorBody("UNEXPECTED_ERROR", "예상하지 못한 서버 오류"))
 }
 
-/** Spring MVC가 낸 HTTP 상태를 계약의 code로 바꾼다. */
-private fun fromStatus(status: Int, message: String, cause: Throwable?): ResponseEntity<ErrorBody> = when {
+/** Spring MVC가 낸 HTTP 상태를 계약의 code로 바꾼다. where = 로그용 요청 메서드·경로. */
+private fun fromStatus(status: Int, message: String, cause: Throwable?, where: String): ResponseEntity<ErrorBody> = when {
     // 라우트 없음은 도메인의 NOT_FOUND(없는 입찰·체결·주문·사이즈)와 구분한다(ADR-0003 §2)
     status == 404 -> ResponseEntity.status(404).body(ErrorBody("NO_ROUTE", message))
     status == 405 -> ResponseEntity.status(405).body(ErrorBody("METHOD_NOT_ALLOWED", message))
     // JSON 파싱 실패·타입 불일치·필수 파라미터 누락·지원하지 않는 Content-Type 등: 요청 형식 오류
     status in 400..499 -> ResponseEntity.status(400).body(ErrorBody("INVALID_REQUEST", message))
-    else -> unexpected("HTTP $status: $message", cause)
+    else -> unexpected("$where: HTTP $status: $message", cause)
 }
 
 @RestControllerAdvice
@@ -51,11 +51,11 @@ class ApiErrorAdvice {
     fun other(e: Exception, request: HttpServletRequest): ResponseEntity<ErrorBody> {
         // 라우트 없음(NoResourceFoundException)·메서드 불일치·필수 파라미터 누락 등 Spring MVC 예외는 ErrorResponse를 구현한다
         if (e is ErrorResponse) {
-            return fromStatus(e.statusCode.value(), e.body.detail ?: e.message ?: "요청 오류", e)
+            return fromStatus(e.statusCode.value(), e.body.detail ?: e.message ?: "요청 오류", e, "${request.method} ${request.requestURI}")
         }
         // 그 밖의 바인딩·변환 예외(예: 타입 변환 실패)도 요청 형식 오류로 본다
         if (e is TypeMismatchException || e is HttpMessageNotReadableException) {
-            return fromStatus(400, e.message ?: "요청 형식 오류", e)
+            return fromStatus(400, e.message ?: "요청 형식 오류", e, "${request.method} ${request.requestURI}")
         }
         return unexpected("${request.method} ${request.requestURI}: ${e.javaClass.simpleName}: ${e.message}", e)
     }
@@ -74,7 +74,8 @@ class ApiErrorController : ErrorController {
         val cause = request.getAttribute(RequestDispatcher.ERROR_EXCEPTION) as? Throwable
         val message = (request.getAttribute(RequestDispatcher.ERROR_MESSAGE) as? String)?.takeIf { it.isNotBlank() }
             ?: cause?.message ?: "오류"
+        val uri = request.getAttribute(RequestDispatcher.ERROR_REQUEST_URI) as? String ?: request.requestURI
         // 직접 /error를 부른 경우(상태 없음)는 없는 라우트와 같다
-        return fromStatus(status ?: 404, message, cause)
+        return fromStatus(status ?: 404, message, cause, "${request.method} $uri")
     }
 }

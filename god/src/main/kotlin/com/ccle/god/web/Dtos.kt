@@ -87,6 +87,9 @@ data class DisputeOpened(val disputeId: Long, val orderItemId: Long, val status:
 /** 분쟁 판정 응답(ADR-0004 §4.4). */
 data class DisputeView(val disputeId: Long, val orderItemId: Long, val status: String, val openedAt: Instant, val resolvedAt: Instant?)
 
+/** 배치 1회의 결과(ADR-0003 §7·§12의 2): processed = 상태가 바뀐 주 대상 수, failed = 커밋되지 못한 대상 수. */
+data class BatchResult(val processed: Int, val failed: Int)
+
 /** 판매자 정산 조회 응답 1행(ADR-0004 §10.3). periodStart·periodEnd는 "YYYY-MM-DD". items는 orderItemId 오름차순. */
 data class SettlementView(
     val settlementId: Long,

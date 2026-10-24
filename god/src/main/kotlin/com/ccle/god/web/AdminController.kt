@@ -33,7 +33,10 @@ class AdminController(private val marketplace: Marketplace) {
     }
 
     @PostMapping("/batches/{name}")
-    fun runBatch(@PathVariable name: String): Map<String, Int> = mapOf("processed" to marketplace.runBatch(name))
+    fun runBatch(@PathVariable name: String): Map<String, Int> {
+        val result = marketplace.runBatch(name)
+        return mapOf("processed" to result.processed, "failed" to result.failed)
+    }
 
     @PostMapping("/order-items/{itemId}/receipt")
     fun receive(@PathVariable itemId: String): ItemView = marketplace.receiveItem(pathId(itemId))

@@ -31,10 +31,39 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 
+/** 배치 1회의 결과(§7·§12의 2): processed = 상태가 바뀐 주 대상 수, failed = 커밋되지 못한 대상 수. */
+data class BatchResult(val processed: Int, val failed: Int)
+
+private val isolationLog = LoggerFactory.getLogger(BatchService::class.java)
+
 /**
- * `POST /admin/batches/{name}`(§7, ADR-0004 §5): 현재 시각 기준 1회. 반환 = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수, weekly-settlement는 만든 정산 행 수).
- * 알 수 없는 이름은 400. 대상 1건 = 트랜잭션 하나(weekly-settlement는 한 주 = 트랜잭션 하나). 카드 취소 실패(409 PG_UNAVAILABLE)는 그 대상만 건너뛰고(ADR-0004 §7.2),
- * 그 밖의 예외는 배치를 멈춘다(앞 대상은 커밋된 채).
+ * 격리 순회(§12의 2, ADR-0004 §15의 1): 대상 1건의 예외는 그 대상의 실패로 세고 다음 대상을 계속한다 — 대상의 트랜잭션은 롤백됐고(커밋 단계 예외면
+ * 커밋 여부 불명) 대상 조건이 그대로 남으므로 다음 실행의 대상이다. 카드 취소 실패(409 PG_UNAVAILABLE)는 WARN, 그 밖은 ERROR로 남긴다.
+ * 격리하지 않는 순회(기동 시 전환, weekly-settlement 안의 auto-confirm)는 forEach를 그대로 쓴다(예외가 전파된다).
+ */
+private fun BatchTargets.forEachIsolated(batch: String, target: BatchTarget, now: Instant, handle: (Long) -> Boolean): BatchResult {
+    var failed = 0
+    val processed = forEach(target, now) { id ->
+        try {
+            handle(id)
+        } catch (e: Exception) {
+            failed++
+            if (e is MarketException && e.failure == Failure.PG_UNAVAILABLE) {
+                isolationLog.warn("{}: 대상 {} 건너뜀(카드 취소 실패)", batch, id)
+            } else {
+                isolationLog.error("{}: 대상 {} 실패(반영 안 됨 — 커밋 단계 예외면 커밋 여부 불명, 다음 실행이 다시 판정)", batch, id, e)
+            }
+            false
+        }
+    }
+    return BatchResult(processed, failed)
+}
+
+/**
+ * `POST /admin/batches/{name}`(§7, ADR-0004 §5): 현재 시각 기준 1회. processed = 상태가 바뀐 주 대상 수(grade-recalc는 쓴 이력 행 수,
+ * weekly-settlement는 만든 정산 행 수), failed = 커밋되지 못한 대상 수(§12의 2). 알 수 없는 이름은 400.
+ * 대상 1건 = 트랜잭션 하나(weekly-settlement는 한 주 = 트랜잭션 하나). weekly-settlement만 격리하지 않는다: 예외가 나면 그 자리에서 멈추고
+ * 요청은 오류 응답으로 끝난다(ADR-0004 §15의 1).
  */
 @Service
 class BatchService(
@@ -50,10 +79,10 @@ class BatchService(
 ) {
     private val log = LoggerFactory.getLogger(BatchService::class.java)
 
-    fun run(name: String): Int {
+    fun run(name: String): BatchResult {
         val now = clock.now()
         val started = System.nanoTime() // 소요 시간 로그용(업무 시각 아님)
-        val processed = when (name) {
+        val result = when (name) {
             "bid-expiry" -> bidExpiry.run(now)
             "payment-due" -> paymentDue.run(now)
             "pg-inquiry" -> pgInquiry.run(now)
@@ -61,11 +90,14 @@ class BatchService(
             "auto-confirm" -> autoConfirm.run(now)
             "point-expiry" -> pointExpiry.run(now)
             "grade-recalc" -> gradeRecalc.run(now)
-            "weekly-settlement" -> weeklySettlement.run(now)
+            "weekly-settlement" -> BatchResult(weeklySettlement.run(now), failed = 0)
             else -> invalidRequest("알 수 없는 배치: $name")
         }
-        log.info("배치 {} (현재 {}): processed={}, {}ms", name, now, processed, (System.nanoTime() - started) / 1_000_000)
-        return processed
+        log.info(
+            "배치 {} (현재 {}): processed={}, failed={}, {}ms",
+            name, now, result.processed, result.failed, (System.nanoTime() - started) / 1_000_000,
+        )
+        return result
     }
 }
 
@@ -78,7 +110,7 @@ class BidExpiryBatch(
     private val bids: BidRepository,
     private val events: BidEventRepository,
 ) {
-    fun run(now: Instant): Int = targets.forEach(BatchTarget.EXPIRED_BIDS, now) { bidId ->
+    fun run(now: Instant): BatchResult = targets.forEachIsolated("bid-expiry", BatchTarget.EXPIRED_BIDS, now) { bidId ->
         tx.execute {
             val bid = bids.find(bidId)!!
             sizes.lock(bid.productSizeId)
@@ -112,7 +144,8 @@ class PaymentDueBatch(
     private val events: BidEventRepository,
     private val matches: MatchRecorder,
 ) {
-    fun run(now: Instant): Int = targets.forEach(BatchTarget.OVERDUE_TRADES, now) { tradeId -> tx.execute { expire(tradeId, now) }!! }
+    fun run(now: Instant): BatchResult =
+        targets.forEachIsolated("payment-due", BatchTarget.OVERDUE_TRADES, now) { tradeId -> tx.execute { expire(tradeId, now) }!! }
 
     private fun expire(tradeId: Long, now: Instant): Boolean {
         val trade = trades.find(tradeId)!!
@@ -156,7 +189,7 @@ class PgInquiryBatch(
     private val pgCaller: PgCaller,
     private val outcomes: PaymentOutcomes,
 ) {
-    fun run(now: Instant): Int = targets.forEach(BatchTarget.UNKNOWN_ORDERS, now) { orderId ->
+    fun run(now: Instant): BatchResult = targets.forEachIsolated("pg-inquiry", BatchTarget.UNKNOWN_ORDERS, now) { orderId ->
         val result = pgCaller.inquire(orders.find(orderId)!!.idempotencyKey)
         if (result.outcome == PgOutcome.UNKNOWN) {
             false
@@ -182,7 +215,7 @@ class PgInquiryBatch(
 /**
  * shipment-deadline(ADR-0004 §5): 발송 기한이 지난 PAID 항목을 id 순으로 §6 판매자 귀책(사유 `발송 기한 초과`).
  * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자 취소·발송됐으면 건너뜀).
- * 카드 취소 실패(409 PG_UNAVAILABLE)면 그 트랜잭션을 롤백하고 건너뛴다(§7.2) — 다음 실행의 대상으로 남는다.
+ * 카드 취소 실패(409 PG_UNAVAILABLE)면 그 트랜잭션을 롤백하고 건너뛴다(§7.2 — 격리 순회가 실패로 센다). 다음 실행의 대상으로 남는다.
  */
 @Component
 class ShipmentDeadlineBatch(
@@ -191,30 +224,23 @@ class ShipmentDeadlineBatch(
     private val locker: ItemLocker,
     private val sellerFaults: SellerFaults,
 ) {
-    private val log = LoggerFactory.getLogger(ShipmentDeadlineBatch::class.java)
-
-    fun run(now: Instant): Int = targets.forEach(BatchTarget.UNSHIPPED_ITEMS, now) { itemId ->
-        try {
-            tx.execute {
-                val item = locker.lock(itemId)
-                if (!item.isShipmentOverdue(now)) {
-                    false
-                } else {
-                    sellerFaults.apply(item, reason = RefundFault.SHIPMENT_OVERDUE_REASON, now = now)
-                    true
-                }
-            }!!
-        } catch (e: MarketException) {
-            if (e.failure != Failure.PG_UNAVAILABLE) throw e
-            log.warn("shipment-deadline: 항목 {} 건너뜀(카드 취소 실패)", itemId)
-            false
-        }
+    fun run(now: Instant): BatchResult = targets.forEachIsolated("shipment-deadline", BatchTarget.UNSHIPPED_ITEMS, now) { itemId ->
+        tx.execute {
+            val item = locker.lock(itemId)
+            if (!item.isShipmentOverdue(now)) {
+                false
+            } else {
+                sellerFaults.apply(item, reason = RefundFault.SHIPMENT_OVERDUE_REASON, now = now)
+                true
+            }
+        }!!
     }
 }
 
 /**
  * auto-confirm(ADR-0004 §5): 배송 완료 7일이 지난 DELIVERED 항목을 id 순으로 CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2.
  * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
+ * 단독 배치(run)는 격리하고, weekly-settlement 안(runStoppingOnFailure)에서는 격리하지 않는다(ADR-0004 §15의 1 — 실패하면 정산하지 않는다).
  */
 @Component
 class AutoConfirmBatch(
@@ -223,18 +249,20 @@ class AutoConfirmBatch(
     private val locker: ItemLocker,
     private val confirmer: ItemConfirmer,
 ) {
-    fun run(now: Instant): Int = targets.forEach(BatchTarget.UNCONFIRMED_ITEMS, now) { itemId ->
-        tx.execute {
-            val item = locker.lock(itemId)
-            val confirmedAt = item.autoConfirmationTime(now)
-            if (confirmedAt == null) {
-                false
-            } else {
-                confirmer.confirm(item, confirmedAt, now)
-                true
-            }
-        }!!
-    }
+    fun run(now: Instant): BatchResult = targets.forEachIsolated("auto-confirm", BatchTarget.UNCONFIRMED_ITEMS, now) { confirm(it, now) }
+
+    fun runStoppingOnFailure(now: Instant): Int = targets.forEach(BatchTarget.UNCONFIRMED_ITEMS, now) { confirm(it, now) }
+
+    private fun confirm(itemId: Long, now: Instant): Boolean = tx.execute {
+        val item = locker.lock(itemId)
+        val confirmedAt = item.autoConfirmationTime(now)
+        if (confirmedAt == null) {
+            false
+        } else {
+            confirmer.confirm(item, confirmedAt, now)
+            true
+        }
+    }!!
 }
 
 /**
@@ -249,7 +277,7 @@ class PointExpiryBatch(
     private val points: PointRepository,
     private val pointBook: PointBook,
 ) {
-    fun run(now: Instant): Int = targets.forEach(BatchTarget.EXPIRED_POINTS, now) { earnId ->
+    fun run(now: Instant): BatchResult = targets.forEachIsolated("point-expiry", BatchTarget.EXPIRED_POINTS, now) { earnId ->
         tx.execute {
             val earn = points.find(earnId)
             users.lock(earn.userId)
@@ -270,9 +298,9 @@ class GradeRecalcBatch(
     private val tx: TransactionTemplate,
     private val users: UserRepository,
 ) {
-    fun run(now: Instant): Int {
+    fun run(now: Instant): BatchResult {
         val period = GradePeriod.of(now)
-        return targets.forEach(BatchTarget.GRADE_CHANGES, now) { userId ->
+        return targets.forEachIsolated("grade-recalc", BatchTarget.GRADE_CHANGES, now) { userId ->
             tx.execute {
                 users.lock(userId)
                 val review = users.gradeReview(userId, period)
@@ -288,6 +316,7 @@ class GradeRecalcBatch(
 /**
  * weekly-settlement(ADR-0004 §10): 먼저 auto-confirm을 수행하고(소급 확정 시각이 이미 마감된 주에 들어가지 않게), 정산할 주를 오래된 주부터 정산한다.
  * 한 주 = 모든 판매자를 트랜잭션 하나로(§9.2 — 실패하면 그 주 전체가 롤백되고 예외가 전파된다. 앞 주는 커밋된 채).
+ * 격리하지 않는다(§15의 1): 앞 auto-confirm이 1건이라도 실패하면 정산하지 않고, 한 주가 실패하면 뒤 주를 정산하지 않는다.
  */
 @Component
 class WeeklySettlementBatch(
@@ -297,7 +326,7 @@ class WeeklySettlementBatch(
     private val penalties: SellerPenaltyRepository,
 ) {
     fun run(now: Instant): Int {
-        autoConfirm.run(now)
+        autoConfirm.runStoppingOnFailure(now)
         var processed = 0
         for (week in SettlementWeek.pending(settlements.lastPeriodStart(), now)) {
             processed += tx.execute { settle(week) }!!
