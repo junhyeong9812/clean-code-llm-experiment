@@ -99,6 +99,8 @@ object Flow {
     fun runBatch(name: String): Resp {
         val r = batch(name).assertStatus(200)
         assertTrue(r.json.get("processed")?.isIntegralNumber == true, "processed 정수 아님: $r")
+        // ADR-0003 §7·§12의 2: 200 {"processed": n, "failed": m}
+        assertTrue(r.json.get("failed")?.isIntegralNumber == true, "failed 정수 아님: $r")
         return r
     }
 }

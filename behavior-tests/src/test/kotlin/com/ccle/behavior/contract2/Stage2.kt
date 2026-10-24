@@ -82,6 +82,8 @@ object S2 {
         val r = Flow.batch(name)
         assertEquals(200, r.status, "2단계 배치 '$name': $r")
         assertTrue(r.json.get("processed")?.isIntegralNumber == true, "processed 정수 아님: $r")
+        // ADR-0004 §5: failed = 커밋되지 못한 대상 수(ADR-0003 §12의 2)
+        assertTrue(r.json.get("failed")?.isIntegralNumber == true, "failed 정수 아님: $r")
         return r
     }
 
