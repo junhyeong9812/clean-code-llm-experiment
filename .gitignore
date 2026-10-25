@@ -6,3 +6,7 @@ build/
 .kotlin/
 # 합성 데이터(CSV·덤프)는 생성기로 재현한다
 data/out/
+
+# 러너 결과(이벤트·diff — 실행마다 생성)
+/experiment/results*/
+__pycache__/

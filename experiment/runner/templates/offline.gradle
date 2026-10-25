@@ -1,0 +1,2 @@
+// 에이전트 실행: 의존성은 읽기 전용 캐시(GRADLE_RO_DEP_CACHE)에서만 — 네트워크로 받지 않는다
+gradle.startParameter.offline = true
