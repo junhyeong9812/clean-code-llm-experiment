@@ -9,7 +9,7 @@
 #   채운 뒤 다음 실행으로 넘어간다(다음 실행은 새 DB). 하나라도 실패하면 끝에 exit 2.
 # 사용: tools/equiv/measure-batches.sh [N]      시드 태그 MEASURE_SEED(기본 500k-s42), GOD_JAR·LAYERED_JAR로 jar 지정
 # 출력: build/equiv/measure-batches/<시작 시각>/results.tsv(+ latest 링크), <회차>-<앱>/explain/*.txt, <회차>-<앱>/app.log
-# 종료 코드: 0 측정 완료 · 2 실행 실패(일부 칸 실패 포함) · 130 중단
+# 종료 코드: 0 측정 완료 · 2 실행 실패(일부 칸 실패 또는 교차 확인 불일치 포함) · 130 중단
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/lib.sh"
@@ -137,6 +137,7 @@ run_phase() { # <회차> <앱> <단계> <현재 ISO> <EXPLAIN 여부>
     fi
     chk=$(check "$b" "$4" "$processed" "$before")
     row "$1" "$2" "$http" "$processed" "$failed" "$t" "${ms:-?}" "$(over120 "$t")" "$chk"
+    [[ $chk != MISMATCH* ]] || echo "$1-$2 $b $chk" >> "$base/mismatch"   # 측정은 계속하되 끝에 exit 2
   done
 }
 
@@ -211,3 +212,4 @@ for i in $(seq "$n"); do
 done
 echo "결과: $base/results.tsv"
 [ "$bad" = 0 ] || die "실패한 실행이 있음 — results.tsv의 실패·미실행 칸"
+[ ! -s "$base/mismatch" ] || die "처리 건수 교차 확인 불일치: $(tr '\n' ' ' < "$base/mismatch")"
