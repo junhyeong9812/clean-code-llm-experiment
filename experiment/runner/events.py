@@ -6,6 +6,7 @@ parent_tool_use_id 가 있다.
 """
 import json
 import re
+import shlex
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -15,15 +16,48 @@ READ_DEFAULT_LIMIT = 2000  # Read 도구 기본 상한(줄)
 
 # 감사: 도구 *입력*에만 적용한다. 결과(파일 내용)까지 보면 코드 안 문자열 때문에 오탐이 난다(앞 실험).
 AUDIT_INPUT = [r"/home/jun", r"clean-code-llm-experiment", r"\boracle\b", r"experiment/", r"study-note",
-               r"graph-nav-experiment", r"ccle-runner", r"/tmp/claude-\d+", r"\.credentials\.json"]
+               r"graph-nav-experiment", r"ccle-runner", r"\.credentials\.json"]
 FORBIDDEN_TOOLS = {"WebFetch", "WebSearch"}
 # 외부로 나가는 명령. curl·wget 은 로컬 서비스(앱·가짜 PG·DB) 디버깅에 정당하게 쓰이므로 호스트가 로컬이 아닐 때만.
 AUDIT_BASH = [r"(^|[\s;&|(])(nc|ncat|ssh|scp|sftp|rsync|gh|telnet)\s", r"\bgit\s+(clone|fetch|pull|push|ls-remote|remote)\b",
               r"\b(pip3?|npm|npx|apt(-get)?|sdk)\s+(install|i|add)\b"]
 # scheme 있는 URL 전부(대소문자 무시). 호스트는 urlsplit 으로 — userinfo(`localhost@evil.com`)·포트·IPv6 괄호 처리.
-# 한계: scheme 없는 `curl evil.com/x` 는 잡지 않는다(감사는 보조 — 외부 접속 차단은 아님, ADR §6.1).
+# scheme 없는 목적지는 curl·wget 위치 인자에서 따로 본다(fetch_hosts). 감사는 보조다 — 외부 접속 차단은 아님(ADR §6.1).
 URL = re.compile(r"(?i)\b(?:https?|ftp)://[^\s'\"<>]+")
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "db", "::1"}
+
+
+FETCH_CMD = re.compile(r"(?:^|[\s;&|(])(curl|wget)\s+([^;&|]*)")
+# 값을 받는 옵션(그 다음 토큰은 목적지가 아니다)
+FETCH_VALUE_OPTS = {"-o", "-O", "-X", "-H", "-d", "-u", "-w", "-T", "-F", "-A", "-e", "-m", "-c", "-b", "-x", "-K",
+                    "--output", "--header", "--request", "--data", "--data-raw", "--data-binary", "--user", "--write-out",
+                    "--max-time", "--connect-timeout", "--retry", "--user-agent", "--cookie", "--form", "--config",
+                    "--output-document", "--post-data", "--header"}
+
+
+def fetch_hosts(cmd: str) -> list:
+    """curl·wget 의 scheme 없는 목적지 호스트. `$VAR`(환경 변수 — DB_URL·PG_URL 등)는 판정하지 않는다."""
+    out = []
+    for m in FETCH_CMD.finditer(cmd):
+        try:
+            toks = shlex.split(m[2])
+        except ValueError:
+            toks = m[2].split()
+        skip = False
+        for t in toks:
+            if skip:
+                skip = False
+                continue
+            if t.startswith("-"):
+                skip = t in FETCH_VALUE_OPTS
+                continue
+            if "://" in t or t.startswith("$") or t.startswith(("/", ".")) or not t:
+                continue  # scheme 있음(url_hosts 가 봄)·변수·로컬 파일 경로
+            host = t.split("/", 1)[0].rsplit("@", 1)[-1]
+            host = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.split(":", 1)[0]
+            if host:
+                out.append(host)
+    return out
 
 
 def url_hosts(cmd: str) -> list:
@@ -128,14 +162,17 @@ U_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_cre
 
 
 def tokens(evs: list) -> dict:
-    """총 토큰. result 가 있으면 modelUsage 합(하위 에이전트 포함 — result.usage 는 본 대화만).
-    result 가 없으면(시간 상한 강제 종료) assistant 메시지 id 마다 마지막 usage 를 더한 부분 합(partial)."""
+    """총 토큰. result.modelUsage 가 있으면 그 합(하위 에이전트 포함 — result.usage 는 본 대화만), tokens_source=modelUsage.
+    없으면(시간 상한 강제 종료로 result 없음, 또는 오류 result 에 modelUsage 없음) assistant 메시지 id 마다 마지막 usage 를
+    더한 부분 합(partial_tokens=True, tokens_source=assistant_usage). 부분 합은 **하한**이다: 스트림의 assistant usage 는
+    메시지 시작 시점 값이라 output 이 최종값보다 훨씬 작고(스모크 실측 1~5%) 진행 중이던 마지막 메시지는 빠진다 —
+    input·cache 계열은 거의 맞아 총합 오차는 스모크에서 1~2%. 분석에서 output 계열은 partial 행에서 쓰지 않는다."""
     res = next((e for e in reversed(evs) if e.get("type") == "result"), None)
-    if res is not None:
-        mu = res.get("modelUsage") or {}
+    mu = (res or {}).get("modelUsage") or {}
+    if mu:
         return {"total_tokens": sum(_usage_sum(v, MU_KEYS) for v in mu.values()),
                 "by_model": {m: {k: int(v.get(k) or 0) for k in MU_KEYS} for m, v in mu.items()},
-                "cost_usd": res.get("total_cost_usd"), "partial_tokens": False, "has_modelusage": bool(mu)}
+                "cost_usd": res.get("total_cost_usd"), "partial_tokens": False, "tokens_source": "modelUsage"}
     last = {}
     for e in evs:
         if e.get("type") == "assistant":
@@ -148,7 +185,7 @@ def tokens(evs: list) -> dict:
         for mk, uk in zip(MU_KEYS, U_KEYS):
             d[mk] += int(u.get(uk) or 0)
     return {"total_tokens": sum(sum(d.values()) for d in by_model.values()), "by_model": by_model,
-            "cost_usd": None, "partial_tokens": True, "has_modelusage": False}
+            "cost_usd": (res or {}).get("total_cost_usd"), "partial_tokens": True, "tokens_source": "assistant_usage"}
 
 
 # ---------------------------------------------------------------- 종료 원인
@@ -184,7 +221,7 @@ def audit(cs: list) -> list:
         if c.name == "Bash":
             cmd = str(c.input.get("command", ""))
             hits.update(f"bash:{p}" for p in AUDIT_BASH if re.search(p, cmd))
-            for host in url_hosts(cmd):
+            for host in url_hosts(cmd) + fetch_hosts(cmd):
                 if host.lower() not in LOCAL_HOSTS:
                     hits.add(f"bash:url:{host}")
     return sorted(hits)
@@ -230,7 +267,9 @@ def targeted(c: Call, spans: list) -> list:
     """이 호출이 겨냥한 span 목록. 겨냥 = offset 을 준 Read 의 범위가 span 과 겹침 · Grep 결과 줄이 span 안 ·
     Edit 결과 스니펫 줄이 span 과 겹침. offset 없는 Read(파일 전체)는 겨냥이 아니다(full_read 로 따로)."""
     hit = []
-    if c.name == "Read" and c.input.get("offset") is not None:
+    if c.is_error:
+        return hit
+    if c.name == "Read" and c.input.get("offset") is not None and not whole_file_read(c):
         p = norm_path(str(c.input.get("file_path", "")))
         f = (c.meta or {}).get("file") or {}
         if f.get("startLine") is not None and f.get("numLines") is not None:  # 실제로 돌려받은 범위
@@ -302,6 +341,20 @@ def bash_spans(c: Call, spans: list) -> list:
     return hit
 
 
+def whole_file_read(c: Call) -> bool:
+    """Read 가 파일 전체를 돌려받았나: offset 없음, 또는 결과가 1줄부터 파일 끝까지(offset=1 로 전체 읽기 — 포화 우회 차단)."""
+    if c.name != "Read":
+        return False
+    if c.input.get("offset") is None:
+        return True
+    f = (c.meta or {}).get("file") or {}
+    try:
+        start, num, total = int(f["startLine"]), int(f["numLines"]), int(f["totalLines"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return start <= 1 and start + num - 1 >= total - 1  # 끝 개행 때문에 totalLines 가 1 클 수 있다
+
+
 def edit_lines(c: Call) -> list:
     return [int(x) for x in SNIPPET_LINE.findall(c.result or "")]
 
@@ -359,7 +412,7 @@ def metrics(cs: list, spans: list) -> dict:
         if c.name not in EDIT_TOOLS:  # 편집 결과 스니펫은 읽기가 아니다. 하위 에이전트 안의 읽기는 sub 로 따로
             k = "sub" if c.sub else {"Read": "read", "Grep": "grep", "Bash": "bash"}.get(c.name, "other")
             out["lines_read"][k] += _lines(c.result)
-        if c.name == "Read" and c.input.get("offset") is None:
+        if whole_file_read(c) and not c.is_error:
             p = norm_path(str(c.input.get("file_path", "")))
             out["full_read_turns"].setdefault(p, c.turn)
         elif c.name == "Bash" and not c.is_error:  # Bash 로 통째 읽기(cat 파일) — 경로는 symbols 에 있는 것만

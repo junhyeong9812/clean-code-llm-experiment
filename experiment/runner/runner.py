@@ -149,7 +149,7 @@ def make_home(home: Path, timeout_s: int) -> Path:
     shutil.copy2(HERE / "templates" / "offline.gradle", g / "init.d" / "offline.gradle")
     shutil.copy2(HERE / "templates" / "gradle.properties", g / "gradle.properties")
     # 실행이 끝날 때까지 사본이 만료되지 않게(시간 상한 + 10분 여유) — 실행 중 컨테이너가 스스로 갱신하지 않도록
-    creds.wait_fresh(min_left_s=timeout_s + 600, refresh=creds.host_refresh, stopped=_stop.is_set)
+    creds.wait_fresh(min_left_s=timeout_s + 600, stopped=_stop.is_set)
     return creds.copy_in(home)
 
 
@@ -165,10 +165,17 @@ def check_mounts(inspected: list, allowed: set) -> list:
     return sorted(f"extra:{x}" for x in got - allowed) + sorted(f"missing:{x}" for x in allowed - got)
 
 
-def remove_run(name: str) -> None:
+def remove_run(name: str) -> list:
+    """그 실행의 컨테이너 3개·네트워크를 지우고, 지운 뒤에도 남은 자원 목록을 돌려준다(빈 목록 = 정리 완료).
+    삭제 명령의 실패는 '없어서 실패'와 구분이 안 되므로 반환 코드 대신 남은 자원을 다시 조회해 판정한다."""
     for c in (f"{name}-agent", f"{name}-pg", f"{name}-db"):
         subprocess.run(["docker", "rm", "-f", c], capture_output=True)
     subprocess.run(["docker", "network", "rm", name], capture_output=True)
+    left = subprocess.run(["docker", "ps", "-aq", "--filter", f"label={LABEL}={name}"], capture_output=True, text=True)
+    nets = subprocess.run(["docker", "network", "ls", "-q", "--filter", f"label={LABEL}={name}"], capture_output=True, text=True)
+    if left.returncode or nets.returncode:
+        return [f"조회 실패 rc={left.returncode}/{nets.returncode}"]
+    return [f"container:{x}" for x in left.stdout.split()] + [f"network:{x}" for x in nets.stdout.split()]
 
 
 def start_services(name: str) -> None:
@@ -182,6 +189,8 @@ def start_services(name: str) -> None:
     deadline = time.time() + 120
     db_ok = pg_ok = False
     while time.time() < deadline and not (db_ok and pg_ok):
+        if _stop.is_set():
+            raise RuntimeError("서비스 기동 중 중단")
         if not db_ok:
             db_ok = subprocess.run(["docker", "exec", f"{name}-db", "pg_isready", "-U", "ccle", "-d", "ccle_seed", "-q"],
                                    capture_output=True).returncode == 0
@@ -210,18 +219,23 @@ def create_agent(name: str, work: Path, home: Path, argv: list) -> None:
 
 
 def attach_agent(name: str, out: Path, err: Path, timeout_s: int) -> tuple:
-    """(rc, timed_out, wall). 시간 상한이면 컨테이너를 kill 한다(러너 종료 — censored)."""
+    """(rc, timed_out, wall). 시간 상한이면 컨테이너를 kill 한다(러너 종료 — censored). 중단 신호도 1초 안에 kill."""
     t0 = time.time()
+    timed_out = False
     with open(out, "wb") as fo, open(err, "wb") as fe:
         p = subprocess.Popen(["docker", "start", "-a", f"{name}-agent"], stdin=subprocess.DEVNULL, stdout=fo, stderr=fe)
-        try:
-            rc = p.wait(timeout=timeout_s)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            subprocess.run(["docker", "kill", f"{name}-agent"], capture_output=True)
-            rc = p.wait(timeout=60)
-            timed_out = True
-    return rc, timed_out, time.time() - t0
+        while p.poll() is None:
+            if time.time() - t0 >= timeout_s or _stop.is_set():
+                timed_out = not _stop.is_set()
+                subprocess.run(["docker", "kill", f"{name}-agent"], capture_output=True)
+                try:
+                    p.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+                break
+            time.sleep(1)
+    return p.returncode, timed_out, time.time() - t0
 
 
 def image_id(img: str) -> str:
@@ -238,14 +252,22 @@ def append_row(results: Path, row: dict) -> None:
 
 
 def done_keys(results: Path) -> set:
-    keys = set()
+    """valid 행의 (case, structure, model, rep). 깨진 줄(강제 종료로 반쯤 쓰인 append)은 건너뛰고 알린다."""
+    keys, bad = set(), 0
     p = results / "runs.jsonl"
     if p.exists():
-        for line in p.read_text().splitlines():
-            if line.strip():
+        for line in p.read_text(errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
                 r = json.loads(line)
-                if r.get("valid"):
-                    keys.add((r["case"], r["structure"], r["model"], r["rep"]))
+            except json.JSONDecodeError:
+                bad += 1
+                continue
+            if r.get("valid"):
+                keys.add((r["case"], r["structure"], r["model"], r["rep"]))
+    if bad:
+        print(f"[runner] runs.jsonl 깨진 줄 {bad}개 건너뜀", flush=True)
     return keys
 
 
@@ -282,9 +304,12 @@ def symbols(case: str, structure: str) -> list:
     return events.parse_symbols(p.read_text()) if p.is_file() else []
 
 
-def classify(evs: list, rc: int, timed_out: bool, violations: list) -> dict:
-    """valid = (result ∨ 러너 시간 상한) ∧ 감사 통과 ∧ 사용량 한도 아님(ADR §6.4). 인프라 오류는 run_one 이 따로."""
+def classify(evs: list, rc: int, timed_out: bool, violations: list, stderr: str = "", tok: dict = None) -> dict:
+    """valid = (result ∨ 러너 시간 상한) ∧ 감사 통과 ∧ 사용량 한도 아님 ∧ 토큰 측정됨(ADR §6.4). 인프라 오류는 run_one 이 따로.
+    result 없이 끝났는데 stderr 에 한도 문구가 있으면 사용량 한도로 본다(대기 뒤 재시도 대상)."""
     reason = events.end_reason(evs, timed_out)
+    if reason == "no_result" and events.LIMIT_TEXT.search(stderr or ""):
+        reason = "usage_limit"
     invalid = None
     if violations:
         invalid = "audit"
@@ -292,6 +317,8 @@ def classify(evs: list, rc: int, timed_out: bool, violations: list) -> dict:
         invalid = "usage_limit"
     elif reason == "no_result":
         invalid = "no_result"
+    elif tok is not None and not tok.get("total_tokens"):
+        invalid = "no_tokens"  # result 는 있으나 modelUsage·assistant usage 모두 없음 — 0 토큰을 측정값으로 쓰지 않는다
     return {"end_reason": reason, "censored": reason in ("timeout", "budget"), "valid": invalid is None,
             "invalid_reason": invalid}
 
@@ -303,26 +330,62 @@ def tail(p: Path, n: int = 1500) -> str:
         return ""
 
 
+_case_locks: dict = {}
+_case_locks_guard = threading.Lock()
+
+
+def case_lock(case: str) -> threading.Lock:
+    """같은 과제의 실행은 동시에 돌리지 않는다(ADR §8 '과제별 직렬' — 두 구조가 같은 시점·같은 부하를 나누지 않게)."""
+    with _case_locks_guard:
+        return _case_locks.setdefault(case, threading.Lock())
+
+
+def disk_free_gb(*paths: Path) -> float:
+    """러너가 쓰는 파일시스템(HOME 캐시·결과·docker data-root) 중 가장 작은 여유."""
+    roots = [p for p in paths if p.exists()]
+    d = subprocess.run(["docker", "info", "-f", "{{.DockerRootDir}}"], capture_output=True, text=True)
+    if d.returncode == 0 and d.stdout.strip() and Path(d.stdout.strip()).exists():
+        roots.append(Path(d.stdout.strip()))
+    return min(shutil.disk_usage(r).free for r in roots) / 2**30
+
+
+def mask_file(p: Path, secrets: list) -> int:
+    """토큰 값이 파일에 있으면 치환한다(에이전트가 로그인 파일을 출력한 경우 — 감사 위반이지만 원문을 남기지 않는다)."""
+    if not secrets or not p.is_file():
+        return 0
+    data = p.read_bytes()
+    n = 0
+    for v in secrets:
+        b = v.encode()
+        n += data.count(b)
+        data = data.replace(b, b"<masked-credential>")
+    if n:
+        p.write_bytes(data)
+    return n
+
+
 def run_one(case: str, structure: str, rep: int, model: str, results: Path, budget: str, timeout_s: int,
             argv_override: list = None, keep: bool = False) -> dict:
     run_id = f"{case}-{structure}-{model}-r{rep}-{int(time.time() * 1000) % 10**10}"
     name = f"ccle-{run_id}".lower()
     rd = RUNS / run_id
     raw = results / "raw"
-    raw.mkdir(parents=True, exist_ok=True)
     out, err = raw / f"{run_id}.jsonl", raw / f"{run_id}.stderr"
     row = {"run_id": run_id, "case": case, "structure": structure, "model": model, "rep": rep,
            "started_at": now_iso(), "image": IMAGE, "cli_version": CLI_VERSION, "budget_usd": budget,
            "timeout_s": timeout_s, "shell": bool(argv_override)}
+    alive = sb_creds = None
+    secrets = []
     with _live_lock:
         _live.add(name)
-    rd.mkdir(parents=True)
-    # 시도 표식: 러너가 강제 종료(SIGKILL·부모 셸 종료)돼 finally 가 못 돌면 sweep_orphans 가 이것으로 행을 남긴다
-    (rd / "attempt.json").write_text(json.dumps({"row": row, "results": str(results)}, ensure_ascii=False))
-    alive = open(rd / "attempt.lock", "w")
-    fcntl.flock(alive, fcntl.LOCK_EX)
-    try:
-        free = shutil.disk_usage(Path.home()).free / 2**30
+    try:  # 시도 식별 직후부터 예외 경계 — 표식 생성 실패도 행으로 남는다
+        raw.mkdir(parents=True, exist_ok=True)
+        rd.mkdir(parents=True)
+        # 시도 표식: 러너가 강제 종료(SIGKILL·부모 셸 종료)돼 finally 가 못 돌면 sweep_orphans 가 이것으로 행을 남긴다
+        alive = open(rd / "attempt.lock", "w")
+        fcntl.flock(alive, fcntl.LOCK_EX)
+        (rd / "attempt.json").write_text(json.dumps({"row": row, "results": str(results)}, ensure_ascii=False))
+        free = disk_free_gb(CACHE, results)
         row["disk_free_gb"] = round(free, 1)
         if free < MIN_FREE_GB:
             row.update(valid=False, invalid_reason="infra", infra_error=f"여유 디스크 {free:.1f}GB < {MIN_FREE_GB}GB")
@@ -334,49 +397,74 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         build_work(case, structure, rd / "work")
         shutil.copytree(rd / "work", rd / "base", symlinks=True)
         sb_creds = make_home(rd / "home", timeout_s)
+        secrets = creds.secrets(sb_creds)
         prompt = PROMPTS[case_type(case)]
         argv = argv_override or ["claude", "-p", prompt, "--model", model, "--output-format", "stream-json",
                                  "--verbose", "--max-budget-usd", budget, "--permission-mode", "bypassPermissions"]
         start_services(name)
+        if _stop.is_set():
+            raise RuntimeError("에이전트 기동 전 중단")
         create_agent(name, rd / "work", rd / "home", argv)
+        if _stop.is_set():
+            raise RuntimeError("에이전트 기동 전 중단")
         rc, timed_out, wall = attach_agent(name, out, err, timeout_s)
         row.update(rc=rc, timed_out=timed_out, wall_s=round(wall, 1))
-        row["creds_written_back"] = creds.write_back(sb_creds)
+        down = [c for c in (f"{name}-db", f"{name}-pg")
+                if sh(["docker", "inspect", "-f", "{{.State.Running}}", c], check=False).stdout.strip() != "true"]
         if _stop.is_set():
-            row.update(valid=False, invalid_reason="interrupted", tail=tail(err) or tail(out))
+            row.update(valid=False, invalid_reason="interrupted")
             return row
         row["diff_bytes"] = write_diff(rd / "base", rd / "work", results / "diffs" / f"{run_id}.diff")
         row["diff"] = str((results / "diffs" / f"{run_id}.diff").relative_to(results))
         row["events"] = str(out.relative_to(results))
         if argv_override:  # 셸 모드: 이벤트 파싱 없이 출력만
-            row.update(valid=False, invalid_reason="shell", tail=tail(out, 4000), stderr_tail=tail(err))
+            row.update(valid=False, invalid_reason="shell")
             return row
         lines = out.read_text(errors="replace").splitlines()
         evs, bad = events.load(lines)
         cs, turns = events.calls(evs)
         res = next((e for e in reversed(evs) if e.get("type") == "result"), {}) or {}
         violations = events.audit(cs)
+        tok = events.tokens(evs)
         row.update(bad_event_lines=bad, init=events.init_info(evs), turns=turns, result_turns=res.get("num_turns"),
                    result_subtype=res.get("subtype"), is_error=res.get("is_error"),
-                   duration_ms=res.get("duration_ms"), **events.tokens(evs),
+                   duration_ms=res.get("duration_ms"), **tok,
                    **events.metrics(cs, symbols(case, structure)), audit_violations=violations,
-                   **classify(evs, rc, timed_out, violations))
-        if not row["valid"] or row["end_reason"] != "normal":
-            row["tail"] = tail(err) or tail(out)
+                   **classify(evs, rc, timed_out, violations, tail(err, 4000), tok))
+        if down and row["valid"]:  # 실행 중 DB·가짜 PG 가 죽었으면 에이전트가 본 환경이 계약과 다르다
+            row.update(valid=False, invalid_reason="infra", infra_error=f"실행 중 서비스 중지: {down}")
         row.update(judge(case, structure, rd / "work"))
         return row
     except Exception as e:  # 러너·인프라 오류도 행으로 남긴다(무음 제외 금지)
-        row.update(valid=False, invalid_reason="interrupted" if _stop.is_set() else "infra", infra_error=repr(e)[:800],
-                   tail=tail(err) or tail(out))
+        row.update(valid=False, invalid_reason="interrupted" if _stop.is_set() else "infra", infra_error=repr(e)[:800])
         return row
     finally:
-        remove_run(name)
+        left = remove_run(name)  # 컨테이너가 멈춘 뒤에 되쓴다(사본이 더 바뀌지 않게)
+        if left:
+            row.update(valid=False, invalid_reason=row.get("invalid_reason") or "infra", cleanup_left=left)
+        if sb_creds is not None:  # 컨테이너가 돌았을 수 있는 모든 경로에서 — 회전된 refresh 토큰을 잃지 않게
+            try:
+                row["creds_written_back"] = creds.write_back(sb_creds)
+            except Exception as e:
+                row["creds_writeback_error"] = repr(e)[:300]
+        masked = mask_file(out, secrets) + mask_file(err, secrets)
+        if masked:
+            row["masked_credentials"] = masked
+        if not row.get("valid", True) or row.get("end_reason") not in (None, "normal") or argv_override:
+            row["tail"] = tail(err) or tail(out)
+            if argv_override:
+                row.update(tail=tail(out, 4000), stderr_tail=tail(err))
         with _live_lock:
             _live.discard(name)
         row["finished_at"] = now_iso()
         append_row(results, row)
-        alive.close()
-        if not keep:
+        if alive is not None:  # 행을 쓴 뒤 잠금을 쥔 채 표식을 지운다 → sweep 이 이 시도를 고아로 보지 않는다
+            (rd / "attempt.json").unlink(missing_ok=True)
+            alive.close()
+        if keep:  # 디버그 보관이어도 로그인 사본은 남기지 않는다
+            if sb_creds is not None:
+                sb_creds.unlink(missing_ok=True)
+        else:
             rm_tree(rd)
 
 
@@ -400,11 +488,23 @@ def sweep_orphans() -> int:
                 fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 continue  # 진행 중
+            if not meta.is_file():  # 잠금을 얻는 사이 정상 종료(표식 삭제)
+                continue
             m = json.loads(meta.read_text())
             row = {**m["row"], "valid": False, "invalid_reason": "orphan",
                    "infra_error": "러너가 행을 남기지 못하고 종료됨(sweep 으로 기록)", "finished_at": now_iso()}
+            left = remove_run(f"ccle-{row['run_id']}".lower())
+            if left:
+                row["cleanup_left"] = left
+            sb = d / "home" / ".claude" / ".credentials.json"
+            if sb.is_file():  # 죽기 전에 컨테이너가 토큰을 회전시켰을 수 있다
+                row["creds_written_back"] = creds.write_back(sb)
+                secrets = creds.secrets(sb)
+                res = Path(m["results"])
+                row["masked_credentials"] = sum(mask_file(res / "raw" / f"{row['run_id']}{x}", secrets)
+                                                for x in (".jsonl", ".stderr"))
             append_row(Path(m["results"]), row)
-        remove_run(f"ccle-{row['run_id']}".lower())
+            meta.unlink()
         rm_tree(d)
         n += 1
     return n
@@ -413,28 +513,50 @@ def sweep_orphans() -> int:
 # ---------------------------------------------------------------- 명령
 
 def cmd_prep(a) -> int:
-    """가짜 PG: behavior-tests 기존 gradle 태스크 산출물을 jar 디렉터리로. Gradle 캐시: 두 구조 사본을 온라인으로
+    """가짜 PG: behavior-tests 기존 gradle 태스크(fakePgClasspath)를 컨테이너에서 돌린 산출물을 jar 디렉터리로. Gradle 캐시: 두 구조 사본을 온라인으로
     한 번 빌드해 seed 홈을 채우고 modules-2 만 읽기 전용 캐시로 복사(잠금·gc 파일 제외 — Gradle 문서의 RO 캐시 조건).
     예열 템플릿: 네트워크 없는 컨테이너에서 실제 실행과 같은 설정으로 두 구조를 빌드(오프라인 빌드 확인을 겸한다)."""
-    java_home = os.environ.get("JAVA_HOME") or str(Path.home() / ".sdkman/candidates/java/21.0.5-tem")
-    env = {**os.environ, "JAVA_HOME": java_home}
-    sh(["./gradlew", "-q", ":behavior-tests:fakePgClasspath"], cwd=ROOT, env=env, timeout=1800)
-    cp = (ROOT / "behavior-tests" / "build" / "fake-pg.classpath").read_text().strip().split(os.pathsep)
+    # 가짜 PG: 저장소 tracked 파일 사본을 이미지 컨테이너에서 빌드(seed 홈 — 호스트 ~/.gradle·호스트 JDK 를 쓰지 않는다)
+    GRADLE_SEED.mkdir(parents=True, exist_ok=True)
+    repo = RUNS / "prep-repo"
+    rm_tree(repo)
+    repo.mkdir(parents=True)
+    files = sh(["git", "ls-files", "-z"], cwd=ROOT).stdout.split("\0")
+    for f in filter(None, files):
+        src = ROOT / f
+        if src.is_file() and not src.is_symlink():
+            (repo / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, repo / f)
+    wp = repo / "gradle" / "wrapper" / "gradle-wrapper.properties"
+    wp.write_text(re.sub(r"(?m)^distributionUrl=.*$", f"distributionUrl=file\\:{GRADLE_DIST}", wp.read_text()))
+    p = subprocess.run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
+                        "-v", f"{repo}:/repo", "-v", f"{GRADLE_SEED}:/seed", "-e", "GRADLE_USER_HOME=/seed",
+                        "-w", "/repo", IMAGE, "bash", "-c",
+                        "./gradlew --no-daemon -q :behavior-tests:fakePgClasspath && cat behavior-tests/build/fake-pg.classpath"],
+                       capture_output=True, text=True, timeout=3600)
+    if p.returncode:
+        raise SystemExit(f"prep 가짜 PG 빌드 실패: {p.stdout[-800:]}{p.stderr[-800:]}")
+    cp = p.stdout.strip().splitlines()[-1].split(":")
     tmp = FAKEPG.with_name("fakepg.tmp")
-    shutil.rmtree(tmp, ignore_errors=True)
+    rm_tree(tmp)
     tmp.mkdir(parents=True)
     for entry in cp:
-        p = Path(entry)
-        if p.is_dir():
-            if any(p.iterdir()):
-                sh([f"{java_home}/bin/jar", "cf", str(tmp / f"bt-{p.parent.name}-{p.name}.jar"), "-C", str(p), "."])
-        elif p.suffix == ".jar":
-            shutil.copy2(p, tmp / p.name)
-    shutil.rmtree(FAKEPG, ignore_errors=True)
+        hp = Path(entry.replace("/repo/", f"{repo}/", 1).replace("/seed/", f"{GRADLE_SEED}/", 1))
+        if hp.is_dir():
+            if any(hp.iterdir()):
+                shutil.make_archive(str(tmp / f"bt-{hp.parent.name}-{hp.name}"), "zip", hp)
+                (tmp / f"bt-{hp.parent.name}-{hp.name}.zip").rename(tmp / f"bt-{hp.parent.name}-{hp.name}.jar")
+        elif hp.suffix == ".jar" and hp.is_file():
+            shutil.copy2(hp, tmp / hp.name)
+        elif hp.suffix != ".jar" and not hp.exists():
+            continue  # 소스가 없는 소스셋의 출력 디렉터리(예: classes/java/main)는 만들어지지 않는다
+        else:
+            raise SystemExit(f"prep 가짜 PG 클래스패스 항목 없음: {entry} → {hp}")
+    rm_tree(FAKEPG)
     tmp.rename(FAKEPG)
+    rm_tree(repo)
     print(f"fakepg: {sorted(x.name for x in FAKEPG.iterdir())}")
 
-    GRADLE_SEED.mkdir(parents=True, exist_ok=True)
     for s in STRUCTURES:
         d = RUNS / f"prep-{s}"
         shutil.rmtree(d, ignore_errors=True)
@@ -538,7 +660,8 @@ def cmd_run(a) -> int:
     def one(job):
         c, s, rep = job
         for attempt in range(1, a.limit_retries + 2):
-            r = run_one(c, s, rep, a.model, results, a.budget, a.timeout, keep=a.keep)
+            with case_lock(c):
+                r = run_one(c, s, rep, a.model, results, a.budget, a.timeout, keep=a.keep)
             if r.get("invalid_reason") != "usage_limit" or attempt > a.limit_retries or _stop.is_set():
                 return r
             print(f"{c} {s} r{rep}: 사용량 한도 — {a.limit_wait}s 대기 후 재시도({attempt})", flush=True)

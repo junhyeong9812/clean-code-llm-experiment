@@ -170,21 +170,18 @@ class BashReads(unittest.TestCase):
 
 
 class WaitFresh(unittest.TestCase):
-    def test_stop_aborts_wait_and_refresh_only_when_expired_and_given(self):
+    def test_stop_aborts_wait_without_calling_host_cli(self):
         import tempfile
         import creds
+        self.assertFalse(hasattr(creds, "host_refresh"))  # 러너는 호스트 CLI 를 부르지 않는다(호스트 ~/.claude 쓰기 금지)
         with tempfile.TemporaryDirectory() as d:
             o = Path(d, "c.json")
             o.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 500 * 1000}}))
-            calls = []
+            n = []
             with self.assertRaises(RuntimeError):
-                creds.wait_fresh(o, min_left_s=60, sleep=lambda s: None, now=lambda: 1000.0, log=lambda *a, **k: None,
-                                 refresh=lambda: calls.append(1), stopped=lambda: len(calls) >= 2)
-            self.assertEqual(len(calls), 2)  # 만료(left<0) 상태라 매 회 갱신 시도, 중단 신호로 끝
-            with self.assertRaises(RuntimeError):  # refresh 미지정이면 호출 없음(테스트에서 실제 CLI 를 부르지 않게)
-                creds.wait_fresh(o, min_left_s=60, sleep=lambda s: None, now=lambda: 1000.0,
-                                 log=lambda *a, **k: None, max_wait_s=30)
-
+                creds.wait_fresh(o, min_left_s=60, sleep=lambda s: n.append(s), now=lambda: 1000.0,
+                                 log=lambda *a, **k: None, stopped=lambda: len(n) >= 2)
+            self.assertEqual(n, [10, 10])
 
 if __name__ == "__main__":
     unittest.main()

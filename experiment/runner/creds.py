@@ -7,9 +7,6 @@
 import fcntl
 import json
 import os
-import shutil
-import subprocess
-import tempfile
 import time
 from pathlib import Path
 
@@ -33,19 +30,12 @@ def _locked(lock: Path):
     return f
 
 
-def host_refresh() -> None:
-    """원본이 이미 만료됐을 때 호스트 CLI 로 갱신을 일으킨다(앞 실험 방식 — 하네스 없이 짧은 Haiku 호출 1회).
-    갱신은 호스트에서만 일어나게 해 컨테이너 사본과 refresh 토큰 회전이 겹치지 않게 한다."""
-    subprocess.run([str(Path.home() / ".local" / "bin" / "claude"), "-p", "ok", "--model", "haiku",
-                    "--setting-sources", "project"], cwd=tempfile.gettempdir(), capture_output=True, timeout=180)
-
-
 def wait_fresh(origin: Path = ORIGIN, min_left_s: int = MIN_LEFT_S, sleep=time.sleep, now=time.time,
-               log=print, max_wait_s: int = 6 * 3600, refresh=None, stopped=lambda: False) -> None:
-    """원본 만료까지 min_left_s 미만이면 원본이 갱신될 때까지 기다린다(호스트의 claude 세션이 갱신한다).
-    이미 만료됐으면 refresh()(주어졌을 때만 — 러너는 host_refresh 를 넘긴다)로 호스트 갱신을 일으킨다. min_left_s 는 실행 시간 상한보다 길어야 한다(실행 중
-    컨테이너 사본이 스스로 갱신하지 않게). max_wait_s 를 넘기거나 stopped() 가 참이면 예외 — 무한 대기 대신
-    행(인프라·중단 무효)으로 드러낸다."""
+               log=print, max_wait_s: int = 6 * 3600, stopped=lambda: False) -> None:
+    """원본 만료까지 min_left_s 미만이면 원본이 갱신될 때까지 기다리기만 한다 — 갱신은 사용자의 호스트 claude 세션이
+    한다(러너가 호스트 CLI 를 부르면 호스트 ~/.claude 에 쓰고 병렬 실행끼리 refresh 토큰 회전이 겹친다).
+    min_left_s 는 실행 시간 상한보다 길어야 한다(실행 중 컨테이너 사본이 스스로 갱신하지 않게).
+    max_wait_s 를 넘기거나 stopped() 가 참이면 예외 — 무한 대기 대신 행(인프라·중단 무효)으로 드러낸다."""
     waited = 0
     while expiry(origin) - now() < min_left_s:
         if stopped():
@@ -54,9 +44,7 @@ def wait_fresh(origin: Path = ORIGIN, min_left_s: int = MIN_LEFT_S, sleep=time.s
             raise RuntimeError(f"로그인 파일 만료 임박이 {max_wait_s // 60}분째 해소되지 않음")
         left = expiry(origin) - now()
         if waited % 60 == 0:
-            log(f"[creds] 만료까지 {left / 60:.0f}분 — 원본 갱신 대기", flush=True)
-        if left < 0 and refresh is not None:
-            refresh()
+            log(f"[creds] 만료까지 {left / 60:.0f}분 — 원본 갱신 대기(호스트 claude 세션을 한 번 쓰면 갱신된다)", flush=True)
         sleep(10)
         waited += 10
 
@@ -66,9 +54,19 @@ def copy_in(home: Path, origin: Path = ORIGIN, lock: Path = LOCK) -> Path:
     dst = home / ".claude" / ".credentials.json"
     dst.parent.mkdir(parents=True, exist_ok=True)
     with _locked(lock):
-        shutil.copy2(origin, dst)
-    os.chmod(dst, 0o600)
+        _write_private(dst, origin.read_bytes())
     return dst
+
+
+def _write_private(dst: Path, data: bytes) -> None:
+    """처음부터 0600 으로 만들고(잠깐이라도 넓은 권한 없음) fsync."""
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def write_back(sandbox: Path, origin: Path = ORIGIN, lock: Path = LOCK) -> bool:
@@ -77,7 +75,20 @@ def write_back(sandbox: Path, origin: Path = ORIGIN, lock: Path = LOCK) -> bool:
         if expiry(sandbox) <= expiry(origin):
             return False
         tmp = origin.with_name(origin.name + ".tmp-ccle")
-        shutil.copy2(sandbox, tmp)
-        os.chmod(tmp, 0o600)
+        _write_private(tmp, sandbox.read_bytes())
         os.replace(tmp, origin)
+        dfd = os.open(origin.parent, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
         return True
+
+
+def secrets(p: Path) -> list:
+    """마스킹용 토큰 문자열(access·refresh). 값은 반환만 하고 출력하지 않는다."""
+    try:
+        o = json.loads(p.read_text())["claudeAiOauth"]
+        return [v for k, v in o.items() if k in ("accessToken", "refreshToken") and isinstance(v, str) and len(v) >= 16]
+    except Exception:
+        return []

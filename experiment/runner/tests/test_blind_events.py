@@ -307,7 +307,6 @@ class TestAudit(unittest.TestCase):
                  ("Bash", {"command": "cat ~/project/study-note/x"}, "study-note"),
                  ("Bash", {"command": "ls /x/graph-nav-experiment"}, "graph-nav-experiment"),
                  ("Bash", {"command": "ls ~/.cache/ccle-runner"}, "ccle-runner"),
-                 ("Read", {"file_path": "/tmp/claude-1000/abc"}, "/tmp/claude-"),
                  ("Bash", {"command": "cat /home/agent/.claude/.credentials.json"}, "credentials")]
         for name, inp, word in cases:
             with self.subTest(inp=inp):
@@ -317,6 +316,7 @@ class TestAudit(unittest.TestCase):
         cases = [("Read", {"file_path": "/work/app/src/main/kotlin/Oracles.kt"}),  # Oracles != oracle (case)
                  ("Bash", {"command": "grep -r oracledb /work"}),  # not the word
                  ("Read", {"file_path": "/tmp/claude-x/abc"}),  # no digits
+                 ("Read", {"file_path": "/tmp/claude-1000/abc"}),  # 계약 갱신: 컨테이너 안 CLI 임시 경로는 정상
                  ("Bash", {"command": "ls /home/agent"}),
                  ("Read", {"file_path": "/work/app/src/Experiment.kt"})]
         for name, inp in cases:
