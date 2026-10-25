@@ -4,15 +4,23 @@
 
 ## 기준
 
-- 마지막 갱신: 2026-10-24 · 직전 완료 작업: `docs/plans/2026-10-24/batch-isolation/` · 기준 커밋: `4276972` + code·docs · 병합 상태: 대기
+- 마지막 갱신: 2026-10-25 · 직전 완료 작업: `docs/plans/2026-10-25/measure-500k/` · 기준 커밋: `a4d0193` + tools·docs · 병합 상태: 대기
 
 ## 다음 작업 후보 (우선순위순)
 
-### N1. 500k 규모 측정 — 우선순위: 낮음 · 관측 신호 없음(1k만 측정)
+### N1. 500k 배치 비용 — 대처 후보 비교(필요해질 때) — 우선순위: 낮음 · 관측 신호: 500k 측정(2026-10-25)
 
-- 500k 이미지 재빌드(`tools/seedgen/build-image.sh`, 보류 항목 참조)부터. 배치 전부(1k bid-expiry 1,132건 ~13.7초, 정산 최장 ~18s, point-expiry 최장 26.7s)를 두 앱으로 측정.
-- 정산 대상 조건(`CONFIRMED` 분기 OR)은 주마다 order_items 순차 스캔 + 행 단위 persist — 500k(order_items 490만)에서 여러 주를 몰아 처리하면 120초를 넘을 수 있다. 상태·만료 시각 인덱스 없음(스키마 금지 범위). 좁히는 최적화는 ADR 조건 문구를 벗어나므로 별도 판단.
-- 포인트 예약의 묶음 전체 적재(ADR-0003 §12의 7)도 이 측정에서 다시 본다.
+- 근거: `docs/plans/2026-10-25/measure-500k/log.md` "측정 결과"·"해석". 실행 1회(평상시 + 약 15주 몰아 처리) ≈ 2.6시간, 두 앱 시간은 1회 비교로 판단 보류(관찰 비 0.928~1.007). 몰아 처리는 배치마다 9~43분짜리 동기 요청 하나. 현재 이 실험의 요구(1k 행동 테스트·equiv)에는 영향 없음 — 과제 러너가 500k에서 배치를 돌리거나 운영형 시나리오를 다룰 때 착수.
+- 후보(병목 노드별 — 효과는 미측정 추론, 착수 전 문장별 시간을 `pg_stat_statements`로 재는 확인 측정이 먼저):
+  | 후보 | 대상 | 바뀌는 것 | 기대 | 비용·위험 |
+  |---|---|---|---|---|
+  | a. 대상 조회 부분 인덱스(예: bids `(id) WHERE status='ACTIVE'` + 만료) 또는 플래너 통계 보정 | bid-expiry·auto-confirm·shipment-deadline·point-expiry | 스키마(ADR-0002·docker — 금지영역이었음) | PK 훑기 + 오추정 제거 — 평상시 수십 초 단축 가능, 몰아 처리에선 비중 작아 보임 | 스키마 변경·verify·시드 재빌드, 두 앱 SQL 동치 불변 |
+  | b. grade-recalc 대상 선정을 사용자별 SubPlan 대신 집계 1회(GROUP BY)로 | grade-recalc(평상시 895초) | 두 앱 쿼리(ADR §8.5 조건 의미는 유지) | 50만 명 × 서브쿼리 반복 제거 — 가장 클 것으로 보임 | 두 앱 같은 SQL로 바꿔 equiv 재확인, 잠근 뒤 재판정은 그대로 |
+  | c. 정산 잠금 조회·대상 조회 통합 + 미정산 판정(NOT EXISTS settlement_items) 구조 | weekly-settlement(첫 주 두 조회 55초 × 주 수 — 가정값) | 두 앱 쿼리, 필요하면 인덱스(스키마) | 같은 SubPlan 두 번 → 한 번 | 잠금 순서(§9.1)·verify 영향 검토 필요 |
+  | d. 대상 1건 = 트랜잭션 1개 비용(요청 평균 8~12ms/건) | 전 배치 | ADR 계약(격리 단위) | 묶음 커밋 시 크게 줄 수 있음 | 격리 계약(ADR-0003 §12의 2)과 충돌 — 사실상 비채택 |
+  | e. 배치 비동기화(요청은 접수만) | 몰아 처리 | API 계약 | 43분 동기 요청 해소 | 계약 밖 — 이 실험 범위 아님 |
+- 발생 가능 문제: a·c는 스키마/잠금 순서에 닿아 변경이 확산된다 — 착수 시 높음 stakes. b가 가장 국소적.
+- 측정 한계(그대로 승계): 반복 1회·순서 편향, 페이지별 시간 미측정, EXPLAIN은 첫 페이지 리터럴 custom plan, 가짜 PG 지연 0(실 PG면 shipment-deadline이 카드 취소 호출 수 × 지연만큼 더), 같은 달 grade-recalc 재실행 비용 미측정, 포인트 묶음 누적 시나리오 미측정(ADR-0003 §12의 7은 "현 시드 최대 100개에서 0.5초"까지만 근거).
 
 ## 보류·이월
 
@@ -20,18 +28,19 @@
 
 - **과제 러너 분석 메모 — layered 2단계가 남긴 것(근거: `docs/plans/2026-10-22/layered-stage2/log.md`):** 재합의 1 — 규칙 위치와 SQL 동치가 부딪히는 곳(§8.1 등급 선택·등급 경계·정산 대상 조건·수수료 floor)은 god SQL과 같게 infra에 둠. 실험 분석(과제 러너) 때 '구조 차이'로 다룰 항목.
 
-- 시드 이미지: equiv 2단계 착수 시 docker에서 `ccle-postgres-seed:1k-s42`·500k 이미지가 모두 없었다(세션 밖 정리로 추정 — 디스크 6.7G → 54G). 1k는 `tools/seedgen/build-image.sh ~/ccle-csv/1k 1k-s42`로 재빌드(verify 위반 0, 기존 7개 equiv 판정 불변). 500k는 재빌드하지 않음 · 재개 조건: 500k 규모 측정을 할 때
+- 시드 이미지(2026-10-25 갱신): 500k 이미지 재빌드 완료(`ccle-postgres-seed:500k-s42` 16.6GB, verify 위반 0, 빌드 1:28:48) — 유지 중. 이전 기록: equiv 2단계 착수 시 docker에서 `ccle-postgres-seed:1k-s42`·500k 이미지가 모두 없었다(세션 밖 정리로 추정 — 디스크 6.7G → 54G). 1k는 `tools/seedgen/build-image.sh ~/ccle-csv/1k 1k-s42`로 재빌드(verify 위반 0, 기존 7개 equiv 판정 불변). 500k는 2026-10-25 재빌드됨
 
 - 동치 하네스 한계(근거: `docs/plans/2026-10-19/equiv-harness/log.md`): 폴링 접기는 반복 단위가 통째로 늘어나는 변경을 못 잡음(재합의 2) · docker 데몬 오류 시 정리 잔여 확인이 "없음"으로 처리(리뷰 N2) · 직렬 시나리오는 준비 문장 이름까지 비교(부하 큰 호스트에서 흔들리면 재합의) · docker 로그 회전 없음 가정 · 재개 조건: 해당 증상이 실제로 관측될 때
 
 - **배치 격리가 남긴 것(근거: `docs/plans/2026-10-24/batch-isolation/log.md` 리뷰 ledger OQ2·OQ3·OQ8~OQ10):** ① DB 연결 장애·교착처럼 남은 대상이 모두 실패하는 상황에서 키셋 페이지(≤500)만큼 대상마다 ERROR 스택이 쌓인다(계약대로, 연속 실패 상한 없음) ② equiv `iso`는 bid-expiry·point-expiry·auto-confirm·weekly-settlement만 — payment-due·pg-inquiry·grade-recalc·shipment-deadline 트리거 격리의 SQL 동치는 행동 테스트(응답·DB)만 ③ `/error`·5xx 변환 경로 고정 문구, 한 주 정산 실패 뒤 400·뒤 주 미정산은 테스트 없음(코드 확인만) ④ shipment-deadline 테스트의 `failed ≥ 기저+1`은 기저 측정 뒤 생긴 제3자 실패로도 성립 가능 · 재개 조건: 운영형 관측(로그 폭주)이 필요해지거나 해당 경로를 바꿀 때
 
-- study-note 이슈 아카이브 — study-note 쓰기를 하지 않기로 함(god·layered·equiv-harness·behavior-tests-stage2·god-class-stage2·layered-stage2·equiv-stage2·open-questions·batch-isolation 아홉 작업 모두 보류) · 재개 조건: 사용자가 아카이브를 요청할 때
+- study-note 이슈 아카이브 — study-note 쓰기를 하지 않기로 함(god·layered·equiv-harness·behavior-tests-stage2·god-class-stage2·layered-stage2·equiv-stage2·open-questions·batch-isolation·measure-500k 열 작업 모두 보류) · 재개 조건: 사용자가 아카이브를 요청할 때
 - 리뷰 도구: codex bwrap 오류(`Failed RTM_NEWADDR`)가 god 작업 4+1회, layered 작업 1회, god 2단계 2회, layered 2단계 1회(타깃 재점검) — 재시도로 회복. god 2단계에서는 exit 0으로 '판정 불가'를 출력해 종료 코드로는 실패를 못 잡았다(출력 내용으로 판정하게 바꿈) · 재개 조건: 재시도로도 실패하면 원인 조사
 - bid-expiry layered +0.9%(god 대비) — 노이즈 범위로 보고 프로파일링 안 함 · 재개 조건: 과제 러너에서 성능을 지표로 쓸 때
 
 ## 완료 이력
 
+- 완료 → `docs/plans/2026-10-25/measure-500k/` (500k 배치 8종·포인트 예약 측정 — 0회차 god + god·layered 각 1회, 측정 도구 `tools/equiv/measure-batches.sh`)
 - 완료 → `docs/plans/2026-10-24/batch-isolation/` (계약 변경 2건 구현 — 오류 문구 고정·배치 7종 건별 격리 `{"processed","failed"}`, 행동 테스트 +12, equiv `iso` 추가 12개)
 - 완료 → `docs/plans/2026-10-24/open-questions/` (open question 정리 — 현행 확정 9 · 변경 2(→ batch-isolation에서 구현) · 규모는 N1로)
 - 완료 → `docs/plans/2026-10-23/equiv-stage2/` (2단계 SQL 순서 동치 실측 — 11개 시나리오 같음, 반대 순서 3곳 변이 검출)
