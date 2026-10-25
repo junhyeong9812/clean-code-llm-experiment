@@ -182,10 +182,11 @@ class TestClassify(unittest.TestCase):
         self.assertIs(r["valid"], True)
         self.assertIs(r["censored"], True)
 
-    def test_error_valid_not_censored(self):
+    def test_error_invalid_not_censored(self):  # 계약 갱신(루프 2): 오류 result 는 무효(agent_error)
         r = self.c([ASST, result_ev("error_during_execution", True, "boom")], rc=1)
         self.assertEqual(r["end_reason"], "error")
-        self.assertIs(r["valid"], True)
+        self.assertIs(r["valid"], False)
+        self.assertEqual(r["invalid_reason"], "agent_error")
         self.assertIs(r["censored"], False)
 
     def test_usage_limit_invalid(self):

@@ -597,7 +597,7 @@ class TestEdits(unittest.TestCase):
     def test_bash_edits_are_first_edit_with_hit_none(self):
         cmds = ["sed -i 's/a/b/' app/A.kt", "patch -p1 < x.diff", "echo x | tee notes/a.txt",
                 "echo hi > notes/greeting.txt", "echo x >> build.gradle.kts",
-                "cat > app/x.sql <<EOF\nselect 1\nEOF", "python - <<EOF\nprint(1)\nEOF",
+                "cat > app/x.sql <<EOF\nselect 1\nEOF",
                 "printf x > c.yml", "echo y > d.yaml", "echo z > README.md", "echo s > run.sh"]
         for cmd in cmds:
             with self.subTest(cmd=cmd):
@@ -605,11 +605,14 @@ class TestEdits(unittest.TestCase):
                           self.edit("/work/app/A.kt", snippet(110, 2)))
                 m = events.metrics(calls_of(evs), spans())
                 self.assertEqual(m["first_edit_turn"], 2)
-                self.assertIsNone(m["first_edit_hit"])
+                # 계약 갱신(루프 2): 첫 편집 적중은 첫 Edit 계열 호출 기준(ADR §5.2) — 앞선 Bash 편집과 무관
+                self.assertEqual(m["first_edit_tool_turn"], 3)
+                self.assertTrue(m["first_edit_hit"])
                 self.assertEqual(m["edited_paths"], ["app/A.kt"])
 
     def test_bash_non_edits(self):
-        cmds = ["./gradlew test 2>&1 | tail -50", "ls > /dev/null", "echo x > out.log",
+        cmds = ["./gradlew test 2>&1 | tail -50", "ls > /dev/null", "echo x > out.log", "python - <<EOF\nprint(1)\nEOF",
+                "./gradlew test 2>&1 | tee /tmp/build.log", "git diff | patch --dry-run -p1",
                 "cat app/A.kt", "grep -n foo app/A.kt", "bash test.sh 2>/dev/null"]
         for cmd in cmds:
             with self.subTest(cmd=cmd):

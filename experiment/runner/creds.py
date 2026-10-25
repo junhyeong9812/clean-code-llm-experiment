@@ -74,6 +74,9 @@ def write_back(sandbox: Path, origin: Path = ORIGIN, lock: Path = LOCK) -> bool:
     with _locked(lock):
         if expiry(sandbox) <= expiry(origin):
             return False
+        problem = invalid_sandbox(sandbox, origin)
+        if problem:  # 에이전트·CLI 가 사본을 이상하게 바꿨으면 원본을 지킨다(복구는 재로그인뿐)
+            raise ValueError(f"사본 되쓰기 거부: {problem}")
         tmp = origin.with_name(origin.name + ".tmp-ccle")
         _write_private(tmp, sandbox.read_bytes())
         os.replace(tmp, origin)
@@ -83,6 +86,26 @@ def write_back(sandbox: Path, origin: Path = ORIGIN, lock: Path = LOCK) -> bool:
         finally:
             os.close(dfd)
         return True
+
+
+def invalid_sandbox(sandbox: Path, origin: Path) -> str:
+    """되쓰기 전 검증. 문제 없으면 빈 문자열. 토큰 값은 길이만 본다."""
+    try:
+        sb, org = json.loads(sandbox.read_text()), json.loads(origin.read_text())
+    except Exception as e:
+        return f"JSON 아님({type(e).__name__})"
+    o = sb.get("claudeAiOauth") if isinstance(sb, dict) else None
+    if not isinstance(o, dict):
+        return "claudeAiOauth 없음"
+    for k in ("accessToken", "refreshToken"):
+        if not (isinstance(o.get(k), str) and len(o[k]) >= 16):
+            return f"{k} 형식 이상"
+    lost = sorted(set(org) - set(sb)) if isinstance(org, dict) else []
+    if lost:
+        return f"원본 최상위 키 누락 {lost}"
+    if not isinstance(o.get("expiresAt"), (int, float)):
+        return "expiresAt 형식 이상"
+    return ""
 
 
 def secrets(p: Path) -> list:

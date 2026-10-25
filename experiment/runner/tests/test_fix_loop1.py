@@ -36,20 +36,22 @@ class Targeting(unittest.TestCase):
 
 
 class Tokens(unittest.TestCase):
-    def test_result_without_modelusage_falls_back_to_assistant_usage(self):
+    def test_result_without_modelusage_is_invalid_but_tokens_recorded(self):
         evs = [{"type": "assistant", "message": {"id": "m1", "model": "x", "content": [],
                                                   "usage": {"input_tokens": 5, "output_tokens": 1,
                                                             "cache_read_input_tokens": 100, "cache_creation_input_tokens": 0}}},
                {"type": "result", "subtype": "error_during_execution", "is_error": True}]
         t = events.tokens(evs)
         self.assertEqual((t["total_tokens"], t["partial_tokens"], t["tokens_source"]), (106, True, "assistant_usage"))
-        self.assertTrue(runner.classify(evs, 1, False, [], "", t)["valid"])
+        self.assertEqual(runner.classify(evs, 1, False, [], "", t)["invalid_reason"], "agent_error")
+        ok = [evs[0], {"type": "result", "subtype": "success", "is_error": False}]  # 정상 result 인데 modelUsage 없음
+        c = runner.classify(ok, 0, False, [], "", events.tokens(ok))
+        self.assertEqual((c["valid"], c["invalid_reason"]), (False, "no_modelusage"))
 
-    def test_zero_tokens_is_invalid(self):
-        evs = [{"type": "result", "subtype": "error_during_execution", "is_error": True}]
-        t = events.tokens(evs)
-        c = runner.classify(evs, 1, False, [], "", t)
-        self.assertEqual((c["valid"], c["invalid_reason"]), (False, "no_tokens"))
+    def test_timeout_before_first_reply_is_valid_censored_with_zero(self):
+        t = events.tokens([])
+        c = runner.classify([], 137, True, [], "", t)
+        self.assertEqual((t["total_tokens"], c["valid"], c["censored"]), (0, True, True))
 
     def test_no_result_with_limit_text_in_stderr_is_usage_limit(self):
         c = runner.classify([], 1, False, [], "Claude AI usage limit reached|1793000000")
@@ -83,8 +85,9 @@ class WriteBackPerms(unittest.TestCase):
     def test_replaced_origin_is_0600(self):
         with tempfile.TemporaryDirectory() as d:
             o, sb, lk = Path(d, "o.json"), Path(d, "s.json"), Path(d, "l")
-            o.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 1000}}))
-            sb.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 2000}}))
+            tok = {"accessToken": "a" * 20, "refreshToken": "r" * 20}
+            o.write_text(json.dumps({"claudeAiOauth": {**tok, "expiresAt": 1000}}))
+            sb.write_text(json.dumps({"claudeAiOauth": {**tok, "expiresAt": 2000}}))
             self.assertTrue(creds.write_back(sb, o, lk))
             self.assertEqual(o.stat().st_mode & 0o777, 0o600)
             self.assertEqual(creds.expiry(o), 2.0)

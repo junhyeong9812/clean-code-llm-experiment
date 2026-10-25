@@ -13,12 +13,16 @@
 """
 import argparse
 import concurrent.futures as cf
+import difflib
 import fcntl
+import filecmp
+import hashlib
 import json
 import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -77,13 +81,13 @@ PROMPTS = {
                  + ENV_NOTE + SCOPE),
 }
 PROMPTS["partial"] = PROMPTS["bug"]
-SETTINGS = {"permissions": {"deny": ["WebFetch", "WebSearch"]}}
+SETTINGS = {"permissions": {"deny": sorted(events.FORBIDDEN_TOOLS)}}
 COPY_IGNORE = shutil.ignore_patterns("build", ".gradle", ".kotlin", "*.log")
 CASE_PRIVATE = {"TYPE"}  # 사본에 넣지 않는 과제 파일
 
 _append_lock = threading.Lock()
 _live: set = set()          # 진행 중 run_id — 중단 시 일괄 정리
-_live_lock = threading.Lock()
+_live_lock = threading.RLock()  # 신호 처리기가 메인 스레드에서 같은 잠금을 다시 잡아도 교착하지 않게
 _stop = threading.Event()
 
 
@@ -283,12 +287,58 @@ def jobs_for(cases: list, structures: list, model: str, reps: list, done: set) -
     return out
 
 
+DIFF_SKIP_DIRS = {"build", ".gradle", ".kotlin"}
+DIFF_MAX_FILE = 2 * 2**20  # 이보다 큰 파일은 내용 대신 크기·해시만
+
+
+def _tree(root: Path) -> dict:
+    """상대 경로 → 항목(링크는 따라가지 않는다). 값: ("file", Path) · ("link", 대상 문자열) · ("special", 종류)."""
+    out = {}
+    for d, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = [x for x in dirs if x not in DIFF_SKIP_DIRS and not os.path.islink(os.path.join(d, x))]
+        for x in list(files) + [x for x in os.listdir(d) if os.path.islink(os.path.join(d, x)) and x not in files]:
+            p = Path(d, x)
+            rel = p.relative_to(root).as_posix()
+            st = os.lstat(p)
+            if stat.S_ISLNK(st.st_mode):
+                out[rel] = ("link", os.readlink(p))
+            elif stat.S_ISREG(st.st_mode):
+                out[rel] = ("file", p)
+            else:
+                out[rel] = ("special", stat.filemode(st.st_mode)[0])
+    return out
+
+
+def _lines(e) -> list:
+    kind, v = e
+    if kind != "file":
+        return [f"<{kind}: {v}>\n"]
+    size = v.stat().st_size
+    if size > DIFF_MAX_FILE:
+        return [f"<large file {size}B sha256={hashlib.sha256(v.read_bytes()).hexdigest()}>\n"]
+    data = v.read_bytes()
+    if b"\0" in data[:8192]:
+        return [f"<binary {size}B sha256={hashlib.sha256(data).hexdigest()}>\n"]
+    return data.decode(errors="replace").splitlines(keepends=True)
+
+
 def write_diff(base: Path, work: Path, dst: Path) -> int:
-    p = subprocess.run(["diff", "-ruN", "--exclude=build", "--exclude=.gradle", "--exclude=.kotlin", str(base), str(work)],
-                       capture_output=True)
-    if p.returncode > 1:
-        raise RuntimeError(f"diff 실패: {p.stderr[-300:]!r}")
-    txt = p.stdout.replace(str(base).encode(), b"a").replace(str(work).encode(), b"b")
+    """base(에이전트 전 사본) 대비 work 의 unified diff. 호스트에서 돌므로 링크·FIFO·장치 파일을 열지 않는다
+    (에이전트가 만든 링크를 따라가면 호스트 파일이 결과에 섞이거나 FIFO 에서 멈춘다)."""
+    a, b = _tree(base), _tree(work)
+    chunks = []
+    for rel in sorted(set(a) | set(b)):
+        ea, eb = a.get(rel), b.get(rel)
+        if ea and eb and ea[0] == eb[0] == "file" and filecmp.cmp(ea[1], eb[1], shallow=False):
+            continue
+        if ea == eb and ea and ea[0] != "file":
+            continue
+        la = _lines(ea) if ea else []
+        lb = _lines(eb) if eb else []
+        chunks += difflib.unified_diff(la, lb, f"a/{rel}" if ea else "/dev/null", f"b/{rel}" if eb else "/dev/null")
+        if chunks and not chunks[-1].endswith("\n"):
+            chunks[-1] += "\n\\ No newline at end of file\n"
+    txt = "".join(chunks).encode()
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(txt)
     return len(txt)
@@ -305,20 +355,23 @@ def symbols(case: str, structure: str) -> list:
 
 
 def classify(evs: list, rc: int, timed_out: bool, violations: list, stderr: str = "", tok: dict = None) -> dict:
-    """valid = (result ∨ 러너 시간 상한) ∧ 감사 통과 ∧ 사용량 한도 아님 ∧ 토큰 측정됨(ADR §6.4). 인프라 오류는 run_one 이 따로.
-    result 없이 끝났는데 stderr 에 한도 문구가 있으면 사용량 한도로 본다(대기 뒤 재시도 대상)."""
+    """valid = (result ∨ 러너 시간 상한) ∧ 감사 통과 ∧ 사용량 한도 아님 ∧ 토큰 측정됨 (ADR §6.4).
+    - 시간 상한(result 없음): valid·censored, 부분 토큰이 0이어도 그대로(첫 응답 전 상한 — 측정값 0).
+    - result 가 있는데 modelUsage 가 없으면 무효(no_modelusage) — 부분 합은 정식 토큰과 정의가 달라 섞지 않는다.
+    - 오류 result(한도 문구 아님): 무효(agent_error) — API·연결·인증 오류로 끊긴 실행이 주 분석에 섞이지 않게.
+    - result 없이 끝났는데 stderr 에 한도 문구: 사용량 한도(대기 뒤 재시도). 인프라 오류는 run_one 이 따로."""
     reason = events.end_reason(evs, timed_out)
     if reason == "no_result" and events.LIMIT_TEXT.search(stderr or ""):
         reason = "usage_limit"
     invalid = None
     if violations:
         invalid = "audit"
-    elif reason == "usage_limit":
-        invalid = "usage_limit"
-    elif reason == "no_result":
-        invalid = "no_result"
-    elif tok is not None and not tok.get("total_tokens"):
-        invalid = "no_tokens"  # result 는 있으나 modelUsage·assistant usage 모두 없음 — 0 토큰을 측정값으로 쓰지 않는다
+    elif reason in ("usage_limit", "no_result"):
+        invalid = reason
+    elif reason == "error":
+        invalid = "agent_error"
+    elif reason in ("normal", "budget") and tok is not None and tok.get("tokens_source") != "modelUsage":
+        invalid = "no_modelusage"
     return {"end_reason": reason, "censored": reason in ("timeout", "budget"), "valid": invalid is None,
             "invalid_reason": invalid}
 
@@ -431,6 +484,10 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
                    duration_ms=res.get("duration_ms"), **tok,
                    **events.metrics(cs, symbols(case, structure)), audit_violations=violations,
                    **classify(evs, rc, timed_out, violations, tail(err, 4000), tok))
+        row["result_count"] = events.result_count(evs)  # 2 이상이면 큐에 쌓인 턴 — 토큰은 마지막 result 기준(표시)
+        harness = events.harness_problems(row["init"])
+        if harness and row["valid"]:
+            row.update(valid=False, invalid_reason="harness", harness_problems=harness)
         if down and row["valid"]:  # 실행 중 DB·가짜 PG 가 죽었으면 에이전트가 본 환경이 계약과 다르다
             row.update(valid=False, invalid_reason="infra", infra_error=f"실행 중 서비스 중지: {down}")
         row.update(judge(case, structure, rd / "work"))
@@ -443,11 +500,14 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         if left:
             row.update(valid=False, invalid_reason=row.get("invalid_reason") or "infra", cleanup_left=left)
         if sb_creds is not None:  # 컨테이너가 돌았을 수 있는 모든 경로에서 — 회전된 refresh 토큰을 잃지 않게
+            secrets = sorted(set(secrets) | set(creds.secrets(sb_creds)))  # 실행 중 회전된 새 값까지
             try:
                 row["creds_written_back"] = creds.write_back(sb_creds)
             except Exception as e:
                 row["creds_writeback_error"] = repr(e)[:300]
-        masked = mask_file(out, secrets) + mask_file(err, secrets)
+            secrets = sorted(set(secrets) | set(creds.secrets(creds.ORIGIN)))
+        masked = mask_file(out, secrets) + mask_file(err, secrets) + \
+            mask_file(results / "diffs" / f"{run_id}.diff", secrets)  # 사본에 복사된 로그인 파일도 diff 에 나온다
         if masked:
             row["masked_credentials"] = masked
         if not row.get("valid", True) or row.get("end_reason") not in (None, "normal") or argv_override:
@@ -497,12 +557,19 @@ def sweep_orphans() -> int:
             if left:
                 row["cleanup_left"] = left
             sb = d / "home" / ".claude" / ".credentials.json"
-            if sb.is_file():  # 죽기 전에 컨테이너가 토큰을 회전시켰을 수 있다
-                row["creds_written_back"] = creds.write_back(sb)
-                secrets = creds.secrets(sb)
-                res = Path(m["results"])
-                row["masked_credentials"] = sum(mask_file(res / "raw" / f"{row['run_id']}{x}", secrets)
-                                                for x in (".jsonl", ".stderr"))
+            if sb.is_file():  # 죽기 전에 컨테이너가 토큰을 회전시켰을 수 있다 — 오류가 나도 행·정리는 계속
+                try:
+                    row["creds_written_back"] = creds.write_back(sb)
+                except Exception as e:
+                    row["creds_writeback_error"] = repr(e)[:300]
+                try:
+                    secrets = sorted(set(creds.secrets(sb)) | set(creds.secrets(creds.ORIGIN)))
+                    res = Path(m["results"])
+                    row["masked_credentials"] = sum(mask_file(f, secrets) for f in (
+                        res / "raw" / f"{row['run_id']}.jsonl", res / "raw" / f"{row['run_id']}.stderr",
+                        res / "diffs" / f"{row['run_id']}.diff"))
+                except Exception as e:
+                    row["mask_error"] = repr(e)[:300]
             append_row(Path(m["results"]), row)
             meta.unlink()
         rm_tree(d)
@@ -650,6 +717,12 @@ def cmd_run(a) -> int:
     for s in structures:
         if s not in STRUCTURES:
             raise SystemExit(f"구조는 {STRUCTURES}")
+    results.mkdir(parents=True, exist_ok=True)
+    guard = open(results / ".runner.lock", "w")  # 같은 결과 디렉터리에 러너 둘 → 같은 키 valid 행 중복 방지
+    try:
+        fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(f"다른 러너가 같은 결과 디렉터리를 쓰는 중: {results}")
     orphans = sweep_orphans()
     if orphans:
         print(f"[runner] 이전 고아 시도 {orphans}개를 orphan 행으로 기록·정리", flush=True)
@@ -659,7 +732,10 @@ def cmd_run(a) -> int:
 
     def one(job):
         c, s, rep = job
+        r = None
         for attempt in range(1, a.limit_retries + 2):
+            if _stop.is_set():  # 중단 뒤 아직 시작하지 않은 job 은 시도가 아니다 — 행을 만들지 않는다
+                return r
             with case_lock(c):
                 r = run_one(c, s, rep, a.model, results, a.budget, a.timeout, keep=a.keep)
             if r.get("invalid_reason") != "usage_limit" or attempt > a.limit_retries or _stop.is_set():
@@ -673,6 +749,9 @@ def cmd_run(a) -> int:
         for f in cf.as_completed(futs):
             c, s, rep = futs[f]
             r = f.result()
+            if r is None:
+                print(f"{c} {s} r{rep}: 시작 안 함(중단)", flush=True)
+                continue
             bad += not r.get("valid")
             print(f"{c} {s} r{rep}: valid={r.get('valid')} reason={r.get('invalid_reason') or r.get('end_reason')} "
                   f"tokens={r.get('total_tokens')} turns={r.get('turns')} wall={r.get('wall_s')} "

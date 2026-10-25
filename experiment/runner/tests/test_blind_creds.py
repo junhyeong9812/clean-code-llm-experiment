@@ -21,6 +21,7 @@ SECRET = "sk-ant-oat01-SECRETVALUE"
 
 
 def write_cred(p: Path, exp_ms, token=SECRET):
+    token = token.ljust(16, "x")  # 계약 갱신(루프 2): 되쓰기 전 토큰 형식 검증(길이 16 이상)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"claudeAiOauth": {"accessToken": token, "refreshToken": token + "R",
                                                "expiresAt": exp_ms, "scopes": ["x"]}}))

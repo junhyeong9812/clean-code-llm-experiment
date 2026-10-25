@@ -17,58 +17,110 @@ READ_DEFAULT_LIMIT = 2000  # Read 도구 기본 상한(줄)
 # 감사: 도구 *입력*에만 적용한다. 결과(파일 내용)까지 보면 코드 안 문자열 때문에 오탐이 난다(앞 실험).
 AUDIT_INPUT = [r"/home/jun", r"clean-code-llm-experiment", r"\boracle\b", r"experiment/", r"study-note",
                r"graph-nav-experiment", r"ccle-runner", r"\.credentials\.json"]
-FORBIDDEN_TOOLS = {"WebFetch", "WebSearch"}
-# 외부로 나가는 명령. curl·wget 은 로컬 서비스(앱·가짜 PG·DB) 디버깅에 정당하게 쓰이므로 호스트가 로컬이 아닐 때만.
+# 웹 도구 + 컨테이너 밖에서 실행되거나(원격 트리거·예약·워크플로) 다른 세션과 통신하는 도구 — 격리·토큰 측정 밖
+FORBIDDEN_TOOLS = {"WebFetch", "WebSearch", "RemoteTrigger", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
+                   "SendMessage", "Workflow", "ListAgents"}
+# 외부로 나가는 명령. curl·wget 은 로컬 서비스(앱·가짜 PG·DB) 디버깅에 정당하게 쓰이므로 목적지가 로컬이 아닐 때만.
 AUDIT_BASH = [r"(^|[\s;&|(])(nc|ncat|ssh|scp|sftp|rsync|gh|telnet)\s", r"\bgit\s+(clone|fetch|pull|push|ls-remote|remote)\b",
               r"\b(pip3?|npm|npx|apt(-get)?|sdk)\s+(install|i|add)\b"]
-# scheme 있는 URL 전부(대소문자 무시). 호스트는 urlsplit 으로 — userinfo(`localhost@evil.com`)·포트·IPv6 괄호 처리.
-# scheme 없는 목적지는 curl·wget 위치 인자에서 따로 본다(fetch_hosts). 감사는 보조다 — 외부 접속 차단은 아님(ADR §6.1).
-URL = re.compile(r"(?i)\b(?:https?|ftp)://[^\s'\"<>]+")
+# 실험 저장소가 공개 원격(GitHub)에 있으므로 그 호스트 이름은 도구·명령 종류와 무관하게 입력에서 잡는다(가장 현실적인 누출 경로).
+AUDIT_REMOTE = re.compile(r"(?i)github\.com|githubusercontent\.com|gitlab\.com|bitbucket\.org")
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "db", "::1"}
+SHELL_OPS = {";", "&", "&&", "|", "||", "(", ")", "\n"}
+REDIRECTS = {">", ">>", "<", "<<", "<<<", "&>", ">&", ">|"}
+# curl·wget 에서 값을 받는 옵션(그 다음 토큰은 목적지가 아니다). --url 은 목적지 자체라 따로.
+FETCH_VALUE_LONG = {"--output", "--header", "--request", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+                    "--json", "--user", "--write-out", "--max-time", "--connect-timeout", "--retry", "--user-agent",
+                    "--cookie", "--cookie-jar", "--form", "--config", "--output-document", "--post-data", "--post-file",
+                    "--referer", "--proxy", "--resolve", "--cacert", "--cert", "--key", "--range", "--upload-file"}
+FETCH_VALUE_SHORT = set("oOXHduwTFAemcbxKrEeiYy")  # 묶은 짧은 옵션(-sX)의 마지막 글자가 이 중이면 다음 토큰이 값
 
 
-FETCH_CMD = re.compile(r"(?:^|[\s;&|(])(curl|wget)\s+([^;&|]*)")
-# 값을 받는 옵션(그 다음 토큰은 목적지가 아니다)
-FETCH_VALUE_OPTS = {"-o", "-O", "-X", "-H", "-d", "-u", "-w", "-T", "-F", "-A", "-e", "-m", "-c", "-b", "-x", "-K",
-                    "--output", "--header", "--request", "--data", "--data-raw", "--data-binary", "--user", "--write-out",
-                    "--max-time", "--connect-timeout", "--retry", "--user-agent", "--cookie", "--form", "--config",
-                    "--output-document", "--post-data", "--header"}
+def shell_tokens(cmd: str) -> list:
+    """셸 명령을 토큰으로(연산자·리다이렉트 분리, 줄바꿈은 명령 경계). 따옴표가 깨졌으면 공백 분리로 대체."""
+    out = []
+    for line in cmd.splitlines():
+        try:
+            lx = shlex.shlex(line, posix=True, punctuation_chars=";&|()<>")
+            lx.whitespace_split = True
+            lx.commenters = ""
+            toks = list(lx)
+        except ValueError:
+            toks = re.findall(r"[;&|()<>]+|[^\s;&|()<>]+", line)
+        out += [re.sub(r"^\d+(?=[<>])", "", t) if re.fullmatch(r"\d*[<>&|]+", t) else t for t in toks] + ["\n"]
+    return out
+
+
+def commands(cmd: str) -> list:
+    """[(명령 이름, 인자 목록)] — 연산자에서 끊고, 리다이렉트와 그 대상은 인자에서 뺀다(대상은 ('>', 대상) 항목으로)."""
+    out, cur, redir = [], [], []
+    toks = shell_tokens(cmd)
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t in SHELL_OPS or (re.fullmatch(r"[;&|()]+", t) and t not in REDIRECTS):
+            if cur or redir:
+                out.append((cur[0] if cur else "", cur[1:], redir))
+            cur, redir = [], []
+        elif t in REDIRECTS or re.fullmatch(r"[<>&]+", t):
+            nxt = toks[i + 1] if i + 1 < len(toks) else ""
+            if nxt not in SHELL_OPS:
+                redir.append((t, nxt))
+                i += 1
+        else:
+            cur.append(t)
+        i += 1
+    if cur or redir:
+        out.append((cur[0] if cur else "", cur[1:], redir))
+    return [(os_base(n), args, r) for n, args, r in out]
+
+
+def os_base(name: str) -> str:
+    return name.rsplit("/", 1)[-1]
+
+
+def host_of(target: str) -> str:
+    """목적지 문자열 → 호스트(소문자). scheme 있으면 urlsplit, 없으면 첫 '/' 앞에서 userinfo·포트·IPv6 괄호를 걷어낸다."""
+    t = target.strip()
+    if "://" in t:
+        try:
+            return (urlsplit(t).hostname or t).lower()
+        except ValueError:
+            return t.lower()
+    h = t.split("/", 1)[0].rsplit("@", 1)[-1]
+    if h.startswith("[") and "]" in h:
+        return h[1:h.index("]")].lower()
+    return h.split(":", 1)[0].lower()
 
 
 def fetch_hosts(cmd: str) -> list:
-    """curl·wget 의 scheme 없는 목적지 호스트. `$VAR`(환경 변수 — DB_URL·PG_URL 등)는 판정하지 않는다."""
+    """curl·wget 의 목적지 호스트(위치 인자와 --url). `$VAR`(DB_URL·PG_URL 등)·로컬 파일 경로는 판정하지 않는다."""
     out = []
-    for m in FETCH_CMD.finditer(cmd):
-        try:
-            toks = shlex.split(m[2])
-        except ValueError:
-            toks = m[2].split()
+    for name, args, _ in commands(cmd):
+        if name not in ("curl", "wget"):
+            continue
         skip = False
-        for t in toks:
+        for j, t in enumerate(args):
             if skip:
                 skip = False
                 continue
-            if t.startswith("-"):
-                skip = t in FETCH_VALUE_OPTS
+            if t.startswith("--"):
+                opt = t.split("=", 1)[0]
+                if opt == "--url":
+                    tgt = t.split("=", 1)[1] if "=" in t else (args[j + 1] if j + 1 < len(args) else "")
+                    skip = "=" not in t
+                    if tgt and not tgt.startswith("$"):
+                        out.append(host_of(tgt))
+                else:
+                    skip = opt in FETCH_VALUE_LONG and "=" not in t
                 continue
-            if "://" in t or t.startswith("$") or t.startswith(("/", ".")) or not t:
-                continue  # scheme 있음(url_hosts 가 봄)·변수·로컬 파일 경로
-            host = t.split("/", 1)[0].rsplit("@", 1)[-1]
-            host = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.split(":", 1)[0]
-            if host:
-                out.append(host)
-    return out
-
-
-def url_hosts(cmd: str) -> list:
-    out = []
-    for u in URL.findall(cmd):
-        try:
-            h = urlsplit(u).hostname or ""
-        except ValueError:
-            h = ""
-        out.append(h or u)  # 호스트를 못 읽으면 URL 그대로(로컬로 간주하지 않는다)
-    return out
+            if t.startswith("-") and len(t) > 1:
+                skip = t[-1] in FETCH_VALUE_SHORT
+                continue
+            if not t or t.startswith(("$", "/", ".", "~")) or ("://" not in t and "." not in t and ":" not in t):
+                continue  # 변수·로컬 경로·호스트가 아닌 낱말(예: 따옴표 밖 JSON 조각이 아님 — 그건 값 옵션이 먹는다)
+            out.append(host_of(t))
+    return [h for h in out if h]
 
 
 def load(lines) -> list:
@@ -190,7 +242,7 @@ def tokens(evs: list) -> dict:
 
 # ---------------------------------------------------------------- 종료 원인
 
-LIMIT_TEXT = re.compile(r"usage limit|rate limit|limit reached|overloaded|429|529", re.I)
+LIMIT_TEXT = re.compile(r"usage limit|rate limit|limit reached|hit your limit|limit will reset|quota|overloaded|\b429\b|\b529\b", re.I)
 
 
 def end_reason(evs: list, timed_out: bool) -> str:
@@ -218,11 +270,13 @@ def audit(cs: list) -> list:
             hits.add(f"tool:{c.name}")
         text = json.dumps(c.input, ensure_ascii=False)
         hits.update(f"input:{p}" for p in AUDIT_INPUT if re.search(p, text))
+        if AUDIT_REMOTE.search(text):
+            hits.add("input:remote-host")
         if c.name == "Bash":
             cmd = str(c.input.get("command", ""))
             hits.update(f"bash:{p}" for p in AUDIT_BASH if re.search(p, cmd))
-            for host in url_hosts(cmd) + fetch_hosts(cmd):
-                if host.lower() not in LOCAL_HOSTS:
+            for host in fetch_hosts(cmd):
+                if host not in LOCAL_HOSTS:
                     hits.add(f"bash:url:{host}")
     return sorted(hits)
 
@@ -269,13 +323,14 @@ def targeted(c: Call, spans: list) -> list:
     hit = []
     if c.is_error:
         return hit
-    if c.name == "Read" and c.input.get("offset") is not None and not whole_file_read(c):
+    if c.name == "Read" and (c.input.get("offset") is not None or c.input.get("limit") is not None) \
+            and not whole_file_read(c):
         p = norm_path(str(c.input.get("file_path", "")))
         f = (c.meta or {}).get("file") or {}
         if f.get("startLine") is not None and f.get("numLines") is not None:  # 실제로 돌려받은 범위
             s, e = int(f["startLine"]), int(f["startLine"]) + max(int(f["numLines"]), 1) - 1
         else:
-            s = int(c.input["offset"])
+            s = int(c.input.get("offset") or 1)
             e = s + int(c.input.get("limit") or READ_DEFAULT_LIMIT) - 1
         hit = [sp for sp in spans if sp.path == p and _overlap(s, e, sp.start, sp.end)]
     elif c.name == "Grep" and c.result:
@@ -345,9 +400,11 @@ def whole_file_read(c: Call) -> bool:
     """Read 가 파일 전체를 돌려받았나: offset 없음, 또는 결과가 1줄부터 파일 끝까지(offset=1 로 전체 읽기 — 포화 우회 차단)."""
     if c.name != "Read":
         return False
-    if c.input.get("offset") is None:
-        return True
     f = (c.meta or {}).get("file") or {}
+    if c.input.get("offset") is None and c.input.get("limit") is None:
+        return True
+    if c.input.get("offset") is None and not f:  # limit 만 있고 결과 범위를 모름 — 앞부분 읽기로 본다
+        return False
     try:
         start, num, total = int(f["startLine"]), int(f["numLines"]), int(f["totalLines"])
     except (KeyError, TypeError, ValueError):
@@ -396,14 +453,40 @@ def edit_spans(c: Call, spans: list) -> list:
     return [sp for sp in spans if sp.path == p and _overlap(r[0], r[1], sp.start, sp.end)]
 
 
-BASH_EDIT = re.compile(r"\bsed\s+-i|\bpatch\b|\btee\b|>\s*[\w./-]+\.(kt|kts|ya?ml|sql|md|txt|sh)\b|python3?\s+-\s*<<|cat\s+>")
+def _in_work(path: str) -> bool:
+    """쓰기 대상이 작업 사본 안인가(상대 경로 또는 /work/…). /tmp·/dev·HOME 등은 편집이 아니다(로그·버리는 출력)."""
+    p = path.strip("'\"")
+    if not p or p.startswith(("$", "&")) or p in ("-",) or p.endswith((".log", ".out")):
+        return False
+    return p.startswith(WORK + "/") or not p.startswith(("/", "~"))
+
+
+def bash_edit(cmd: str) -> bool:
+    """Bash 가 작업 사본 안 파일을 바꿨나: 사본 안 대상으로의 `>`·`>>` 리다이렉트, `tee` 대상, `sed -i` 대상,
+    `patch`(--dry-run 제외), `cp`·`mv`의 사본 안 목적지. 판정 불가한 스크립트 실행(python - <<)은 세지 않는다
+    — 사본 변경 여부의 정본은 실행 뒤 diff 다."""
+    for name, args, redir in commands(cmd):
+        if any(op in (">", ">>", ">|", "&>") and _in_work(tgt) for op, tgt in redir):
+            return True
+        files = [a for a in args if not a.startswith("-")]
+        if name == "tee" and any(_in_work(a) for a in files):
+            return True
+        if name == "sed" and any(a == "-i" or a.startswith("-i") or a == "--in-place" for a in args) and \
+                any(_in_work(a) for a in files[1:]):
+            return True
+        if name == "patch" and "--dry-run" not in args:
+            return True
+        if name in ("cp", "mv") and len(files) >= 2 and _in_work(files[-1]):
+            return True
+    return False
 
 
 def metrics(cs: list, spans: list) -> dict:
     out = {"tool_calls": len(cs), "tools": {}, "subagent_calls": 0,
            "lines_read": {"read": 0, "grep": 0, "bash": 0, "other": 0, "sub": 0},
            "first_targeted_turn": None, "first_targeted_turn_by_span": {}, "full_read_turns": {},
-           "first_edit_turn": None, "first_edit_path": None, "first_edit_hit": None, "edited_paths": []}
+           "first_edit_turn": None, "first_edit_tool_turn": None, "first_edit_path": None, "first_edit_hit": None,
+           "edited_paths": []}
     keys = {f"{sp.path}:{sp.start}-{sp.end}": sp for sp in spans}
     for c in cs:
         out["tools"][c.name] = out["tools"].get(c.name, 0) + 1
@@ -421,21 +504,46 @@ def metrics(cs: list, spans: list) -> dict:
         for sp in targeted(c, spans):
             key = next(k2 for k2, v in keys.items() if v is sp)
             out["first_targeted_turn_by_span"].setdefault(key, c.turn)
-        is_edit = c.name in EDIT_TOOLS or (c.name == "Bash" and BASH_EDIT.search(str(c.input.get("command", ""))))
-        if is_edit and not c.is_error:
-            p = norm_path(str(c.input.get("file_path", ""))) if c.name in EDIT_TOOLS else None
+        if c.is_error:
+            continue
+        if c.name in EDIT_TOOLS:
+            p = norm_path(str(c.input.get("file_path", "")))
             if p and p not in out["edited_paths"]:
                 out["edited_paths"].append(p)
-            if out["first_edit_turn"] is None:
-                out["first_edit_turn"] = c.turn
+            if out["first_edit_tool_turn"] is None:  # ADR §5.2 첫 편집 적중 = 첫 Edit 계열 호출 기준(앞선 Bash 편집과 무관)
+                out["first_edit_tool_turn"] = c.turn
                 out["first_edit_path"] = p
                 fixes = [sp for sp in spans if sp.kind == "fix"]
-                if c.name in EDIT_TOOLS and fixes:
-                    out["first_edit_hit"] = bool(edit_spans(c, fixes))
-                # Bash 편집·symbols 없음 = 판정 불가(None)
+                out["first_edit_hit"] = bool(edit_spans(c, fixes)) if fixes else None
+        if out["first_edit_turn"] is None and (c.name in EDIT_TOOLS or
+                                               (c.name == "Bash" and bash_edit(str(c.input.get("command", ""))))):
+            out["first_edit_turn"] = c.turn  # 편집 수단과 무관한 첫 편집(Bash 포함)
     if out["first_targeted_turn_by_span"]:
         out["first_targeted_turn"] = min(out["first_targeted_turn_by_span"].values())
     return out
+
+
+def result_count(evs: list) -> int:
+    return sum(1 for e in evs if e.get("type") == "result")
+
+
+BUILTIN_PLUGINS = {"cc-plugin-agents-md", "cc-plugin-plugin-authoring"}  # 2.1.308 내장(스모크 init 실측)
+
+
+def harness_problems(info: dict) -> list:
+    """하네스 미로드(spec §2) 자동 판정: MCP 서버 없음 · 플러그인은 내장만 · 메모리 경로는 격리 HOME 안 · cwd=/work."""
+    bad = []
+    if info.get("mcp_servers"):
+        bad.append(f"mcp_servers={info['mcp_servers']}")
+    extra = sorted(set(info.get("plugins") or []) - BUILTIN_PLUGINS)
+    if extra:
+        bad.append(f"plugins={extra}")
+    for k, v in (info.get("memory_paths") or {}).items():
+        if not str(v).startswith("/home/agent/"):
+            bad.append(f"memory_paths.{k}={v}")
+    if info.get("cwd") not in (None, WORK):
+        bad.append(f"cwd={info.get('cwd')}")
+    return bad
 
 
 def init_info(evs: list) -> dict:
