@@ -4,9 +4,18 @@
 
 ## 기준
 
-- 마지막 갱신: 2026-10-25 · 직전 완료 작업: `docs/plans/2026-10-25/measure-500k/` · 기준 커밋: `a4d0193` + tools·docs · 병합 상태: 대기
+- 마지막 갱신: 2026-10-25 · 직전 완료 작업: `docs/plans/2026-10-25/task-runner-design/`(ADR-0005 채택) · 기준 커밋: `96d4f1e` + docs · 병합 상태: 대기
 
 ## 다음 작업 후보 (우선순위순)
+
+### N0. 5단계 구현 — 러너·과제·oracle·파일럿(ADR-0005) — 우선순위: **최우선** · 관측 신호: 실험 본 질문(구조 → 에이전트 토큰·정답률)이 아직 한 번도 측정되지 않음(2026-10-25 사용자 질문으로 확인)
+
+- 근거: `docs/adr/0005-tasks-judging-runner.md`(채택), `docs/plans/2026-10-25/task-runner-design/log.md` ledger.
+- 순서(ADR §7): ① 러너 + 컨테이너 이미지 + 스모크(헤드리스 `claude -p` 구독 인증으로 `result.modelUsage`가 나오는지 — spec 가정 2, 첫 스모크에서 실증) ② 과제 8개 작성(메인 설계 → 워커 작성 → 검수 — 주입·정답·순진한 오답 패치, 숨은 테스트 채택 조건) ③ 파일럿 T1·C2 × 2구조 × Sonnet × 1 ④ 본 실행 Sonnet → Haiku → Opus(모델마다 비용 보고, 구독 범위 안).
+- 작업 분리 권장: ①과 ②는 별 작업 폴더(러너는 도구, 과제는 실험 자료 — stakes 각각 높음). 실제 에이전트 실행(사용량 소모)은 ③부터이므로 착수 전 사용자 확인.
+- 구현 때 확인할 것(이월): **D12** — T1 확정 사이 시계 이동, C1 새 등급 경계(30만)·적립률이 다른 계약 테스트·verify에 주는 영향(회귀 제외 목록을 메서드 단위로 확정) · **DQ1** — 컨테이너 안 Gradle 오프라인 빌드, `--max-budget-usd`가 구독 인증에서 실제로 걸리는지 · **DQ2** — Q1·Q2 질문과 구조별 체크리스트(근거 허용 위치 목록) 작성·양 구조 실코드 대조.
+- 발생 가능 문제: 코드 크기가 목표(구현당 1만 줄)의 27~48%라 차이가 작게 나올 수 있다 — "이 크기에서는"으로 한정 보고(ADR §9). 결과를 보고 규모 확장(N2 후보)을 판단.
+- 정리: 리뷰용 scratch 미러 `scratchpad/tmp.zkBkXhewGG`는 세션 종료 시 `chmod -R u+w` 후 삭제.
 
 ### N1. 500k 배치 비용 — 대처 후보 비교(필요해질 때) — 우선순위: 낮음 · 관측 신호: 500k 측정(2026-10-25)
 
@@ -34,12 +43,13 @@
 
 - **배치 격리가 남긴 것(근거: `docs/plans/2026-10-24/batch-isolation/log.md` 리뷰 ledger OQ2·OQ3·OQ8~OQ10):** ① DB 연결 장애·교착처럼 남은 대상이 모두 실패하는 상황에서 키셋 페이지(≤500)만큼 대상마다 ERROR 스택이 쌓인다(계약대로, 연속 실패 상한 없음) ② equiv `iso`는 bid-expiry·point-expiry·auto-confirm·weekly-settlement만 — payment-due·pg-inquiry·grade-recalc·shipment-deadline 트리거 격리의 SQL 동치는 행동 테스트(응답·DB)만 ③ `/error`·5xx 변환 경로 고정 문구, 한 주 정산 실패 뒤 400·뒤 주 미정산은 테스트 없음(코드 확인만) ④ shipment-deadline 테스트의 `failed ≥ 기저+1`은 기저 측정 뒤 생긴 제3자 실패로도 성립 가능 · 재개 조건: 운영형 관측(로그 폭주)이 필요해지거나 해당 경로를 바꿀 때
 
-- study-note 이슈 아카이브 — study-note 쓰기를 하지 않기로 함(god·layered·equiv-harness·behavior-tests-stage2·god-class-stage2·layered-stage2·equiv-stage2·open-questions·batch-isolation·measure-500k 열 작업 모두 보류) · 재개 조건: 사용자가 아카이브를 요청할 때
+- study-note 이슈 아카이브 — study-note 쓰기를 하지 않기로 함(god·layered·equiv-harness·behavior-tests-stage2·god-class-stage2·layered-stage2·equiv-stage2·open-questions·batch-isolation·measure-500k·task-runner-design 열한 작업 모두 보류) · 재개 조건: 사용자가 아카이브를 요청할 때
 - 리뷰 도구: codex bwrap 오류(`Failed RTM_NEWADDR`)가 god 작업 4+1회, layered 작업 1회, god 2단계 2회, layered 2단계 1회(타깃 재점검) — 재시도로 회복. god 2단계에서는 exit 0으로 '판정 불가'를 출력해 종료 코드로는 실패를 못 잡았다(출력 내용으로 판정하게 바꿈) · 재개 조건: 재시도로도 실패하면 원인 조사
 - bid-expiry layered +0.9%(god 대비) — 노이즈 범위로 보고 프로파일링 안 함 · 재개 조건: 과제 러너에서 성능을 지표로 쓸 때
 
 ## 완료 이력
 
+- 완료 → `docs/plans/2026-10-25/task-runner-design/` (ADR-0005 과제·판정·러너 설계 채택 — 과제 8개, 컨테이너 격리, censored 처리, 파일럿 게이트)
 - 완료 → `docs/plans/2026-10-25/measure-500k/` (500k 배치 8종·포인트 예약 측정 — 0회차 god + god·layered 각 1회, 측정 도구 `tools/equiv/measure-batches.sh`)
 - 완료 → `docs/plans/2026-10-24/batch-isolation/` (계약 변경 2건 구현 — 오류 문구 고정·배치 7종 건별 격리 `{"processed","failed"}`, 행동 테스트 +12, equiv `iso` 추가 12개)
 - 완료 → `docs/plans/2026-10-24/open-questions/` (open question 정리 — 현행 확정 9 · 변경 2(→ batch-isolation에서 구현) · 규모는 N1로)
