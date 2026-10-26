@@ -45,7 +45,7 @@ class T1Test {
         // B의 유효기간만 끝나고 A는 아직 남은 시각(두 적립의 만료 시각 사이)으로 옮기고 소멸 배치를 돌린다
         val ends = Db.query(
             "SELECT (extract(epoch FROM expires_at) * 1000)::bigint AS ms FROM point_ledger" +
-                " WHERE user_id = ? AND kind = 'EARN' AND expires_at IS NOT NULL ORDER BY expires_at",
+                " WHERE user_id = ? AND expires_at IS NOT NULL ORDER BY 1",
             buyer,
         ).map { Instant.ofEpochMilli((it["ms"] as Number).toLong()) }
         assertEquals(2, ends.size, "준비: 유효기간이 정해진 적립이 두 건이어야 한다 $ends")

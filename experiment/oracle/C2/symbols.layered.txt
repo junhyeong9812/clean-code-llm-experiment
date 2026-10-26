@@ -1,8 +1,12 @@
-# C2 symbols — fix 는 파일 단위(리뷰 루프 1: import 편집·삽입 위치 대안이 miss 로 세지지 않게, 두 구조 같은 기준). 새 파일(service/PenaltyQueryService.kt)은 기준 사본에 없어 제외
-app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:1-210 fix  # 정답 패치가 고치는 파일 전체(새 기능 — 넣을 자리는 파일 안 어디든 타당, 두 구조 같은 기준)
-app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:1-64 fix  # 정답 패치가 고치는 파일 전체(새 기능 — 넣을 자리는 파일 안 어디든 타당, 두 구조 같은 기준)
-app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:1-102 fix  # 정답 패치가 고치는 파일 전체(새 기능 — 넣을 자리는 파일 안 어디든 타당, 두 구조 같은 기준)
-app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt:1-37 fix  # 정답 패치가 고치는 파일 전체(새 기능 — 넣을 자리는 파일 안 어디든 타당, 두 구조 같은 기준)
+# C2 symbols — edit = 정답 패치가 고치는 기존 파일 전체(첫 편집 적중 전용, 두 구조 같은 기준). fix = 넣을 자리 줄 범위(겨냥 판정용). read = 읽어야 할 곳. 새 파일은 기준 사본에 없어 제외
+app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:19-64 fix  # 새 엔드포인트(생성자 주입 + /me/settlements 옆 메서드)
+app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:176-210 fix  # 응답 DTO를 넣을 곳(SettlementView·SettlementItemView 옆 — 파일 끝에 삽입)
+app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:94-102 fix  # 포트 SellerPenaltyRepository에 조회 메서드 추가
+app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt:22-37 fix  # 어댑터 JpaSellerPenaltyRepository 구현
+app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:1-210 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:1-64 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:1-102 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt:1-37 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
 app/src/main/kotlin/com/ccle/layered/service/SettlementQueryService.kt:18-30 read  # 본보기 조회 서비스(새 서비스 파일은 경로가 없어 symbols 밖)
 app/src/main/kotlin/com/ccle/layered/service/UserService.kt:13-17 read  # requireUser(401 UNKNOWN_USER)
 app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:68-92 read  # SellerPenalty 엔티티(settlementId·issue·attachTo)

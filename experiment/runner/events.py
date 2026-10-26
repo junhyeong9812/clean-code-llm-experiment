@@ -354,13 +354,14 @@ class Span:
 
 
 def parse_symbols(text: str) -> list:
-    """oracle symbols.<구조>.txt: 줄마다 `경로:시작-끝 fix|read [메모]`(경로는 사본 루트 기준). # 주석·빈 줄 무시."""
+    """oracle symbols.<구조>.txt: 줄마다 `경로:시작-끝 fix|read|edit [메모]`(경로는 사본 루트 기준). # 주석·빈 줄 무시.
+    edit = 첫 편집 적중 전용(파일 단위 같은 넓은 범위 — 겨냥 판정에는 쓰지 않는다)."""
     out = []
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        m = re.fullmatch(r"(\S+):(\d+)(?:-(\d+))?\s+(fix|read)\b.*", line)
+        m = re.fullmatch(r"(\S+):(\d+)(?:-(\d+))?\s+(fix|read|edit)\b.*", line)
         if not m:
             raise ValueError(f"symbols 형식 오류: {raw!r}")
         s = int(m[2])
@@ -591,7 +592,7 @@ def metrics(cs: list, spans: list) -> dict:
         if c.name == "Bash" and not c.is_error:  # Bash 로 통째 읽기(cat 파일) — 경로는 symbols 에 있는 것만
             for p in bash_cat_paths(str(c.input.get("command", "")), {sp.path for sp in spans}):
                 out["full_read_turns"].setdefault(p, c.turn)
-        for sp in targeted(c, spans):
+        for sp in targeted(c, [x for x in spans if x.kind != "edit"]):
             key = next(k2 for k2, v in keys.items() if v is sp)
             out["first_targeted_turn_by_span"].setdefault(key, c.turn)
         if c.is_error:
@@ -607,7 +608,7 @@ def metrics(cs: list, spans: list) -> dict:
             elif out["first_edit_tool_turn"] is None:  # ADR §5.2 첫 편집 적중 = 기존 파일을 고친 첫 Edit 계열 호출(새 파일 생성·Bash 편집과 무관)
                 out["first_edit_tool_turn"] = c.turn
                 out["first_edit_path"] = p
-                fixes = [sp for sp in spans if sp.kind == "fix"]
+                fixes = [sp for sp in spans if sp.kind in ("fix", "edit")]
                 out["first_edit_hit"] = bool(edit_spans(c, fixes)) if fixes else None
         if out["first_edit_turn"] is None and (c.name in EDIT_TOOLS or
                                                (c.name == "Bash" and bash_edit(str(c.input.get("command", ""))))):

@@ -52,13 +52,13 @@ def restore(pristine: Path, work: Path) -> None:
 def junit_results(dirs: list) -> dict:
     """JUnit XML → {tests, failed:[fqcn.method], skipped}. XML 이 하나도 없으면 tests=0."""
     tests = skipped = 0
-    failed = []
+    failed, broken = [], []
     for d in dirs:
         for x in sorted(Path(d).glob("*.xml")) if Path(d).is_dir() else []:
             try:
                 root = ET.parse(x).getroot()
             except ET.ParseError:
-                failed.append(f"<깨진 결과 파일 {x.name}>")
+                broken.append(x.name)  # 잘린 결과(디스크·강제 종료) — 테스트 실패가 아니라 판정 불가
                 continue
             for tc in root.iter("testcase"):
                 tests += 1
@@ -67,7 +67,10 @@ def junit_results(dirs: list) -> dict:
                     failed.append(name)
                 elif tc.find("skipped") is not None:
                     skipped += 1
-    return {"tests": tests, "failed": failed, "skipped": skipped}
+    out = {"tests": tests, "failed": failed, "skipped": skipped}
+    if broken:
+        out["broken"] = broken
+    return out
 
 
 def failure_messages(dirs: list, limit: int = 10) -> dict:
@@ -125,7 +128,9 @@ def stage_outcome(status: str, rc, res: dict, expect_tests: bool = True) -> str:
         return "app_start_fail"
     if status != "ran":
         return "infra"
-    if res["tests"] == 0:
+    if res.get("broken"):
+        return "infra"
+    if res["tests"] - res.get("skipped", 0) == 0:  # 전부 건너뜀도 '돌지 않음'(fail-open 차단)
         return "no_results" if expect_tests else "pass"
     if res["failed"]:
         return "fail"
@@ -173,6 +178,56 @@ BUILD_FILES = ("build.gradle.kts", "settings.gradle.kts", "gradlew", "gradlew.ba
                "gradle/wrapper/gradle-wrapper.properties", "gradle/wrapper/gradle-wrapper.jar")
 
 
+GRADLE_SCRIPT = re.compile(r"(\.gradle(\.kts)?|gradle\.properties|\.versions\.toml)$")
+# 회귀 기준 실행 수(기준 사본 실측 2026-10-26 — behavior-tests 는 이 작업에서 바뀌지 않는다, 매개변수화 테스트 포함)
+REGRESSION_BASELINE = {"contract": 122, "contract2": 89}
+TEST_ANNOTATION = re.compile(r"@Test\b")
+
+
+def remove_extra_build_scripts(pristine: Path, work: Path) -> list:
+    """원본에 없는 Gradle 스크립트(*.gradle·*.gradle.kts·gradle.properties)와 buildSrc/ 를 지운다 — 에이전트가 하위
+    프로젝트 빌드 스크립트로 테스트를 끄거나 결과를 꾸미는 경로 차단. 지운 경로를 돌려준다."""
+    removed = []
+    if (work / "buildSrc").exists():
+        shutil.rmtree(work / "buildSrc")
+        removed.append("buildSrc/")
+    for f in sorted(work.rglob("*")):
+        if f.is_file() and GRADLE_SCRIPT.search(f.name):
+            rel = f.relative_to(work)
+            if rel.parts and rel.parts[0] in ("build", ".gradle"):
+                continue
+            if not (pristine / rel).is_file():
+                f.unlink()
+                removed.append(rel.as_posix())
+    return removed
+
+
+def remove_escaping_links(work: Path) -> list:
+    """사본 밖(또는 절대 경로)을 가리키는 심볼릭 링크를 지운다 — 호스트의 판정 준비(복원·쓰기·sha)가 링크를 따라
+    사본 밖 파일을 읽거나 덮어쓰지 않게. 판정 컨테이너 안에서는 원래 그 경로가 없으니 동작 차이도 없다."""
+    removed = []
+    root = work.resolve()
+    for d, dirs, files in __import__("os").walk(work, followlinks=False):
+        for x in dirs + files:
+            p = Path(d, x)
+            if p.is_symlink():
+                tgt = (p.parent / __import__("os").readlink(p))
+                try:
+                    inside = tgt.resolve().is_relative_to(root) and not __import__("os").readlink(p).startswith("/")
+                except (OSError, RuntimeError):
+                    inside = False
+                if not inside:
+                    p.unlink()
+                    removed.append(p.relative_to(work).as_posix())
+    return removed
+
+
+def count_tests(*dirs: Path) -> int:
+    """소스의 @Test 수(공개·숨은 테스트는 매개변수화 없이 쓴다 — 실행 수와 같아야 한다)."""
+    return sum(len(TEST_ANNOTATION.findall(f.read_text(errors="replace")))
+               for d in dirs if d.is_dir() for f in d.rglob("*.kt"))
+
+
 def restore_build_files(pristine: Path, work: Path) -> list:
     """루트 빌드 파일·wrapper 를 원본으로 되돌리고 바뀌었던 것을 돌려준다(빌드 스크립트로 테스트를 끄는 우회 차단).
     변조로 세지는 않는다(ADR §4.1 보호 목록 밖) — 기록만 한다."""
@@ -193,9 +248,10 @@ def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
     R.build_work(case, structure, pristine)
     jw = jd / "work"
     shutil.copytree(work, jw, symlinks=True, ignore=shutil.ignore_patterns("build", ".gradle", ".kotlin"))
+    links = remove_escaping_links(jw)
     tam = tampered(pristine, jw)
     restore(pristine, jw)
-    changed_build = restore_build_files(pristine, jw)
+    changed_build = restore_build_files(pristine, jw) + remove_extra_build_scripts(pristine, jw)
     hidden = R.ORACLE / case / "hidden"
     if hidden.is_dir():
         shutil.copytree(hidden, jw / "checks" / "src" / "test" / "kotlin" / "hidden", dirs_exist_ok=True)
@@ -208,7 +264,13 @@ def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
     shutil.copy2(R.ROOT / "tools" / "seedgen" / "verify.sql", j / "verify.sql")
     (j / "exclude.gradle").write_text(EXCLUDE_GRADLE)
     (j / "regression-exclude.txt").write_text("\n".join(read_list(R.ORACLE / case / "regression-exclude.txt")) + "\n")
-    return {"tampered": tam, "hidden_present": hidden.is_dir(), "build_files_changed": changed_build}
+    excl = read_list(R.ORACLE / case / "regression-exclude.txt")
+    expected = {"public": count_tests(pristine / "checks" / "src" / "test" / "kotlin" / "pub"),
+                "hidden": count_tests(hidden),
+                **({k: v for k, v in REGRESSION_BASELINE.items()} if not excl else {})}
+    return {"tampered": tam, "hidden_present": hidden.is_dir(), "build_files_changed": changed_build,
+            "escaping_links_removed": links,
+            "expected_tests": expected}
 
 
 def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print, stages_to_run=STAGES) -> dict:
@@ -250,6 +312,10 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
         for st in stages_to_run:
             out["stages"][st] = run_stage(R, case, st, jw, name, mounts, env, user, excl_verify, out["hidden_present"])
             sr = out["stages"][st]
+            exp = out["expected_tests"].get(st)
+            if exp is not None and sr.get("tests") is not None and sr["outcome"] == "pass" and sr["tests"] != exp:
+                # 예정된 테스트가 그대로 돌지 않았다(빌드 조작·결과 위조 의심) — 통과로 세지 않는다
+                sr.update(outcome="fail", count_mismatch={"expected": exp, "ran": sr["tests"]})
             log(f"[judge] {name} {st}: {sr['outcome']} tests={sr.get('tests')} failed={len(sr.get('failed', []))}", flush=True)
         oc = {k: v["outcome"] for k, v in out["stages"].items()}
         infra = [k for k, v in oc.items() if v in ("infra", "no_results")]
@@ -269,29 +335,56 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
         return out
 
 
+RETRY_STATUSES = ("app_start_timeout", "stage_timeout")
+
+
 def run_stage(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present) -> dict:
-    """판정 단계 하나 — 예외·시간 초과·정리 실패는 그 단계만 infra 로 남기고 다음 단계로 간다."""
+    """판정 단계 하나. 앱 기동 지연·단계 시간 초과는 같은 사본으로 1회 다시 시도하고, 다시 같으면 에이전트 코드 탓
+    확정 실패(timeout_fail)로 센다 — 인프라로 흡수하면 에이전트가 만든 멈춤이 표본에서 빠진다(생존 편향)."""
+    first = run_stage_once(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present, attempt=1)
+    if first.get("status") not in RETRY_STATUSES:
+        return first
+    second = run_stage_once(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present, attempt=2)
+    second["first_attempt"] = {k: first.get(k) for k in ("status", "outcome", "infra_problems")}
+    if second.get("status") in RETRY_STATUSES:
+        second.update(outcome="fail", reason="timeout_fail(2회 연속 기동 지연·시간 초과)")
+    return second
+
+
+def run_stage_once(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present, attempt=1) -> dict:
+    """판정 단계 한 번 — 예외·정리 실패는 그 단계만 infra 로 남기고 다음 단계로 간다."""
     if st == "hidden" and not hidden_present:
         return {"outcome": "infra", "reason": "숨은 테스트 없음"}
-    sn = f"{name}-j{st}"
+    sn = f"{name}-j{st}{'' if attempt == 1 else attempt}"
     for p in (jw / "checks" / "build" / "test-results", jw / "behavior-tests" / "build" / "test-results",
               jw / ".judge" / "out"):
         shutil.rmtree(p, ignore_errors=True)
     o = jw / ".judge" / "out"
-    rcode, rtext, err = 0, "", None
+    (o).mkdir(parents=True, exist_ok=True)
+    rcode, rtext, err, timed_out = 0, "", None, False
     try:
         R.start_services(sn, proxy=False)
+        # 판정 자산은 읽기 전용으로 겹쳐 마운트 — 앞 단계에서 돈 에이전트 앱 코드가 숨은 테스트·단계 스크립트·
+        # 제외 목록·회귀 소스를 바꾸지 못하게(결과 폴더 .judge/out 만 쓰기 가능)
+        ro = []
+        for sub in (".judge/stage.sh", ".judge/verify.sql", ".judge/exclude.gradle", ".judge/regression-exclude.txt",
+                    "checks/src/test/kotlin/hidden", "behavior-tests/src"):
+            if (jw / sub).exists():
+                ro += ["-v", f"{jw / sub}:{R.AGENT_WORK}/{sub}:ro"]
         r = subprocess.run(["docker", "run", "--rm", "--name", f"{sn}-judge", "--label", f"{R.LABEL}={sn}",
-                            "--network", f"container:{sn}-pg", *user, *mounts, *env, "-w", R.AGENT_WORK,
+                            "--network", f"container:{sn}-pg", *user, *mounts, *ro, *env, "-w", R.AGENT_WORK,
                             R.IMAGE, "bash", "/work/.judge/stage.sh", st],
                            capture_output=True, text=True, timeout=3600)
         rcode, rtext = r.returncode, r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        err = "단계 시간 초과(3600초)"
+        timed_out = True
     except Exception as e:
         err = repr(e)[:500]
     finally:
         left = R.remove_run(sn)
     rf = lambda n: (o / n).read_text(errors="replace") if (o / n).is_file() else None  # noqa: E731
-    status = (rf(f"{st}.status") or "missing").strip()
+    status = "stage_timeout" if timed_out else (rf(f"{st}.status") or "missing").strip()
     rc_txt = rf(f"{st}.rc")
     rc = int(rc_txt.strip()) if rc_txt and rc_txt.strip().lstrip("-").isdigit() else None
     rdirs = [jw / "checks" / "build" / "test-results" / "test"] if st in ("public", "hidden") else \

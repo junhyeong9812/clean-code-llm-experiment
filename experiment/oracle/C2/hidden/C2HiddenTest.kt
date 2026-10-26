@@ -4,6 +4,8 @@ import support.Clock
 import support.Db
 import java.time.Duration
 import kotlin.test.Test
+import org.junit.jupiter.api.MethodOrderer
+import org.junit.jupiter.api.TestMethodOrder
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -12,6 +14,8 @@ import kotlin.test.assertTrue
  * 빈 목록, 401, 주간 정산 전후의 반영 여부, 시드 패널티와 섞여도 DB와 같은 결과.
  * 테스트끼리 같은 DB·시계를 쓴다: 사용자는 테스트마다 새로 만들고 시계는 앞으로만 상대 이동한다. 주간 정산은 한 테스트만 돌린다.
  */
+// 실행 순서 고정(이름순): '시드'(시드 판매자의 미정산 패널티 단언)가 '정산 반영 여부'(주간 정산 배치)보다 먼저 돌아야 한다
+@TestMethodOrder(MethodOrderer.MethodName::class)
 class C2HiddenTest {
 
     @Test

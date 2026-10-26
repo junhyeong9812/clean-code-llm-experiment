@@ -553,9 +553,11 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             row.update(valid=False, invalid_reason="infra", infra_error=f"실행 중 서비스 중지: {down}")
         if row["valid"] and ORACLE.joinpath(case).is_dir() and not case.startswith("_"):
             row.pop("judge_skip", None)
+            remove_run(name)  # 판정 전에 에이전트 실행의 DB·가짜 PG·프록시를 내린다(판정 단계와 자원 경합 방지)
             row.update(judging.judge(case, structure, rd / "work", rd / "judge", name))
-            if row.get("success") is None:  # 판정 불가 — 재개 때 다시 돈다(ADR §4.1-3: 인프라로 판정 불가면 무효)
-                row.update(valid=False, invalid_reason="judge_infra")
+            if needs_rejudge(row):  # 판정 불가 — 사본을 보관하고 에이전트 없이 다시 판정한다(ADR §4.1-3 '다시 판정')
+                hold_for_rejudge(results, run_id, rd / "work", row)
+                row.update(valid=False, invalid_reason="judge_infra", held=True)
         else:
             row.update(judged=False, judge_skip="무효 실행" if not row["valid"] else "판정 대상 아님(스모크 과제)")
         return row
@@ -589,6 +591,66 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             (rd / "attempt.json").unlink(missing_ok=True)
             alive.close()
         rm_tree(rd)  # 작업 사본·격리 HOME(로그인 사본 포함)은 남기지 않는다 — 보관은 diff·이벤트만(spec §2)
+
+
+def needs_rejudge(row: dict) -> bool:
+    """어느 단계든 판정 불가(infra·no_results)거나 success 가 정해지지 않으면 다시 판정한다(회귀만 불가인 경우 포함 —
+    주 지표 '회귀 실패'가 결측이 되지 않게)."""
+    if row.get("success") is None:
+        return True
+    return any(v.get("outcome") in ("infra", "no_results") for v in (row.get("stages") or {}).values())
+
+
+def hold_for_rejudge(results: Path, run_id: str, work: Path, row: dict) -> None:
+    """판정 불가 사본 보관: results/held/<run_id>/{work,row.json}. 어떤 에이전트 컨테이너에도 마운트하지 않는다."""
+    h = results / "held" / run_id
+    if h.exists():
+        rm_tree(h)
+    h.mkdir(parents=True)
+    shutil.copytree(work, h / "work", symlinks=True, ignore=COPY_IGNORE)
+    (h / "row.json").write_text(json.dumps(row, ensure_ascii=False))
+
+
+def held_keys(results: Path) -> set:
+    """재판정을 기다리는 보관 사본의 키 — 에이전트를 다시 돌리지 않는다(재판정만 기다린다)."""
+    keys = set()
+    base = results / "held"
+    for h in base.iterdir() if base.is_dir() else []:
+        try:
+            r = json.loads((h / "row.json").read_text())
+            keys.add((r["case"], r["structure"], r["model"], r["rep"]))
+        except (OSError, ValueError, KeyError):
+            continue
+    return keys
+
+
+def rejudge_held(results: Path) -> int:
+    """보관된 판정 불가 사본을 에이전트 없이 다시 판정한다. 판정이 정해지면 새 행(rejudged=True, valid)을 쓰고 보관본을
+    지운다. 또 판정 불가면 보관을 유지하고 행을 남기지 않는다(같은 시도를 두 번 세지 않게 — 시도 행은 이미 있다)."""
+    n = 0
+    base = results / "held"
+    for h in sorted(base.iterdir()) if base.is_dir() else []:
+        if not (h / "row.json").is_file():
+            continue
+        orig = json.loads((h / "row.json").read_text())
+        name = f"ccle-rejudge-{h.name}".lower()
+        jd = RUNS / f"rejudge-{h.name}"
+        rm_tree(jd)
+        try:
+            res = judging.judge(orig["case"], orig["structure"], h / "work", jd, name)
+        finally:
+            rm_tree(jd)
+        row = {**{k: v for k, v in orig.items() if k not in ("stages", "judge_error", "success", "held")}, **res,
+               "rejudged": True, "rejudged_at": now_iso()}
+        if needs_rejudge(row):
+            print(f"[rejudge] {h.name}: 여전히 판정 불가 — 보관 유지 ({res.get('judge_error')})", flush=True)
+            continue
+        row.update(valid=True, invalid_reason=None)
+        append_row(results, row)
+        rm_tree(h)
+        n += 1
+        print(f"[rejudge] {h.name}: success={row.get('success')}", flush=True)
+    return n
 
 
 def rm_tree(d: Path) -> None:
@@ -858,9 +920,12 @@ def cmd_run(a) -> int:
     except BlockingIOError:
         raise SystemExit(f"다른 러너가 같은 결과 디렉터리를 쓰는 중: {results}")
     orphans = sweep_orphans()
+    rj = rejudge_held(results)
+    if rj:
+        print(f"[runner] 보관 사본 {rj}개 재판정", flush=True)
     if orphans:
         print(f"[runner] 이전 고아 시도 {orphans}개를 orphan 행으로 기록·정리", flush=True)
-    jobs = jobs_for(cases, structures, a.model, [int(r) for r in a.reps.split(",")], done_keys(results))
+    jobs = jobs_for(cases, structures, a.model, [int(r) for r in a.reps.split(",")], done_keys(results) | held_keys(results))
     print(f"jobs={len(jobs)} parallel={a.parallel} results={results}", flush=True)
     bad = 0
 

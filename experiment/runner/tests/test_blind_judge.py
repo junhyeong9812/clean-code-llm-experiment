@@ -207,16 +207,16 @@ class TestJunit(unittest.TestCase):
         write(self.d / "r", "TEST-good.xml", junit('<testcase classname="A" name="a"/>'))
         write(self.d / "r", "TEST-bad.xml", '<testsuite><testcase classname="A" name="x">')
         r = judge.junit_results([self.d / "r"])
-        broken = [f for f in r["failed"] if f.startswith("<깨진 결과 파일")]
-        self.assertEqual(len(broken), 1, r["failed"])
-        self.assertTrue(broken[0].endswith(">"), broken[0])
+        # 계약 갱신(리뷰 루프 2): 깨진 파일은 failed 가 아니라 broken 목록 → 단계는 판정 불가
+        self.assertEqual(r.get("broken"), ["TEST-bad.xml"])
+        self.assertEqual(r["failed"], [])
         self.assertGreaterEqual(r["tests"], 1)  # good file still parsed
-        self.assertNotIn("A.a", r["failed"])
+        self.assertEqual(judge.stage_outcome("ran", 0, r), "infra")
 
     def test_empty_xml_file_is_broken(self):
         write(self.d / "r", "TEST-empty.xml", "")
         r = judge.junit_results([self.d / "r"])
-        self.assertEqual(len([f for f in r["failed"] if f.startswith("<깨진 결과 파일")]), 1)
+        self.assertEqual(r.get("broken"), ["TEST-empty.xml"])  # 계약 갱신(리뷰 루프 2)
 
     def test_testsuites_wrapper(self):
         write(self.d / "r", "all.xml",
@@ -355,8 +355,8 @@ class TestStageOutcome(unittest.TestCase):
     def test_rc_none_with_results_is_infra(self):  # 계약 갱신(리뷰 루프 1)
         self.assertEqual(judge.stage_outcome("ran", None, self.R_OK), "infra")
 
-    def test_skipped_only_counts_as_results(self):
-        self.assertEqual(judge.stage_outcome("ran", 0, {"tests": 2, "failed": [], "skipped": 2}), "pass")
+    def test_skipped_only_is_not_pass(self):  # 계약 갱신(리뷰 루프 2): 전부 건너뜀 = 돌지 않음(fail-open 차단)
+        self.assertEqual(judge.stage_outcome("ran", 0, {"tests": 2, "failed": [], "skipped": 2}), "no_results")
 
 
 # ---------- conjunction ----------
