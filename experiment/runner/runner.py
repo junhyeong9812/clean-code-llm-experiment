@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import creds  # noqa: E402
 import events  # noqa: E402
+import judge as judging  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -46,7 +47,7 @@ GRADLE_RO = CACHE / "gradle-ro"          # modules-2 만 — GRADLE_RO_DEP_CACHE
 GRADLE_SEED = CACHE / "gradle-seed"      # prep 이 온라인으로 채우는 쓰기 가능 GRADLE_USER_HOME(에이전트에는 마운트 안 함)
 FAKEPG = CACHE / "fakepg"
 # 예열 템플릿: 두 구조를 차례로 빌드한 격리 HOME 의 .gradle(wrapper 배포판 + caches/<버전> — Gradle API·스크립트·변환 캐시).
-# 앱 컴파일 결과는 사본 build/ 에 남으므로 여기에 없다. 없으면 실행마다 첫 빌드가 ~2분 더 걸린다(스모크 실측 126초 → 20초).
+# 앱 컴파일 결과는 사본 build/ 에 남으므로 여기에 없다. 없으면 새 사본 첫 빌드가 126초(스모크 실측), 있으면 56~57초(단독)·66~73초(병렬 3).
 GRADLE_WARM = CACHE / "gradle-warm"
 
 CLI_VERSION = "2.1.308"
@@ -125,8 +126,9 @@ def build_work(case: str, structure: str, work: Path) -> None:
         raise ValueError(structure)
     work.mkdir(parents=True)
     shutil.copytree(ROOT / structure / "src", work / "app" / "src", ignore=COPY_IGNORE)
-    for name in ("settings.gradle.kts", "build.gradle.kts"):
+    for name in ("settings.gradle.kts", "build.gradle.kts", "test.sh"):
         shutil.copy2(HERE / "templates" / name, work / name)
+    shutil.copytree(HERE / "templates" / "checks", work / "checks")  # 공개 테스트 모듈 골격 + 지원 코드(과제가 pub/ 를 더한다)
     for name in ("gradlew", "gradlew.bat"):
         shutil.copy2(ROOT / name, work / name)
     (work / "gradle" / "wrapper").mkdir(parents=True)
@@ -197,20 +199,24 @@ def ensure_egress() -> None:
             raise RuntimeError(f"egress 네트워크 생성 실패: {r.stderr[-300:]}")
 
 
-def start_services(name: str) -> None:
-    """--internal 실행 네트워크(외부로 나갈 경로 없음) + DB(db) + 가짜 PG + 허용 목록 프록시(proxy, egress 에도 연결)."""
+def start_services(name: str, proxy: bool = True) -> None:
+    """--internal 실행 네트워크(외부로 나갈 경로 없음) + DB(db) + 가짜 PG + 허용 목록 프록시(proxy, egress 에도 연결).
+    판정 컨테이너(proxy=False)는 외부 접속이 아예 없다. DB 는 준비되면 템플릿 ccle_tpl 을 만든다(test.sh 가 매번
+    ccle_seed 를 이 템플릿에서 다시 만들어 반복 실행이 서로 간섭하지 않게)."""
     lab = ["--label", f"{LABEL}={name}"]
-    ensure_egress()
     sh(["docker", "network", "create", "--internal", *lab, name])
-    sh(["docker", "run", "-d", "--name", f"{name}-proxy", *lab, "--network", EGRESS_NET, PROXY_IMAGE])
-    sh(["docker", "network", "connect", "--alias", "proxy", name, f"{name}-proxy"])
+    if proxy:
+        ensure_egress()
+        sh(["docker", "run", "-d", "--name", f"{name}-proxy", *lab, "--network", EGRESS_NET, PROXY_IMAGE])
+        sh(["docker", "network", "connect", "--alias", "proxy", name, f"{name}-proxy"])
     sh(["docker", "run", "-d", "--name", f"{name}-db", *lab, "--network", name, "--network-alias", "db",
         "--shm-size=1g", DB_IMAGE])
     sh(["docker", "run", "-d", "--name", f"{name}-pg", *lab, "--network", name,
         "-v", f"{FAKEPG}:/fakepg:ro", "-e", f"PG_PORT={PG_PORT}", "-e", "PG_DELAY_MS=3000", "-e", f"TZ={TZ}",
         IMAGE, "java", "-cp", "/fakepg/*", "com.ccle.behavior.pg.FakePgKt"])
     deadline = time.time() + 120
-    db_ok = pg_ok = px_ok = False
+    db_ok = pg_ok = False
+    px_ok = not proxy
     while time.time() < deadline and not (db_ok and pg_ok and px_ok):
         if not px_ok:
             px_ok = subprocess.run(["docker", "exec", f"{name}-proxy", "nc", "-z", "127.0.0.1", "3128"],
@@ -226,6 +232,8 @@ def start_services(name: str) -> None:
     if not (db_ok and pg_ok and px_ok):
         raise RuntimeError(f"서비스 기동 실패 db={db_ok} pg={pg_ok} proxy={px_ok}: {sh(['docker', 'logs', f'{name}-pg'], check=False).stderr[-300:]}")
     sh(["docker", "exec", f"{name}-db", "psql", "-U", "ccle", "-d", "ccle_seed", "-Atqc", "SELECT 1"])
+    sh(["docker", "exec", f"{name}-db", "psql", "-U", "ccle", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-q",
+        "-c", "CREATE DATABASE ccle_tpl TEMPLATE ccle_seed"])
 
 
 def create_agent(name: str, work: Path, home: Path, argv: list) -> None:
@@ -378,11 +386,6 @@ def write_diff(base: Path, work: Path, dst: Path) -> int:
     return len(txt)
 
 
-def judge(case: str, structure: str, work: Path) -> dict:
-    """판정 자리(ADR §4) — 과제 작업에서 구현한다. 지금은 판정하지 않았다는 사실만 남긴다."""
-    return {"judged": False}
-
-
 def symbols(case: str, structure: str) -> list:
     p = ORACLE / case / f"symbols.{structure}.txt"
     return events.parse_symbols(p.read_text()) if p.is_file() else []
@@ -411,6 +414,17 @@ def classify(evs: list, rc: int, timed_out: bool, violations: list, stderr: str 
         invalid = "no_modelusage"
     return {"end_reason": reason, "censored": reason in ("timeout", "budget"), "valid": invalid is None,
             "invalid_reason": invalid}
+
+
+def limit_evidence(evs: list) -> str:
+    """사용량 한도 판정 근거 — result·system 이벤트의 텍스트만(도구 결과·assistant 본문은 보지 않는다: 감사의 '입력만'과 같은 이유)."""
+    parts = []
+    for e in evs:
+        if e.get("type") == "result":
+            parts.append(f"{e.get('result') or ''} {e.get('subtype') or ''} {e.get('api_error_status') or ''}")
+        elif e.get("type") == "system" and e.get("subtype") not in ("init", "thinking_tokens"):
+            parts.append(json.dumps(e, ensure_ascii=False)[:2000])
+    return "\n".join(parts)
 
 
 def tail(p: Path, n: int = 1500) -> str:
@@ -524,7 +538,7 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
                    result_subtype=res.get("subtype"), is_error=res.get("is_error"),
                    duration_ms=res.get("duration_ms"), **tok,
                    **events.metrics(cs, symbols(case, structure)), audit_violations=violations,
-                   **classify(evs, rc, timed_out, violations, tail(err, 4000) + tail(out, 4000), tok, n_asst))
+                   **classify(evs, rc, timed_out, violations, tail(err, 4000) + limit_evidence(evs), tok, n_asst))
         row["result_count"] = events.result_count(evs)  # 2 이상이면 큐에 쌓인 턴 — 토큰은 마지막 result 기준(표시)
         harness = events.harness_problems(row["init"]) if any(e.get("subtype") == "init" for e in evs) \
             else ["init 이벤트 없음"]
@@ -537,7 +551,10 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             row.update(valid=False, invalid_reason="network", network_refused=agent_refused)
         if down and row["valid"]:  # 실행 중 DB·가짜 PG 가 죽었으면 에이전트가 본 환경이 계약과 다르다
             row.update(valid=False, invalid_reason="infra", infra_error=f"실행 중 서비스 중지: {down}")
-        row.update(judge(case, structure, rd / "work"))
+        if row["valid"] and ORACLE.joinpath(case).is_dir() and not case.startswith("_"):
+            row.update(judging.judge(case, structure, rd / "work", rd / "judge", name))
+        else:
+            row.update(judged=False, judge_skip="무효 실행" if not row["valid"] else "판정 대상 아님(스모크 과제)")
         return row
     except Exception as e:  # 러너·인프라 오류도 행으로 남긴다(무음 제외 금지)
         row.update(valid=False, invalid_reason="interrupted" if _stop.is_set() else "infra", infra_error=repr(e)[:800])
@@ -637,12 +654,14 @@ def cmd_prep(a) -> int:
         if src.is_file() and not src.is_symlink():
             (repo / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, repo / f)
+    shutil.copy2(HERE / "templates" / "resolve-all.gradle", repo / ".resolve-all.gradle")
     wp = repo / "gradle" / "wrapper" / "gradle-wrapper.properties"
     wp.write_text(re.sub(r"(?m)^distributionUrl=.*$", f"distributionUrl=file\\:{GRADLE_DIST}", wp.read_text()))
     p = subprocess.run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
                         "-v", f"{repo}:/repo", "-v", f"{GRADLE_SEED}:/seed", "-e", "GRADLE_USER_HOME=/seed",
                         "-w", "/repo", IMAGE, "bash", "-c",
-                        "./gradlew --no-daemon -q :behavior-tests:fakePgClasspath && cat behavior-tests/build/fake-pg.classpath"],
+                        "./gradlew --no-daemon -q -I /repo/.resolve-all.gradle :behavior-tests:fakePgClasspath :behavior-tests:testClasses "
+                        ":behavior-tests:ccleResolveAll && cat behavior-tests/build/fake-pg.classpath"],
                        capture_output=True, text=True, timeout=3600)
     if p.returncode:
         raise SystemExit(f"prep 가짜 PG 빌드 실패: {p.stdout[-800:]}{p.stderr[-800:]}")
@@ -671,10 +690,12 @@ def cmd_prep(a) -> int:
         d = RUNS / f"prep-{s}"
         shutil.rmtree(d, ignore_errors=True)
         build_work(a.case, s, d)
+        shutil.copy2(HERE / "templates" / "resolve-all.gradle", d / ".resolve-all.gradle")
         p = subprocess.run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
                             "-v", f"{d}:/work", "-v", f"{GRADLE_SEED}:/seed", "-e", "GRADLE_USER_HOME=/seed",
                             "-e", f"TZ={TZ}", "-w", "/work", IMAGE, "./gradlew", "--no-daemon", "-q",
-                            ":app:bootJar", ":app:testClasses"], capture_output=True, text=True, timeout=3600)
+                            "-I", "/work/.resolve-all.gradle", ":app:bootJar", ":app:testClasses", ":checks:testClasses",
+                            "ccleResolveAll"], capture_output=True, text=True, timeout=3600)
         shutil.rmtree(d, ignore_errors=True)
         if p.returncode:
             raise SystemExit(f"prep {s} 빌드 실패: {p.stdout[-800:]}{p.stderr[-800:]}")
@@ -697,7 +718,7 @@ def cmd_prep(a) -> int:
         p = subprocess.run(["docker", "run", "--rm", "--network", "none", "--user", f"{os.getuid()}:{os.getgid()}",
                             "-v", f"{d}:/work", "-v", f"{home}:{AGENT_HOME}", "-v", f"{GRADLE_RO}:{AGENT_GRADLE_RO}:ro",
                             *[x for k in ("HOME", "TZ", "GRADLE_USER_HOME", "GRADLE_RO_DEP_CACHE") for x in ("-e", f"{k}={AGENT_ENV[k]}")],
-                            "-w", "/work", IMAGE, "./gradlew", "-q", ":app:bootJar", ":app:testClasses"],
+                            "-w", "/work", IMAGE, "./gradlew", "-q", ":app:bootJar", ":app:testClasses", ":checks:testClasses"],
                            capture_output=True, text=True, timeout=3600)
         shutil.rmtree(d, ignore_errors=True)
         if p.returncode:
@@ -741,6 +762,42 @@ def live_names() -> set:
             except BlockingIOError:
                 live.add(f"ccle-{d.name}".lower())
     return live
+
+
+def cmd_check(a) -> int:
+    """과제 채택 조건 확인(에이전트 없음): 사본(inject 적용 상태) + 패치(fix·naive-N·none) → 판정. 결과는 checks.jsonl."""
+    results = Path(a.results_dir).resolve()
+    stages = tuple(a.stages.split(","))
+    bad = 0
+    for i in range(1, a.reps + 1):
+        tag = f"check-{a.case}-{a.structure}-{a.patch}-{i}-{int(time.time() * 1000) % 10**10}"
+        rd = RUNS / tag
+        t0 = time.time()
+        try:
+            build_work(a.case, a.structure, rd / "work")
+            if a.patch != "none":
+                pf = ORACLE / a.case / f"{a.patch}.{a.structure}.patch"
+                if not pf.is_file():
+                    raise SystemExit(f"패치 없음: {pf}")
+                sh(["patch", "-p1", "--forward", "--no-backup-if-mismatch", "-i", str(pf)], cwd=rd / "work")
+            res = judging.judge(a.case, a.structure, rd / "work", rd / "judge", tag.lower(), stages_to_run=stages)
+        finally:
+            rm_tree(rd)
+        row = {"case": a.case, "structure": a.structure, "patch": a.patch, "rep": i, "at": now_iso(),
+               "wall_s": round(time.time() - t0, 1), **res}
+        append_row_to(results / "checks.jsonl", row)
+        oc = {k: v.get("outcome") for k, v in (res.get("stages") or {}).items()}
+        print(f"{a.case} {a.structure} {a.patch} #{i}: success={res.get('success')} build={res.get('build_ok')} "
+              f"{oc} tampered={res.get('tampered')} err={res.get('judge_error')} {row['wall_s']}s", flush=True)
+        bad += res.get("success") is not True
+    return 0 if bad == 0 else 1
+
+
+def append_row_to(path: Path, row: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _append_lock, open(path, "a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def cmd_cleanup(_a) -> int:
@@ -854,6 +911,13 @@ def main() -> int:
     p.add_argument("--limit-wait", type=int, default=900)
     p.add_argument("--limit-retries", type=int, default=3)
     p.add_argument("--results-dir", default=str(ROOT / "experiment" / "results"))
+    p = sub.add_parser("check")
+    p.add_argument("--case", required=True)
+    p.add_argument("--structure", required=True)
+    p.add_argument("--patch", default="fix", help="fix | naive-N | none (oracle/<case>/<patch>.<구조>.patch)")
+    p.add_argument("--reps", type=int, default=1)
+    p.add_argument("--stages", default=",".join(judging.STAGES))
+    p.add_argument("--results-dir", default=str(ROOT / "experiment" / "results" / "checks"))
     p = sub.add_parser("shell")
     p.add_argument("--case", default="_smoke")
     p.add_argument("--structure", default="god")
@@ -861,7 +925,7 @@ def main() -> int:
     p.add_argument("--results-dir", default=str(CACHE / "shell-results"))
     p.add_argument("command")
     a = ap.parse_args()
-    return {"prep": cmd_prep, "cleanup": cmd_cleanup, "run": cmd_run, "shell": cmd_shell}[a.cmd](a)
+    return {"prep": cmd_prep, "cleanup": cmd_cleanup, "run": cmd_run, "shell": cmd_shell, "check": cmd_check}[a.cmd](a)
 
 
 if __name__ == "__main__":

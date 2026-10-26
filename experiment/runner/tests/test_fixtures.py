@@ -148,7 +148,8 @@ class BashReads(unittest.TestCase):
 
     def test_sed_range_targets(self):
         spans = events.parse_symbols("app/A.kt:100-110 fix")
-        self.assertTrue(events.targeted(self.call("sed -n '95,105p' app/A.kt", "x"), spans))
+        self.assertTrue(events.targeted(self.call("sed -n '95,115p' app/A.kt", "x"), spans))  # 덮음(과제 A — sed 도 Read 규칙)
+        self.assertFalse(events.targeted(self.call("sed -n '95,105p' app/A.kt", "x"), spans))  # 부분 겹침
         self.assertFalse(events.targeted(self.call("sed -n '1,50p' app/A.kt", "x"), spans))
 
     def test_grep_single_file_output_uses_named_path(self):

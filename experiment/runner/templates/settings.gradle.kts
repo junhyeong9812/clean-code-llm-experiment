@@ -1,3 +1,3 @@
 rootProject.name = "marketplace"
 
-include("app")
+include("app", "checks")

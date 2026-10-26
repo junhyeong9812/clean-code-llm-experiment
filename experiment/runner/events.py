@@ -464,9 +464,11 @@ def bash_spans(c: Call, spans: list) -> list:
             if sp.path == p and _overlap(s, e, sp.start, sp.end) and sp not in hit:
                 hit.append(sp)
 
-    for m in SED_RANGE.finditer(cmd):
-        s = int(m[1])
-        add(norm_path(m[3]), s, int(m[2] or s))
+    for m in SED_RANGE.finditer(cmd):  # Read 와 같은 규칙: span 을 전부 덮고 폭 ≤ READ_TARGET_MAX(넓으면 청크 — sed_chunks)
+        s, e = int(m[1]), int(m[2] or m[1])
+        if e - s + 1 <= READ_TARGET_MAX:
+            p = norm_path(m[3])
+            hit += [sp for sp in spans if sp.path == p and s <= sp.start and sp.end <= e and sp not in hit]
     if GREP_CMD.search(cmd):
         named = [p for p in paths if re.search(rf"(^|[\s'\"/=]){re.escape(p)}($|[\s'\";|&)])", cmd)
                  or f"{WORK}/{p}" in cmd]
@@ -582,7 +584,11 @@ def metrics(cs: list, spans: list) -> dict:
             out["full_read_turns"].setdefault(p, c.turn)
         elif chunk_read(c):
             out["chunk_read_turns"].setdefault(norm_path(str(c.input.get("file_path", ""))), c.turn)
-        elif c.name == "Bash" and not c.is_error:  # Bash 로 통째 읽기(cat 파일) — 경로는 symbols 에 있는 것만
+        if c.name == "Bash" and not c.is_error:
+            for m in SED_RANGE.finditer(str(c.input.get("command", ""))):
+                if int(m[2] or m[1]) - int(m[1]) + 1 > READ_TARGET_MAX:
+                    out["chunk_read_turns"].setdefault(norm_path(m[3]), c.turn)
+        if c.name == "Bash" and not c.is_error:  # Bash 로 통째 읽기(cat 파일) — 경로는 symbols 에 있는 것만
             for p in bash_cat_paths(str(c.input.get("command", "")), {sp.path for sp in spans}):
                 out["full_read_turns"].setdefault(p, c.turn)
         for sp in targeted(c, spans):

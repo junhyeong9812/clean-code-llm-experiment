@@ -1,0 +1,10 @@
+// prep 전용: 모든 프로젝트의 해석 가능한 구성을 내려받아 캐시를 채운다(testClasses 는 실행용 의존성 — JUnit 엔진 등 — 을 받지 않는다)
+allprojects {
+    tasks.register("ccleResolveAll") {
+        doLast {
+            configurations.findAll { it.canBeResolved }.each { c ->
+                try { c.resolve() } catch (Exception e) { logger.warn("resolve skip ${c.name}: ${e.message}") }
+            }
+        }
+    }
+}
