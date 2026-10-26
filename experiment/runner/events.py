@@ -673,6 +673,9 @@ def _patch_targets(seg: Seg, default_strip) -> list:
     return out
 
 
+PATCH_VALUE_OPTS = {"-i", "-o", "-d", "-r", "-D", "-B", "-F", "-V", "-Y", "-z", "-p"}
+
+
 PY_SITE_FUNCS = {("shutil", "copy"), ("shutil", "copy2"), ("shutil", "copyfile"), ("shutil", "move"), ("os", "replace"),
                  ("os", "rename")}
 
@@ -791,8 +794,16 @@ def bash_writes(segs: list) -> tuple:
         elif (s.name == "patch" and "--dry-run" not in s.args) or \
                 (s.name == "git" and s.args[:1] == ["apply"] and not {"--check", "--stat", "--numstat"} & set(s.args)):
             tg = _patch_targets(s, None if s.name == "patch" else 1)
-            if tg is None and s.name == "patch" and pos:
-                tg = [pos[0]]  # patch 원본파일 [패치파일]
+            if tg is None and s.name == "patch":  # patch [옵션] 원본파일 [패치파일] — 값을 받는 옵션(-i 패치파일 등)의 값은 빼고
+                files, skip = [], False
+                for a in s.args:
+                    if skip:
+                        skip = False
+                    elif a in PATCH_VALUE_OPTS:
+                        skip = True
+                    elif not a.startswith("-"):
+                        files.append(a)
+                tg = files[:1] or None
             if tg is None:
                 unknown.append(s.name)
             for f in tg or []:
