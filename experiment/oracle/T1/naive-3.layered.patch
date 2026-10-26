@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt
+@@ -34,7 +34,7 @@
+         em.createNativeQuery(
+             "SELECT * FROM point_ledger" +
+                 " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at > :now AND remaining > 0" +
+-                " ORDER BY created_at, id",
++                " ORDER BY created_at DESC, id DESC",
+             PointLedgerEntry::class.java,
+         ).setParameter("user", userId).setParameter("now", now).resultList.map { it as PointLedgerEntry }
+ 

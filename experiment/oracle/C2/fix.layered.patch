@@ -1,0 +1,101 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/api/Dtos.kt b/app/src/main/kotlin/com/ccle/layered/api/Dtos.kt
+--- a/app/src/main/kotlin/com/ccle/layered/api/Dtos.kt	2026-10-26 12:52:46.699675386 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/api/Dtos.kt	2026-10-26 12:53:15.466611806 +0900
+@@ -5,6 +5,7 @@
+ import com.ccle.layered.domain.Dispute
+ import com.ccle.layered.domain.OrderSnapshot
+ import com.ccle.layered.domain.Refund
++import com.ccle.layered.domain.SellerPenalty
+ import com.ccle.layered.domain.SettlementItem
+ import com.ccle.layered.domain.Trade
+ import com.ccle.layered.service.BidDetail
+@@ -208,3 +209,9 @@
+ data class SettlementItemView(val orderItemId: Long, val amount: Long, val fee: Long, val status: String) {
+     constructor(item: SettlementItem) : this(item.orderItemId, item.amount, item.fee, item.status)
+ }
++
++/** 판매자 패널티 조회 응답 1행. settled = 주간 정산에 반영됨(정산 행에 붙음). */
++data class PenaltyView(val penaltyId: Long, val orderItemId: Long, val amount: Long, val createdAt: Instant, val settled: Boolean) {
++    constructor(penalty: SellerPenalty) :
++        this(penalty.id!!, penalty.orderItemId, penalty.amount, penalty.createdAt, penalty.settlementId != null)
++}
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/api/OrderController.kt b/app/src/main/kotlin/com/ccle/layered/api/OrderController.kt
+--- a/app/src/main/kotlin/com/ccle/layered/api/OrderController.kt	2026-10-26 12:52:46.699928420 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/api/OrderController.kt	2026-10-26 12:53:15.467500374 +0900
+@@ -2,6 +2,7 @@
+ 
+ import com.ccle.layered.service.OrderQueryService
+ import com.ccle.layered.service.PaymentService
++import com.ccle.layered.service.PenaltyQueryService
+ import com.ccle.layered.service.PointQueryService
+ import com.ccle.layered.service.SettlementQueryService
+ import com.ccle.layered.service.UserService
+@@ -14,7 +15,7 @@
+ import org.springframework.web.bind.annotation.RequestHeader
+ import org.springframework.web.bind.annotation.RestController
+ 
+-/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2)와 판매자 정산 조회(ADR-0004 §10.3). */
++/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2)와 판매자 정산 조회(ADR-0004 §10.3)·패널티 조회. */
+ @RestController
+ class OrderController(
+     private val users: UserService,
+@@ -22,6 +23,7 @@
+     private val orderQuery: OrderQueryService,
+     private val pointQuery: PointQueryService,
+     private val settlementQuery: SettlementQueryService,
++    private val penaltyQuery: PenaltyQueryService,
+ ) {
+ 
+     @PostMapping("/orders")
+@@ -61,4 +63,10 @@
+         val userId = users.requireUser(userIdOf(userHeader))
+         return settlementQuery.list(userId).map { SettlementView(it) }
+     }
++
++    @GetMapping("/me/penalties")
++    fun penalties(@RequestHeader("X-User-Id", required = false) userHeader: String?): List<PenaltyView> {
++        val userId = users.requireUser(userIdOf(userHeader))
++        return penaltyQuery.list(userId).map { PenaltyView(it) }
++    }
+ }
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt b/app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt	2026-10-26 12:52:46.701223430 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt	2026-10-26 12:53:15.458060736 +0900
+@@ -99,4 +99,7 @@
+ 
+     /** 아직 정산에 붙지 않았고 created_at < cutoff 인 패널티, id 순(§10.2). */
+     fun unsettledBefore(cutoff: Instant): List<SellerPenalty>
++
++    /** 그 판매자의 패널티 전부, created_at 내림차순(같으면 id 내림차순). */
++    fun listOf(sellerId: Long): List<SellerPenalty>
+ }
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt b/app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt	2026-10-26 12:52:46.702248686 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt	2026-10-26 12:53:15.458263965 +0900
+@@ -34,4 +34,10 @@
+             "SELECT p FROM SellerPenalty p WHERE p.settlementId IS NULL AND p.createdAt < :cutoff ORDER BY p.id",
+             SellerPenalty::class.java,
+         ).setParameter("cutoff", cutoff).resultList
++
++    override fun listOf(sellerId: Long): List<SellerPenalty> =
++        em.createQuery(
++            "SELECT p FROM SellerPenalty p WHERE p.sellerId = :seller ORDER BY p.createdAt DESC, p.id DESC",
++            SellerPenalty::class.java,
++        ).setParameter("seller", sellerId).resultList
+ }
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/PenaltyQueryService.kt b/app/src/main/kotlin/com/ccle/layered/service/PenaltyQueryService.kt
+--- a/app/src/main/kotlin/com/ccle/layered/service/PenaltyQueryService.kt	1970-01-01 09:00:00.000000000 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/service/PenaltyQueryService.kt	2026-10-26 12:53:15.458386731 +0900
+@@ -0,0 +1,12 @@
++package com.ccle.layered.service
++
++import com.ccle.layered.domain.SellerPenalty
++import com.ccle.layered.domain.SellerPenaltyRepository
++import org.springframework.stereotype.Service
++
++/** `GET /me/penalties`: 판매자 본인 패널티, created_at 내림차순(같으면 id 내림차순). 사용자 확인은 부르는 쪽이 한다. */
++@Service
++class PenaltyQueryService(private val penalties: SellerPenaltyRepository) {
++
++    fun list(sellerId: Long): List<SellerPenalty> = penalties.listOf(sellerId)
++}

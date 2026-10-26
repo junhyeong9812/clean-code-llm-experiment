@@ -1,0 +1,66 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt n3/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt	2026-10-26 12:52:46.681003396 +0900
++++ n3/app/src/main/kotlin/com/ccle/god/Marketplace.kt	2026-10-26 12:53:37.840435487 +0900
+@@ -30,6 +30,7 @@
+ import com.ccle.god.web.OrderItemView
+ import com.ccle.god.web.OrderView
+ import com.ccle.god.web.PaymentResult
++import com.ccle.god.web.PenaltyView
+ import com.ccle.god.web.PointsView
+ import com.ccle.god.web.RefundView
+ import com.ccle.god.web.SettlementItemView
+@@ -1736,6 +1737,21 @@
+         }
+     }!!
+ 
++    /** `GET /me/penalties`: 본인(판매자) 패널티, created_at 내림차순(같으면 id 내림차순). settled = settlement_id 있음. */
++    fun listPenalties(userId: Long): List<PenaltyView> =
++        em.createQuery(
++            "SELECT p FROM SellerPenalty p WHERE p.sellerId = :seller ORDER BY p.createdAt, p.id",
++            SellerPenalty::class.java,
++        ).setParameter("seller", userId).resultList.map {
++            PenaltyView(
++                penaltyId = it.id!!,
++                orderItemId = it.orderItemId,
++                amount = it.amount,
++                createdAt = it.createdAt,
++                settled = it.settlementId != null,
++            )
++        }
++
+     // ---- 기동 (ADR-0003 §9의 7) ----
+ 
+     /**
+diff -ruN a/app/src/main/kotlin/com/ccle/god/web/Dtos.kt n3/app/src/main/kotlin/com/ccle/god/web/Dtos.kt
+--- a/app/src/main/kotlin/com/ccle/god/web/Dtos.kt	2026-10-26 12:52:46.681457171 +0900
++++ n3/app/src/main/kotlin/com/ccle/god/web/Dtos.kt	2026-10-26 12:52:59.096202859 +0900
+@@ -108,3 +108,6 @@
+ )
+ 
+ data class SettlementItemView(val orderItemId: Long, val amount: Long, val fee: Long, val status: String)
++
++/** 판매자 패널티 조회 응답 1행. settled = 주간 정산에 반영됨(정산 행에 붙음). */
++data class PenaltyView(val penaltyId: Long, val orderItemId: Long, val amount: Long, val createdAt: Instant, val settled: Boolean)
+diff -ruN a/app/src/main/kotlin/com/ccle/god/web/OrderController.kt n3/app/src/main/kotlin/com/ccle/god/web/OrderController.kt
+--- a/app/src/main/kotlin/com/ccle/god/web/OrderController.kt	2026-10-26 12:52:46.681605448 +0900
++++ n3/app/src/main/kotlin/com/ccle/god/web/OrderController.kt	2026-10-26 12:52:59.095802220 +0900
+@@ -10,7 +10,7 @@
+ import org.springframework.web.bind.annotation.RequestHeader
+ import org.springframework.web.bind.annotation.RestController
+ 
+-/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2), 판매자 정산 조회(ADR-0004 §10.3). */
++/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2), 판매자 정산 조회(ADR-0004 §10.3)·패널티 조회. */
+ @RestController
+ class OrderController(private val marketplace: Marketplace) {
+ 
+@@ -51,4 +51,10 @@
+         val userId = marketplace.requireUser(userHeader)
+         return marketplace.listSettlements(userId)
+     }
++
++    @GetMapping("/me/penalties")
++    fun penalties(@RequestHeader("X-User-Id", required = false) userHeader: String?): List<PenaltyView> {
++        val userId = marketplace.requireUser(userHeader)
++        return marketplace.listPenalties(userId)
++    }
+ }

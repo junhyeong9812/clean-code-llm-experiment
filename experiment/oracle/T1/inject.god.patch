@@ -1,0 +1,20 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1086,7 +1086,7 @@
+     }
+ 
+     /**
+-     * 예약(§5.2·ADR-0002 §9.6): USE RESERVED 1행, 사용 가능 묶음을 (expires_at, id) 순으로 차감해 배분을 쓰고
++     * 예약(§5.2·ADR-0002 §9.6): USE RESERVED 1행, 사용 가능 묶음에서 차감해 배분을 쓰고
+      * remaining과 point_balances.available을 줄인다. 구매자 행을 잠근 트랜잭션 안에서 부른다.
+      */
+     private fun reservePoints(userId: Long, orderId: Long, amount: Long, now: Instant) {
+@@ -1105,7 +1105,7 @@
+         val bundles = em.createNativeQuery(
+             "SELECT * FROM point_ledger" +
+                 " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at > :now AND remaining > 0" +
+-                " ORDER BY expires_at, id",
++                " ORDER BY created_at, id",
+             PointLedgerEntry::class.java,
+         ).setParameter("user", userId).setParameter("now", now).resultList
+         var need = amount

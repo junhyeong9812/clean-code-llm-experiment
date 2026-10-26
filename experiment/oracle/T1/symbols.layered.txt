@@ -1,0 +1,8 @@
+app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt:37-37 fix  # 예약 배분 정렬(주입 지점)
+app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt:33-39 read  # usableBundles 구현
+app/src/main/kotlin/com/ccle/layered/domain/Point.kt:34-51 read  # allocate: 받은 순서대로 차감·배분
+app/src/main/kotlin/com/ccle/layered/domain/Point.kt:288-289 read  # PointRepository.usableBundles 선언
+app/src/main/kotlin/com/ccle/layered/service/PointBook.kt:21-26 read  # reserve: usableBundles → allocate
+app/src/main/kotlin/com/ccle/layered/domain/Point.kt:80-90 read  # confirmEarn: expires_at = confirmed_at + 365일
+app/src/main/kotlin/com/ccle/layered/domain/Point.kt:179-190 read  # pendingEarn: created_at = paidAt
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:268-288 read  # point-expiry 배치(증상이 드러나는 곳 — 고칠 곳 아님)

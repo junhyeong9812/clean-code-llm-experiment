@@ -26,7 +26,7 @@ def _files(root: Path, sub: str) -> dict:
     if base.is_file():
         return {sub: base}
     return {f.relative_to(root).as_posix(): f for f in base.rglob("*")
-            if f.is_file() and "build" not in f.relative_to(base).parts} if base.is_dir() else {}
+            if f.is_file() and not {"build", ".gradle"} & set(f.relative_to(base).parts)} if base.is_dir() else {}
 
 
 def tampered(pristine: Path, work: Path) -> list:
@@ -70,6 +70,24 @@ def junit_results(dirs: list) -> dict:
     return {"tests": tests, "failed": failed, "skipped": skipped}
 
 
+def failure_messages(dirs: list, limit: int = 10) -> dict:
+    """실패 테스트 → 메시지 앞부분(판정 행에서 실패 이유를 바로 보게 — 최대 limit 건, 건당 300자)."""
+    out = {}
+    for d in dirs:
+        for x in sorted(Path(d).glob("*.xml")) if Path(d).is_dir() else []:
+            try:
+                root = ET.parse(x).getroot()
+            except ET.ParseError:
+                continue
+            for tc in root.iter("testcase"):
+                f = tc.find("failure")
+                if f is None:
+                    f = tc.find("error")
+                if f is not None and len(out) < limit:
+                    out[f"{tc.get('classname')}.{tc.get('name')}"] = (f.get("message") or (f.text or ""))[:300]
+    return out
+
+
 def verify_result(text: str, rc: int, exclude: set) -> dict:
     """verify.sql 출력 → {ok, violations:{검사:건수}, excluded:[…]}. 형식을 못 읽으면 ok=None(판정 불가)."""
     if rc == 0 and VERIFY_OK.search(text):
@@ -78,8 +96,8 @@ def verify_result(text: str, rc: int, exclude: set) -> dict:
     if not m:
         return {"ok": None, "violations": {}, "excluded": [], "tail": text[-600:]}
     viol = {}
-    for part in m[1].split(", "):
-        name, _, n = part.rpartition("=")
+    for part in m[1].split(","):
+        name, _, n = part.strip().rpartition("=")
         if name:
             viol[name.strip()] = int(n) if n.strip().lstrip("-").isdigit() else n
     kept = {k: v for k, v in viol.items() if k not in exclude}
@@ -203,6 +221,8 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
                 [jw / "behavior-tests" / "build" / "test-results" / ("contractTest" if st == "contract" else "contract2Test")]
             res = junit_results(rdirs)
             sr = {"status": status, "rc": rc, **res, "outcome": stage_outcome(status, rc, res)}
+            if res["failed"]:
+                sr["failure_messages"] = failure_messages(rdirs)
             if left:
                 sr["cleanup_left"] = left
             if st in ("contract", "contract2") and status == "ran":

@@ -1,0 +1,5 @@
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1108-1108 fix  # 예약 배분 정렬(주입 지점)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1088-1123 read  # reservePoints: USE 예약 + 묶음 차감·배분
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1149-1156 read  # confirmEarn: expires_at = confirmed_at + 365일
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:663-678 read  # approveOrder: EARN PENDING, created_at = paidAt
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1514-1542 read  # point-expiry 배치(증상이 드러나는 곳 — 고칠 곳 아님)

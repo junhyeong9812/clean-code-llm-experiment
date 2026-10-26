@@ -1,0 +1,8 @@
+app/src/main/kotlin/com/ccle/god/web/OrderController.kt:49-54 fix  # 새 엔드포인트를 넣을 곳(/me/settlements 옆 — 클래스 끝 앞에 삽입)
+app/src/main/kotlin/com/ccle/god/web/Dtos.kt:94-110 fix  # 응답 DTO를 넣을 곳(SettlementView·SettlementItemView 옆 — 파일 끝에 삽입)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1706-1739 fix  # 조회 메서드를 넣을 곳(listSettlements 뒤, 기동 절 앞에 삽입)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:81-88 read  # requireUser(401 UNKNOWN_USER)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:947-967 read  # sellerFault — 패널티 행 생성(금액·created_at)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1659-1662 read  # 정산이 미정산 패널티를 읽는 곳(settlement_id IS NULL)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1701-1701 read  # 정산이 패널티에 settlement_id를 붙이는 곳
+app/src/main/kotlin/com/ccle/god/entity/Entities.kt:216-226 read  # SellerPenalty 엔티티

@@ -1,0 +1,9 @@
+app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:19-64 fix  # 새 엔드포인트(생성자 주입 + /me/settlements 옆 메서드)
+app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:176-210 fix  # 응답 DTO를 넣을 곳(SettlementView·SettlementItemView 옆 — 파일 끝에 삽입)
+app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:94-102 fix  # 포트 SellerPenaltyRepository에 조회 메서드 추가
+app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt:22-37 fix  # 어댑터 JpaSellerPenaltyRepository 구현
+app/src/main/kotlin/com/ccle/layered/service/SettlementQueryService.kt:18-30 read  # 본보기 조회 서비스(새 서비스 파일은 경로가 없어 symbols 밖)
+app/src/main/kotlin/com/ccle/layered/service/UserService.kt:13-17 read  # requireUser(401 UNKNOWN_USER)
+app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:68-92 read  # SellerPenalty 엔티티(settlementId·issue·attachTo)
+app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:81-81 read  # 판매자 귀책 패널티 생성
+app/src/main/kotlin/com/ccle/layered/domain/Settlement.kt:106-106 read  # 정산이 패널티에 settlement_id를 붙이는 곳
