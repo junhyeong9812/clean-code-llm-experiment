@@ -40,6 +40,29 @@ class ChunkRead(unittest.TestCase):
         self.assertEqual(events.targeted(c, events.parse_symbols("app/M.kt:10-20 fix")), [])
 
 
+class RecheckFixes(unittest.TestCase):
+    def test_read_range_from_text_when_no_meta(self):
+        c = events.Call(1, "Read", {"file_path": "/work/app/A.kt", "offset": 100, "limit": 2000}, "t", False,
+                        "\n".join(f"{i}\tx" for i in range(100, 120)))
+        self.assertEqual(events.read_range(c), (100, 119))
+        self.assertFalse(events.chunk_read(c))
+        self.assertEqual(len(events.targeted(c, events.parse_symbols("app/A.kt:101-110 fix"))), 1)
+
+    def test_nc_option_values_and_sudo(self):
+        a = lambda c: events.audit([events.Call(1, "Bash", {"command": c}, "t", False)])
+        self.assertEqual(a("nc -w 2 db 5432"), [])
+        self.assertEqual(a("nc -w 2 evil.com 80"), ["bash:nc"])
+        self.assertEqual(a("sudo -u root ssh h"), ["bash:ssh"])
+
+    def test_origin_vanishing_during_wait_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "c.json")
+            p.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 10 * 1000}}))
+            with self.assertRaises(RuntimeError):
+                creds.wait_fresh(p, min_left_s=600, sleep=lambda s: p.unlink(missing_ok=True), now=lambda: 0.0,
+                                 log=lambda *a, **k: None)
+
+
 class FirstEdit(unittest.TestCase):
     def test_new_file_write_not_first_edit_hit(self):
         create = events.Call(1, "Write", {"file_path": "/work/notes.md", "content": "x"}, "a", False, "", False,

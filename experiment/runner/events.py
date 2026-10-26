@@ -29,6 +29,8 @@ NET_CMDS = {"nc", "ncat", "ssh", "scp", "sftp", "rsync", "gh", "telnet"}
 GIT_NET = {"clone", "fetch", "pull", "push", "ls-remote", "remote"}
 PKG_CMDS = {"pip", "pip3", "npm", "npx", "apt", "apt-get", "sdk"}
 CONTENT_FIELDS = {"content", "new_string", "old_string", "edits", "new_source"}
+NET_VALUE_OPTS = {"-w", "-p", "-s", "-i", "-q", "-x", "-X", "-W", "-T", "-O", "-I", "-e", "-c", "-b", "-l"} - {"-l"}
+WRAPPER_VALUE_OPTS = {"-u", "-g", "-n", "-s", "-k", "-o", "-e", "-i", "-L", "-C", "--signal", "--kill-after", "--user"}
 WRAPPERS = {"timeout", "env", "nice", "nohup", "xargs", "sudo", "time", "command", "exec", "stdbuf"}
 # 실험 저장소가 공개 원격(GitHub)에 있으므로 그 호스트 이름은 도구·명령 종류와 무관하게 입력에서 잡는다(가장 현실적인 누출 경로).
 AUDIT_REMOTE = re.compile(r"(?i)github\.com|githubusercontent\.com|gitlab\.com|bitbucket\.org")
@@ -102,7 +104,14 @@ def host_of(target: str) -> str:
 
 def net_target_external(name: str, args: list) -> bool:
     """nc·telnet 은 첫 위치 인자 호스트가 로컬이 아니면, rsync·scp 는 원격 지정(host:path)이 있으면, 나머지는 항상."""
-    pos = [x for x in args if not x.startswith("-")]
+    pos, skip = [], False
+    for x in args:  # 값을 받는 옵션(nc -w 2·-p 1234·-s addr 등)의 값은 위치 인자가 아니다
+        if skip:
+            skip = False
+        elif x.startswith("-"):
+            skip = x in NET_VALUE_OPTS
+        else:
+            pos.append(x)
     if name in ("nc", "ncat", "telnet"):
         return bool(pos) and host_of(pos[0]) not in LOCAL_HOSTS
     if name in ("rsync", "scp"):
@@ -115,7 +124,14 @@ def unwrap(cmds: list, depth: int = 0) -> list:
     out = []
     for name, args, redir in cmds:
         while name in WRAPPERS and args:
-            rest = [a for a in args if not a.startswith("-") and "=" not in a]
+            rest, skip = [], False
+            for a in args:  # 래퍼 옵션 값(sudo -u root·nice -n 5·timeout -s KILL)은 명령이 아니다
+                if skip:
+                    skip = False
+                elif a.startswith("-"):
+                    skip = a in WRAPPER_VALUE_OPTS
+                elif "=" not in a or rest:
+                    rest.append(a)
             while rest and re.fullmatch(r"[\d.]+[smhd]?|[A-Z]+", rest[0]):  # 옵션 값(timeout 30·nice -n 5·-s KILL)
                 rest = rest[1:]
             if not rest:
@@ -363,11 +379,18 @@ def _overlap(a1, a2, b1, b2) -> bool:
     return a1 <= b2 and b1 <= a2
 
 
+READ_LINE_NO = re.compile(r"^\s*(\d+)[\t→]", re.M)
+
+
 def read_range(c: Call):
-    """Read 가 돌려받은 (시작, 끝) 줄. 구조화 결과가 없으면 입력 offset·limit 으로 추정."""
+    """Read 가 돌려받은 (시작, 끝) 줄: ① 구조화 결과(file.startLine·numLines) ② 결과 텍스트의 줄 번호(`N\t…`)
+    ③ 그래도 모르면 입력 offset·limit(요청 폭 — 실제보다 넓을 수 있다)."""
     f = (c.meta or {}).get("file") or {}
     if f.get("startLine") is not None and f.get("numLines") is not None:
         return int(f["startLine"]), int(f["startLine"]) + max(int(f["numLines"]), 1) - 1
+    ns = [int(x) for x in READ_LINE_NO.findall(c.result or "")]
+    if ns and ns[0] == int(c.input.get("offset") or 1):  # 실제 출력은 offset 줄부터 — 어긋나면 텍스트를 믿지 않는다
+        return ns[0], max(ns)
     s = int(c.input.get("offset") or 1)
     return s, s + int(c.input.get("limit") or READ_DEFAULT_LIMIT) - 1
 

@@ -530,7 +530,7 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             else ["init 이벤트 없음"]
         if harness and row["valid"]:
             row.update(valid=False, invalid_reason="harness", harness_problems=harness)
-        if row["init"].get("cli_version") not in (None, CLI_VERSION) and row["valid"]:
+        if row["init"].get("cli_version") != CLI_VERSION and "init 이벤트 없음" not in harness and row["valid"]:
             row.update(valid=False, invalid_reason="version_mismatch")
         agent_refused = sorted(set(px["refused"]) - CLI_EXPECTED_REFUSED)
         if agent_refused and row["valid"]:  # 허용 목록 밖 접속 시도(차단됨) — 결과는 깨끗해도 시도 자체를 무효로
@@ -746,9 +746,11 @@ def live_names() -> set:
 def cmd_cleanup(_a) -> int:
     """고아 시도를 행으로 남기고, 진행 중이 아닌 러너 자원만 지운다(다른 러너의 진행 중 실행은 건드리지 않는다)."""
     print(f"orphans={sweep_orphans()}")
-    live = live_names()
+    # 자원 목록을 먼저 뜨고 잠금을 본다: 시도는 잠금을 쥔 뒤에 자원을 만들므로, 목록에 있는 자원의 주인은
+    # 이 시점에 이미 잠금을 쥐고 있다(반대 순서면 그 사이 시작한 실행의 자원을 지울 수 있다)
     rows = sh(["docker", "ps", "-a", "--filter", f"label={LABEL}", "--format", f'{{{{.ID}}}} {{{{.Label "{LABEL}"}}}}'],
               check=False).stdout.split("\n")
+    live = live_names()
     ids = [x.split()[0] for x in rows if x.strip() and (len(x.split()) < 2 or x.split()[1] not in live)]
     if ids:
         sh(["docker", "rm", "-f", *ids], check=False)

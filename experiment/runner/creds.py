@@ -40,6 +40,8 @@ def wait_fresh(origin: Path = ORIGIN, min_left_s: int = MIN_LEFT_S, sleep=time.s
         raise RuntimeError(f"로그인 파일을 읽을 수 없음(없음 또는 형식 오류): {origin}")
     waited = 0
     while expiry(origin) - now() < min_left_s:
+        if expiry(origin) == 0.0:  # 대기 중 원본이 사라지거나 깨짐
+            raise RuntimeError(f"로그인 파일을 읽을 수 없음(대기 중 없어짐 또는 형식 오류): {origin}")
         if stopped():
             raise RuntimeError("로그인 파일 갱신 대기 중 중단")
         if waited >= max_wait_s:

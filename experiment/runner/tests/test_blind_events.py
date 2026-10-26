@@ -477,11 +477,14 @@ class TestTargetedRead(unittest.TestCase):
                 self.assertEqual(m["first_targeted_turn"], 2 if hit else None)
 
     def test_offset_without_limit_is_chunk_read(self):
-        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 1})  # 1..2000 — 폭 상한 초과
+        # 결과에 줄 번호·구조화 범위가 없으면 요청 폭(1..2000)으로 판정 — 폭 상한 초과
+        evs = seq(("Bash", {"command": "ls"}, "x", False), ("Read", {"file_path": "/work/app/A.kt", "offset": 1}, "x", False))
+        m = events.metrics(calls_of(evs), spans())
         self.assertIsNone(m["first_targeted_turn"])
         self.assertEqual(m["chunk_read_turns"], {"app/A.kt": 2})
-        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 1, "limit": 400})  # 폭 400 = 상한 이내
-        self.assertEqual(m["first_targeted_turn"], 2)
+        evs = seq(("Bash", {"command": "ls"}, "x", False),
+                  ("Read", {"file_path": "/work/app/A.kt", "offset": 1, "limit": 400}, "x", False))  # 폭 400 = 상한 이내
+        self.assertEqual(events.metrics(calls_of(evs), spans())["first_targeted_turn"], 2)
 
     def test_full_read_is_not_targeted_saturation(self):
         evs = seq(("Read", {"file_path": "/work/app/A.kt"}, "\n".join(f"{i}\tx" for i in range(1, 1773)), False),
