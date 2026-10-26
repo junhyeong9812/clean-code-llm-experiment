@@ -14,7 +14,7 @@
     {
       "penaltyId": 123,
       "orderItemId": 4567,
-      "amount": 5000,
+      "amount": 3000,
       "createdAt": "2026-10-01T00:00:00+09:00",
       "settled": false
     }

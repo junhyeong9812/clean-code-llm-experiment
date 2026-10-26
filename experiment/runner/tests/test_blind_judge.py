@@ -346,14 +346,14 @@ class TestStageOutcome(unittest.TestCase):
     def test_pass(self):
         self.assertEqual(judge.stage_outcome("ran", 0, self.R_OK), "pass")
 
-    def test_fail_by_rc(self):
-        self.assertEqual(judge.stage_outcome("ran", 1, self.R_OK), "fail")
+    def test_rc_nonzero_without_failed_is_infra(self):  # 계약 갱신(리뷰 루프 1): Gradle 자체 오류는 판정 불가
+        self.assertEqual(judge.stage_outcome("ran", 1, self.R_OK), "infra")
 
     def test_fail_by_failed(self):
         self.assertEqual(judge.stage_outcome("ran", 0, self.R_FAIL), "fail")
 
-    def test_rc_none_with_results_is_fail(self):
-        self.assertEqual(judge.stage_outcome("ran", None, self.R_OK), "fail")
+    def test_rc_none_with_results_is_infra(self):  # 계약 갱신(리뷰 루프 1)
+        self.assertEqual(judge.stage_outcome("ran", None, self.R_OK), "infra")
 
     def test_skipped_only_counts_as_results(self):
         self.assertEqual(judge.stage_outcome("ran", 0, {"tests": 2, "failed": [], "skipped": 2}), "pass")

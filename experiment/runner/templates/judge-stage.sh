@@ -16,13 +16,14 @@ jar=$(ls app/build/libs/*.jar 2>/dev/null | grep -v plain | head -1)
 SERVER_PORT=$port java -jar "$jar" > "$out/$stage.app.log" 2>&1 &
 app=$!
 ready=
-for _ in $(seq 180); do
+for _ in $(seq 360); do
   kill -0 $app 2>/dev/null || break
   curl -sf "http://127.0.0.1:$port/actuator/health" > /dev/null && { ready=1; break; }
   sleep 0.5
 done
 if [ -z "$ready" ]; then
-  echo app_start_fail > "$out/$stage.status"
+  # 프로세스가 죽었으면 앱 탓(확정 실패), 살아 있는데 180초 안에 안 뜨면 부하·인프라 탓(판정 불가)
+  if kill -0 $app 2>/dev/null; then echo app_start_timeout > "$out/$stage.status"; else echo app_died > "$out/$stage.status"; fi
   kill $app 2>/dev/null; exit 0
 fi
 

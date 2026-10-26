@@ -117,14 +117,33 @@ def read_list(p: Path) -> list:
 
 
 def stage_outcome(status: str, rc, res: dict, expect_tests: bool = True) -> str:
-    """pass | fail | app_start_fail | no_results | infra."""
-    if status == "app_start_fail":
-        return "app_start_fail"  # 빌드된 앱이 뜨지 않음 — 에이전트 코드 탓일 수 있어 실패로 센다(인프라 아님)
+    """pass | fail | app_start_fail | no_results | infra.
+    - app_died(빌드된 앱 프로세스가 죽음) → app_start_fail(에이전트 코드 탓일 수 있어 확정 실패)
+    - app_start_timeout(살아 있는데 제때 안 뜸) → infra(부하·인프라 — 판정 불가)
+    - 테스트가 돌았는데 rc ≠ 0 이고 실패 테스트가 없음(Gradle 자체 오류) → infra"""
+    if status in ("app_died", "app_start_fail"):
+        return "app_start_fail"
     if status != "ran":
         return "infra"
     if res["tests"] == 0:
         return "no_results" if expect_tests else "pass"
-    return "pass" if (rc == 0 and not res["failed"]) else "fail"
+    if res["failed"]:
+        return "fail"
+    return "pass" if rc == 0 else "infra"
+
+
+BUILD_INFRA = re.compile(r"Could not resolve|No cached version|offline mode|Could not download|OutOfMemoryError|"
+                         r"Gradle could not start|daemon disappeared|No space left", re.I)
+KOTLIN_ERROR = re.compile(r"^e: ", re.M)
+
+
+def build_failure_kind(rc: int, output: str) -> str:
+    """빌드 실패 분류: compile(에이전트 코드 — 확정 실패) | infra(docker·Gradle·캐시 — 판정 불가).
+    docker 자체 오류(rc ≥ 125)·의존성·메모리·디스크 오류는 infra, Kotlin 컴파일 오류(`e:` 줄)가 있으면 compile,
+    둘 다 아니면 compile(빌드 스크립트 오류도 사본 탓으로 본다 — 루트 빌드 파일은 판정 전에 원본으로 되돌린다)."""
+    if rc >= 125 or (BUILD_INFRA.search(output) and not KOTLIN_ERROR.search(output)):
+        return "infra"
+    return "compile"
 
 
 def conjunction(oc: dict, keys, tampered: list):
@@ -150,6 +169,23 @@ allprojects {
 """
 
 
+BUILD_FILES = ("build.gradle.kts", "settings.gradle.kts", "gradlew", "gradlew.bat",
+               "gradle/wrapper/gradle-wrapper.properties", "gradle/wrapper/gradle-wrapper.jar")
+
+
+def restore_build_files(pristine: Path, work: Path) -> list:
+    """루트 빌드 파일·wrapper 를 원본으로 되돌리고 바뀌었던 것을 돌려준다(빌드 스크립트로 테스트를 끄는 우회 차단).
+    변조로 세지는 않는다(ADR §4.1 보호 목록 밖) — 기록만 한다."""
+    changed = []
+    for rel in BUILD_FILES:
+        a, b = pristine / rel, work / rel
+        if a.is_file() and (not b.is_file() or sha(a) != sha(b)):
+            changed.append(rel)
+            b.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(a, b)
+    return changed
+
+
 def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
     """판정 작업 디렉터리: 사본 복제 + 원본 보호 파일 복원 + 숨은 테스트 + behavior-tests + verify.sql + 제외 목록."""
     import runner as R
@@ -159,6 +195,7 @@ def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
     shutil.copytree(work, jw, symlinks=True, ignore=shutil.ignore_patterns("build", ".gradle", ".kotlin"))
     tam = tampered(pristine, jw)
     restore(pristine, jw)
+    changed_build = restore_build_files(pristine, jw)
     hidden = R.ORACLE / case / "hidden"
     if hidden.is_dir():
         shutil.copytree(hidden, jw / "checks" / "src" / "test" / "kotlin" / "hidden", dirs_exist_ok=True)
@@ -171,13 +208,14 @@ def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
     shutil.copy2(R.ROOT / "tools" / "seedgen" / "verify.sql", j / "verify.sql")
     (j / "exclude.gradle").write_text(EXCLUDE_GRADLE)
     (j / "regression-exclude.txt").write_text("\n".join(read_list(R.ORACLE / case / "regression-exclude.txt")) + "\n")
-    return {"tampered": tam, "hidden_present": hidden.is_dir()}
+    return {"tampered": tam, "hidden_present": hidden.is_dir(), "build_files_changed": changed_build}
 
 
 def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print, stages_to_run=STAGES) -> dict:
-    """한 실행의 판정. work = 에이전트가 끝낸 사본(읽기만), jd = 판정 전용 디렉터리(호출자가 지운다)."""
+    """한 실행의 판정. work = 에이전트가 끝낸 사본(읽기만), jd = 판정 전용 디렉터리(호출자가 지운다).
+    결과 success: True | False(확정 실패) | None(판정 불가 — 호출자는 무효로 다룬다)."""
     import runner as R
-    out = {"judged": True}
+    out = {"judged": True, "stages": {}}
     try:
         out.update(prepare(case, structure, work, jd))
         home = jd / "home"
@@ -188,60 +226,32 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
         env = [x for k in ("HOME", "TZ", "GRADLE_USER_HOME", "GRADLE_RO_DEP_CACHE", "DB_URL", "DB_USER", "DB_PASSWORD",
                            "PG_URL", "PG_TIMEOUT_MS") for x in ("-e", f"{k}={R.AGENT_ENV[k]}")]
         user = ["--user", f"{R.os.getuid()}:{R.os.getgid()}"]
-        b = subprocess.run(["docker", "run", "--rm", "--name", f"{name}-jbuild", "--label", f"{R.LABEL}={name}-j",
-                            "--network", "none", *user, *mounts, *env, "-w", R.AGENT_WORK, R.IMAGE,
-                            "./gradlew", "--console=plain", "-q", ":app:bootJar", ":checks:testClasses"],
-                           capture_output=True, text=True, timeout=1800)
-        out["build_ok"] = b.returncode == 0
-        if not out["build_ok"]:
-            out["build_tail"] = (b.stdout + b.stderr)[-1500:]
-            out.update(success=False, success_without_regression=False)
+        bname = f"{name}-jbuild"
+        try:
+            b = subprocess.run(["docker", "run", "--rm", "--name", bname, "--label", f"{R.LABEL}={name}",
+                                "--network", "none", *user, *mounts, *env, "-w", R.AGENT_WORK, R.IMAGE,
+                                "./gradlew", "--console=plain", "-q", ":app:bootJar", ":checks:testClasses"],
+                               capture_output=True, text=True, timeout=1800)
+            brc, bout = b.returncode, b.stdout + b.stderr
+        except subprocess.TimeoutExpired:
+            brc, bout = 124, "빌드 시간 초과(1800초)"
+        finally:
+            subprocess.run(["docker", "rm", "-f", bname], capture_output=True)
+        out["build_ok"] = brc == 0
+        if brc != 0:
+            out["build_failure"] = "infra" if brc == 124 else build_failure_kind(brc, bout)
+            out["build_tail"] = bout[-1500:]
+            if out["build_failure"] == "infra":
+                out.update(judge_error=f"빌드 인프라 오류 rc={brc}", success=None, success_without_regression=None)
+            else:
+                out.update(success=False, success_without_regression=False, regression_pass=None)
             return out
         excl_verify = set(read_list(R.ORACLE / case / "verify-exclude.txt"))
-        stages = {}
         for st in stages_to_run:
-            if st == "hidden" and not out["hidden_present"]:
-                stages[st] = {"outcome": "infra", "reason": "숨은 테스트 없음"}
-                continue
-            sn = f"{name}-j{st}"
-            for p in (jw / "checks" / "build" / "test-results", jw / "behavior-tests" / "build" / "test-results"):
-                shutil.rmtree(p, ignore_errors=True)
-            try:
-                R.start_services(sn, proxy=False)
-                r = subprocess.run(["docker", "run", "--rm", "--name", f"{sn}-judge", "--label", f"{R.LABEL}={sn}",
-                                    "--network", f"container:{sn}-pg", *user, *mounts, *env, "-w", R.AGENT_WORK,
-                                    R.IMAGE, "bash", "/work/.judge/stage.sh", st],
-                                   capture_output=True, text=True, timeout=3600)
-            finally:
-                left = R.remove_run(sn)
-            o = jw / ".judge" / "out"
-            status = (o / f"{st}.status").read_text().strip() if (o / f"{st}.status").is_file() else "missing"
-            rc = int((o / f"{st}.rc").read_text().strip()) if (o / f"{st}.rc").is_file() else None
-            rdirs = [jw / "checks" / "build" / "test-results" / "test"] if st in ("public", "hidden") else \
-                [jw / "behavior-tests" / "build" / "test-results" / ("contractTest" if st == "contract" else "contract2Test")]
-            res = junit_results(rdirs)
-            sr = {"status": status, "rc": rc, **res, "outcome": stage_outcome(status, rc, res)}
-            if res["failed"]:
-                sr["failure_messages"] = failure_messages(rdirs)
-            if left:
-                sr["cleanup_left"] = left
-            if st in ("contract", "contract2") and status == "ran":
-                vtxt = (o / f"{st}.verify").read_text(errors="replace") if (o / f"{st}.verify").is_file() else ""
-                vrc = int((o / f"{st}.verify.rc").read_text().strip()) if (o / f"{st}.verify.rc").is_file() else -1
-                sr["verify"] = verify_result(vtxt, vrc, excl_verify)
-                if sr["verify"]["ok"] is None:
-                    sr["outcome"] = "infra"
-                elif sr["outcome"] == "pass" and not sr["verify"]["ok"]:
-                    sr["outcome"] = "fail"
-            if sr["outcome"] in ("infra", "no_results") or r.returncode:
-                sr["tail"] = ((o / f"{st}.log").read_text(errors="replace")[-1500:] if (o / f"{st}.log").is_file()
-                              else (r.stdout + r.stderr)[-1500:])
-                if r.returncode:
-                    sr["outcome"] = "infra"
-            stages[st] = sr
+            out["stages"][st] = run_stage(R, case, st, jw, name, mounts, env, user, excl_verify, out["hidden_present"])
+            sr = out["stages"][st]
             log(f"[judge] {name} {st}: {sr['outcome']} tests={sr.get('tests')} failed={len(sr.get('failed', []))}", flush=True)
-        out["stages"] = stages
-        oc = {k: v["outcome"] for k, v in stages.items()}
+        oc = {k: v["outcome"] for k, v in out["stages"].items()}
         infra = [k for k, v in oc.items() if v in ("infra", "no_results")]
         if infra:
             out["judge_error"] = f"판정 불가 단계: {infra}"
@@ -252,6 +262,67 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
             out["partial_stages"] = list(stages_to_run)
             out["success"] = conjunction(oc, stages_to_run, out["tampered"])
         return out
-    except Exception as e:  # 판정 자체 오류 — 성공·실패로 세지 않는다
-        out.update(judge_error=repr(e)[:800], success=None)
+    except Exception as e:  # 판정 준비 자체 오류 — 이미 확정된 단계는 out["stages"] 에 남아 있다
+        out["judge_error"] = repr(e)[:800]
+        oc = {k: v["outcome"] for k, v in out["stages"].items()}
+        out["success"] = False if conjunction(oc, tuple(oc) or STAGES, out.get("tampered") or []) is False else None
         return out
+
+
+def run_stage(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present) -> dict:
+    """판정 단계 하나 — 예외·시간 초과·정리 실패는 그 단계만 infra 로 남기고 다음 단계로 간다."""
+    if st == "hidden" and not hidden_present:
+        return {"outcome": "infra", "reason": "숨은 테스트 없음"}
+    sn = f"{name}-j{st}"
+    for p in (jw / "checks" / "build" / "test-results", jw / "behavior-tests" / "build" / "test-results",
+              jw / ".judge" / "out"):
+        shutil.rmtree(p, ignore_errors=True)
+    o = jw / ".judge" / "out"
+    rcode, rtext, err = 0, "", None
+    try:
+        R.start_services(sn, proxy=False)
+        r = subprocess.run(["docker", "run", "--rm", "--name", f"{sn}-judge", "--label", f"{R.LABEL}={sn}",
+                            "--network", f"container:{sn}-pg", *user, *mounts, *env, "-w", R.AGENT_WORK,
+                            R.IMAGE, "bash", "/work/.judge/stage.sh", st],
+                           capture_output=True, text=True, timeout=3600)
+        rcode, rtext = r.returncode, r.stdout + r.stderr
+    except Exception as e:
+        err = repr(e)[:500]
+    finally:
+        left = R.remove_run(sn)
+    rf = lambda n: (o / n).read_text(errors="replace") if (o / n).is_file() else None  # noqa: E731
+    status = (rf(f"{st}.status") or "missing").strip()
+    rc_txt = rf(f"{st}.rc")
+    rc = int(rc_txt.strip()) if rc_txt and rc_txt.strip().lstrip("-").isdigit() else None
+    rdirs = [jw / "checks" / "build" / "test-results" / "test"] if st in ("public", "hidden") else \
+        [jw / "behavior-tests" / "build" / "test-results" / ("contractTest" if st == "contract" else "contract2Test")]
+    res = junit_results(rdirs)
+    sr = {"status": status, "rc": rc, **res, "outcome": stage_outcome(status, rc, res)}
+    if res["failed"]:
+        sr["failure_messages"] = failure_messages(rdirs)
+    if st in ("contract", "contract2") and status == "ran":
+        vtxt = rf(f"{st}.verify") or ""
+        vrc_txt = rf(f"{st}.verify.rc")
+        vrc = int(vrc_txt.strip()) if vrc_txt and vrc_txt.strip().lstrip("-").isdigit() else -1
+        sr["verify"] = verify_result(vtxt, vrc, excl_verify)
+        if sr["verify"]["ok"] is None and sr["outcome"] != "fail":
+            sr["outcome"] = "infra"
+        elif sr["outcome"] == "pass" and not sr["verify"]["ok"]:
+            sr["outcome"] = "fail"
+    problems = []
+    if err:
+        problems.append(f"예외 {err}")
+    if rcode:
+        problems.append(f"판정 컨테이너 rc={rcode}")
+    if left:
+        problems.append(f"정리 잔여 {left}")  # 자원이 남은 단계는 다음 단계·다른 실행에 영향을 줄 수 있다
+        sr["cleanup_left"] = left
+    if problems and sr["outcome"] != "fail":
+        sr["outcome"] = "infra"
+    if problems:
+        sr["infra_problems"] = problems
+    if sr["outcome"] in ("infra", "no_results", "app_start_fail"):
+        sr["tail"] = (rf(f"{st}.log") or rtext)[-1200:]
+        if status.startswith("app_"):
+            sr["app_log_tail"] = (rf(f"{st}.app.log") or "")[-1200:]
+    return sr

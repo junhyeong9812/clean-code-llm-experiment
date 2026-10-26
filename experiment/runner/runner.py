@@ -181,7 +181,7 @@ def check_mounts(inspected: list, allowed: set) -> list:
 def remove_run(name: str) -> list:
     """그 실행의 컨테이너 3개·네트워크를 지우고, 지운 뒤에도 남은 자원 목록을 돌려준다(빈 목록 = 정리 완료).
     삭제 명령의 실패는 '없어서 실패'와 구분이 안 되므로 반환 코드 대신 남은 자원을 다시 조회해 판정한다."""
-    for c in (f"{name}-agent", f"{name}-pg", f"{name}-db", f"{name}-proxy"):
+    for c in (f"{name}-agent", f"{name}-pg", f"{name}-db", f"{name}-proxy", f"{name}-judge", f"{name}-jbuild"):
         subprocess.run(["docker", "rm", "-f", c], capture_output=True)
     subprocess.run(["docker", "network", "rm", name], capture_output=True)
     left = subprocess.run(["docker", "ps", "-aq", "--filter", f"label={LABEL}={name}"], capture_output=True, text=True)
@@ -477,7 +477,7 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
     out, err = raw / f"{run_id}.jsonl", raw / f"{run_id}.stderr"
     row = {"run_id": run_id, "case": case, "structure": structure, "model": model, "rep": rep,
            "started_at": now_iso(), "image": IMAGE, "cli_version": CLI_VERSION, "budget_usd": budget,
-           "timeout_s": timeout_s, "shell": bool(argv_override)}
+           "timeout_s": timeout_s, "shell": bool(argv_override), "judged": False, "judge_skip": "미도달"}
     alive = sb_creds = None
     secrets = []
     with _live_lock:
@@ -552,7 +552,10 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         if down and row["valid"]:  # 실행 중 DB·가짜 PG 가 죽었으면 에이전트가 본 환경이 계약과 다르다
             row.update(valid=False, invalid_reason="infra", infra_error=f"실행 중 서비스 중지: {down}")
         if row["valid"] and ORACLE.joinpath(case).is_dir() and not case.startswith("_"):
+            row.pop("judge_skip", None)
             row.update(judging.judge(case, structure, rd / "work", rd / "judge", name))
+            if row.get("success") is None:  # 판정 불가 — 재개 때 다시 돈다(ADR §4.1-3: 인프라로 판정 불가면 무효)
+                row.update(valid=False, invalid_reason="judge_infra")
         else:
             row.update(judged=False, judge_skip="무효 실행" if not row["valid"] else "판정 대상 아님(스모크 과제)")
         return row
@@ -750,7 +753,7 @@ def _replace_dir(dst: Path, fill) -> None:
 
 
 def live_names() -> set:
-    """잠금이 쥐어진(진행 중) 시도의 docker 이름. 다른 러너 프로세스의 실행도 포함."""
+    """잠금이 쥐어진(진행 중) 시도·check 의 docker 이름 접두. 판정 자원은 이 접두 + '-j…' 라 접두 일치로 본다."""
     live = set()
     for d in RUNS.iterdir() if RUNS.is_dir() else []:
         lk = d / "attempt.lock"
@@ -760,8 +763,12 @@ def live_names() -> set:
             try:
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                live.add(f"ccle-{d.name}".lower())
+                live.add(d.name.lower() if d.name.startswith("check-") else f"ccle-{d.name}".lower())
     return live
+
+
+def is_live(label: str, live: set) -> bool:
+    return any(label == n or label.startswith(n + "-") for n in live)
 
 
 def cmd_check(a) -> int:
@@ -773,6 +780,9 @@ def cmd_check(a) -> int:
         tag = f"check-{a.case}-{a.structure}-{a.patch}-{i}-{int(time.time() * 1000) % 10**10}"
         rd = RUNS / tag
         t0 = time.time()
+        rd.mkdir(parents=True)
+        alive = open(rd / "attempt.lock", "w")  # cleanup 이 진행 중인 check 자원을 지우지 않게
+        fcntl.flock(alive, fcntl.LOCK_EX)
         try:
             build_work(a.case, a.structure, rd / "work")
             if a.patch != "none":
@@ -782,6 +792,7 @@ def cmd_check(a) -> int:
                 sh(["patch", "-p1", "--forward", "--no-backup-if-mismatch", "-i", str(pf)], cwd=rd / "work")
             res = judging.judge(a.case, a.structure, rd / "work", rd / "judge", tag.lower(), stages_to_run=stages)
         finally:
+            alive.close()
             rm_tree(rd)
         row = {"case": a.case, "structure": a.structure, "patch": a.patch, "rep": i, "at": now_iso(),
                "wall_s": round(time.time() - t0, 1), **res}
@@ -808,12 +819,12 @@ def cmd_cleanup(_a) -> int:
     rows = sh(["docker", "ps", "-a", "--filter", f"label={LABEL}", "--format", f'{{{{.ID}}}} {{{{.Label "{LABEL}"}}}}'],
               check=False).stdout.split("\n")
     live = live_names()
-    ids = [x.split()[0] for x in rows if x.strip() and (len(x.split()) < 2 or x.split()[1] not in live)]
+    ids = [x.split()[0] for x in rows if x.strip() and (len(x.split()) < 2 or not is_live(x.split()[1], live))]
     if ids:
         sh(["docker", "rm", "-f", *ids], check=False)
     nrows = sh(["docker", "network", "ls", "--filter", f"label={LABEL}", "--format", f'{{{{.ID}}}} {{{{.Label "{LABEL}"}}}}'],
                check=False).stdout.split("\n")
-    nets = [x.split()[0] for x in nrows if x.strip() and (len(x.split()) < 2 or x.split()[1] not in live)]
+    nets = [x.split()[0] for x in nrows if x.strip() and (len(x.split()) < 2 or not is_live(x.split()[1], live))]
     if nets:
         sh(["docker", "network", "rm", *nets], check=False)
     print(f"containers={len(ids)} networks={len(nets)} live_skipped={len(live)}")

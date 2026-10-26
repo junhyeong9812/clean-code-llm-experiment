@@ -6,6 +6,7 @@ import support.Clock
 import support.Db
 import support.Resp
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -41,8 +42,14 @@ class T1Test {
         assertEquals(201, pay.status, "포인트 사용 결제: $pay")
         assertEquals("PAID", pay.json["status"].asText(), "포인트 사용 결제: $pay")
 
-        // B의 유효기간만 끝나는 시각(B 확정 + 366일 = A 확정 + 364일)으로 옮기고 소멸 배치를 돌린다
-        Clock.advance(Duration.ofDays(364))
+        // B의 유효기간만 끝나고 A는 아직 남은 시각(두 적립의 만료 시각 사이)으로 옮기고 소멸 배치를 돌린다
+        val ends = Db.query(
+            "SELECT (extract(epoch FROM expires_at) * 1000)::bigint AS ms FROM point_ledger" +
+                " WHERE user_id = ? AND kind = 'EARN' AND expires_at IS NOT NULL ORDER BY expires_at",
+            buyer,
+        ).map { Instant.ofEpochMilli((it["ms"] as Number).toLong()) }
+        assertEquals(2, ends.size, "준비: 유효기간이 정해진 적립이 두 건이어야 한다 $ends")
+        Clock.moveTo(ends[0].plus(Duration.between(ends[0], ends[1]).dividedBy(2)))
         val batch = Batches.run("point-expiry")
         assertEquals(200, batch.status, "point-expiry: $batch")
 
