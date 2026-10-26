@@ -5,91 +5,106 @@ import support.Batches
 import support.Clock
 import support.Db
 import support.Resp
+import java.time.DayOfWeek
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.temporal.TemporalAdjusters
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * T1 숨은 테스트. 자연 흐름(결제 A → 결제 B → 결제 C → B 확정 → A 확정 → C 확정)으로 적립 묶음 세 개를 만들어
- * 생성 순서(A < B < C)와 만료 순서(B < A < C)를 엇갈리게 한다. 확정 사이에 시계를 옮겨야 만료 시각이 갈린다.
- * 단언은 결과만 본다: 묶음별 remaining, 사용 가능액, 소멸 배치 뒤 남은 포인트.
- *
- * 순서별 배분(사용 1,000P, 묶음 A·B·C = 각 적립액):
- *  - 정답(만료 이른 것부터): B 전부 → A 일부, C 그대로
- *  - 생성순·id순(주입·naive-2): A부터 / 만료 늦은 것부터(naive-1): C부터 / 생성 역순(naive-3): C부터
+ * T1 숨은 테스트 — 확정 시각 상한. 단언은 결과만 본다(HTTP 응답 상태·본문, DB 값).
+ *  - A(구매자 늦은 확정): 배송 완료 D → D+10일에 구매자 확정 → 확정 시각 = D+7일(응답·DB).
+ *    분쟁 기한 = D+7일+14일: 기한 1시간 전 접수는 201(항목 1), 기한 1시간 뒤 접수는 409 DEADLINE_PASSED(항목 2).
+ *    시계는 뒤로 못 가므로 항목 두 개를 미리 만들어 기한 전 → 기한 뒤 순으로 접수한다.
+ *  - B(자동 확정): 화요일 정오(KST)에 배송 완료 D′, 아무도 확정하지 않음 → D′+7일이 속한 주의 마감(다음 월요일 00:00 KST)
+ *    1시간 뒤에 weekly-settlement → 그 항목이 D′+7일이 속한 주의 정산에 INCLUDED, 확정 시각 = D′+7일(DB).
+ *  - A·B 모두 그 항목의 적립(EARN) expires_at = 기대 확정 시각 + 365일(확정 시각이 포인트 확정에도 같은 값으로 쓰이는가).
+ * 두 테스트는 각자 현재 시계에서 출발한다(실행 순서 무관).
  */
 class T1HiddenTest {
 
+    private val kst = ZoneId.of("Asia/Seoul")
+
     @Test
-    fun `포인트 사용은 만료가 이른 묶음부터 차감하고, 쓰고 남은 포인트는 이른 묶음의 만료로 줄지 않는다`() {
+    fun `A - 배송 완료 7일 뒤 구매자 확정은 배송 완료 + 7일로 기록되고 분쟁 기한은 그 시각 + 14일이다`() {
         val buyer = newUser()
+        val early = purchase(buyer, 50_000)
+        val late = purchase(buyer, 50_000)
+        deliver(early)
+        deliver(late)
+        val d1 = deliveredAt(early.item)
+        val d2 = deliveredAt(late.item)
+        assertEquals(d1, d2, "준비: 두 항목이 같은 시각에 배송 완료")
+        val due = d1.plus(Duration.ofDays(7))
 
-        val a = purchase(buyer, 100_000)
-        Clock.advance(Duration.ofMinutes(1))
-        val b = purchase(buyer, 60_000)
-        Clock.advance(Duration.ofMinutes(1))
-        val c = purchase(buyer, 80_000)
-        listOf(a, b, c).forEach(::deliver)
+        moveTo(d1.plus(Duration.ofDays(10)))
+        for (b in listOf(early, late)) {
+            val r = Api.post("/order-items/${b.item}/confirm", null, buyer)
+            assertEquals(200, r.status, "구매 확정: $r")
+            assertEquals("CONFIRMED", r.json["status"].asText(), "구매 확정 상태: $r")
+            assertEquals(due, OffsetDateTime.parse(r.json["confirmedAt"].asText()).toInstant(),
+                "배송 완료 7일 뒤의 구매 확정 — 응답 confirmedAt = 배송 완료 + 7일(항목 ${b.item})")
+            assertEquals(due, confirmedAt(b.item), "배송 완료 7일 뒤의 구매 확정 — DB confirmed_at = 배송 완료 + 7일")
+            assertEquals(due.plus(Duration.ofDays(365)), earnExpiresAt(b.item), "적립 유효기간 = 확정 시각(배송 완료 + 7일) + 365일")
+        }
 
-        confirm(b, buyer)
-        Clock.advance(Duration.ofDays(1))
-        confirm(a, buyer)
-        Clock.advance(Duration.ofDays(1))
-        confirm(c, buyer)
+        val deadline = due.plus(Duration.ofDays(14))
+        moveTo(deadline.minus(Duration.ofHours(1)))
+        val ok = Api.post("/order-items/${early.item}/disputes", null, buyer)
+        assertEquals(201, ok.status, "분쟁 기한 1시간 전 접수는 받는다: $ok")
 
-        val ea = earnOf(a.item)
-        val eb = earnOf(b.item)
-        val ec = earnOf(c.item)
-        val use = 1_000L
+        moveTo(deadline.plus(Duration.ofHours(1)))
+        val past = Api.post("/order-items/${late.item}/disputes", null, buyer)
+        assertEquals(409, past.status, "분쟁 기한(확정 + 14일) 1시간 뒤 접수는 409: $past")
+        assertEquals("DEADLINE_PASSED", past.json["code"].asText(), "분쟁 기한 지남 코드: $past")
+        assertEquals("CONFIRMED", Db.query("SELECT status FROM order_items WHERE id = ?", late.item).single()["status"],
+            "기한 뒤 거절된 항목은 CONFIRMED 그대로")
+    }
 
-        // 준비 확인(D12): 자연 흐름에서 생성 순서와 만료 순서가 실제로 엇갈렸는가, 배분이 순서를 드러내는 양인가
-        assertTrue(ea.createdAt < eb.createdAt && eb.createdAt < ec.createdAt, "준비: 생성 순서 A < B < C — $ea $eb $ec")
-        assertTrue(ea.id < eb.id && eb.id < ec.id, "준비: id 순서 A < B < C — $ea $eb $ec")
-        assertTrue(eb.expiresAt < ea.expiresAt && ea.expiresAt < ec.expiresAt, "준비: 만료 순서 B < A < C — $ea $eb $ec")
-        assertTrue(listOf(ea, eb, ec).all { it.status == "AVAILABLE" && it.remaining == it.amount }, "준비: 세 묶음 모두 사용 가능 — $ea $eb $ec")
-        assertTrue(eb.amount < use && use < eb.amount + ea.amount && ec.amount < use, "준비: 사용액이 B보다 크고 A+B보다 작으며 C보다 크다 — $ea $eb $ec")
-        val before = points(buyer)
-        assertEquals(ea.amount + eb.amount + ec.amount, before.usable, "준비: 사용 가능액 = 세 묶음 합")
+    @Test
+    fun `B - 아무도 확정하지 않은 항목은 배송 완료 + 7일로 자동 확정되어 그 시각이 속한 주에 정산된다`() {
+        val buyer = newUser()
+        val b = purchase(buyer, 70_000)
+        toDelivering(b)
 
-        // 포인트 사용
-        val pay = pay(buyer, listOf(trade(buyer, 100_000)), use)
-        assertEquals(201, pay.status, "포인트 사용 결제: $pay")
-        assertEquals("PAID", pay.json["status"].asText(), "포인트 사용 결제: $pay")
-        assertEquals(use, pay.json["pointUsed"].asLong(), "pointUsed: $pay")
+        // 배송 완료 = 다음 화요일 정오(KST) — 주 중간
+        val tuesday = LocalDate.ofInstant(Clock.now(), kst).with(TemporalAdjusters.next(DayOfWeek.TUESDAY))
+        moveTo(tuesday.atTime(12, 0).atZone(kst).toInstant())
+        ok("배송 완료", Api.post("/admin/order-items/${b.item}/delivery", null))
+        val delivered = deliveredAt(b.item)
+        val due = delivered.plus(Duration.ofDays(7))
+        val weekStart = LocalDate.ofInstant(due, kst).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        val cutoff = weekStart.plusDays(7).atStartOfDay(kst).toInstant()
+        assertTrue(due.isBefore(cutoff) && due.isAfter(weekStart.atStartOfDay(kst).toInstant()), "준비: 배송 완료 + 7일이 주 중간")
 
-        // 배분 결과: 만료가 가장 이른 B 전부 → 다음 A에서 나머지, 만료가 가장 늦은 C는 그대로
-        assertEquals(0L, earnOf(b.item).remaining, "만료가 가장 이른 묶음(B)부터 다 써야 한다")
-        assertEquals(ea.amount - (use - eb.amount), earnOf(a.item).remaining, "다음으로 이른 묶음(A)에서 나머지를 쓴다")
-        assertEquals(ec.amount, earnOf(c.item).remaining, "만료가 가장 늦은 묶음(C)은 쓰지 않는다")
-        val afterUse = points(buyer)
-        assertEquals(before.usable - use, afterUse.usable, "사용 뒤 사용 가능액")
-        assertEquals(before.available - use, afterUse.available, "사용 뒤 available")
+        // 그 주 마감 1시간 뒤에 주간 정산(먼저 자동 확정을 수행한다)
+        moveTo(cutoff.plus(Duration.ofHours(1)))
+        val batch = Batches.run("weekly-settlement")
+        assertEquals(200, batch.status, "weekly-settlement: $batch")
 
-        // B의 만료 시각으로 옮겨 소멸 배치 → B에 남은 것이 없으니 아무것도 소멸되지 않는다
-        Clock.moveTo(eb.expiresAt).also { assertTrue(it.status in 200..299, "시계 이동: $it") }
-        assertEquals(200, Batches.run("point-expiry").status, "point-expiry")
-        assertEquals(0L, Db.long("SELECT count(*) FROM point_ledger WHERE user_id = ? AND kind = 'EXPIRE'", buyer), "B 만료 때 소멸 행 없음")
-        val afterB = points(buyer)
-        assertEquals(afterUse.available, afterB.available, "B 만료 뒤 남은 포인트(available)가 줄지 않는다")
-        assertEquals(afterUse.usable, afterB.usable, "B 만료 뒤 사용 가능액이 줄지 않는다")
+        val r = Api.get("/me/settlements", b.seller)
+        assertEquals(200, r.status, "정산 조회: $r")
+        val weeks = r.json.filter { s -> s["items"].any { it["orderItemId"].asLong() == b.item } }
+        assertEquals(listOf(weekStart.toString()), weeks.map { it["periodStart"].asText() },
+            "자동 확정 항목은 배송 완료 + 7일이 속한 주(period_start $weekStart)에 정산된다: $r")
+        val line = weeks.single()["items"].single { it["orderItemId"].asLong() == b.item }
+        assertEquals("INCLUDED", line["status"].asText(), "정산 항목 상태: $r")
 
-        // A의 만료 시각 → A에 남은 양만 소멸, C는 남는다
-        Clock.moveTo(ea.expiresAt).also { assertTrue(it.status in 200..299, "시계 이동: $it") }
-        assertEquals(200, Batches.run("point-expiry").status, "point-expiry")
-        val afterA = points(buyer)
-        assertEquals(ec.amount, afterA.available, "A 만료 뒤 남는 것은 C 전부")
-        assertEquals(ec.amount, afterA.usable, "A 만료 뒤 사용 가능액 = C 전부")
+        val row = Db.query("SELECT status FROM order_items WHERE id = ?", b.item).single()
+        assertEquals("CONFIRMED", row["status"], "자동 확정 상태")
+        assertEquals(due, confirmedAt(b.item), "자동 확정 — DB confirmed_at = 배송 완료 + 7일")
+        assertEquals(due.plus(Duration.ofDays(365)), earnExpiresAt(b.item), "자동 확정 적립 유효기간 = 확정 시각(배송 완료 + 7일) + 365일")
     }
 
     // ---- 도우미(HTTP·DB) ----
 
-    private data class Points(val available: Long, val pending: Long, val usable: Long)
-
-    private data class Earn(val id: Long, val status: String, val amount: Long, val remaining: Long, val createdAt: Instant, val expiresAt: Instant)
+    private fun moveTo(t: Instant) = Clock.moveTo(t).also { assertTrue(it.status in 200..299, "시계 이동: $it") }
 
     private fun inst(v: Any?): Instant = when (v) {
         is java.sql.Timestamp -> v.toInstant()
@@ -97,22 +112,15 @@ class T1HiddenTest {
         else -> error("시각 아님: $v")
     }
 
-    private fun earnOf(item: Long): Earn {
-        val r = Db.query(
-            "SELECT id, status, amount, remaining, created_at, expires_at FROM point_ledger WHERE order_item_id = ? AND kind = 'EARN'",
-            item,
-        ).single()
-        return Earn(
-            (r["id"] as Number).toLong(), r["status"] as String, (r["amount"] as Number).toLong(),
-            (r["remaining"] as Number).toLong(), inst(r["created_at"]), inst(r["expires_at"]),
-        )
-    }
+    private fun deliveredAt(item: Long): Instant =
+        inst(Db.query("SELECT delivered_at FROM order_items WHERE id = ?", item).single()["delivered_at"])
 
-    private fun points(user: Long): Points {
-        val r = Api.get("/me/points", user)
-        assertEquals(200, r.status, "포인트 조회: $r")
-        return Points(r.json["available"].asLong(), r.json["pending"].asLong(), r.json["usable"].asLong())
-    }
+    private fun confirmedAt(item: Long): Instant =
+        inst(Db.query("SELECT confirmed_at FROM order_items WHERE id = ?", item).single()["confirmed_at"])
+
+    /** 그 항목의 적립(EARN) 행 expires_at — 항목마다 정확히 1행. */
+    private fun earnExpiresAt(item: Long): Instant =
+        inst(Db.query("SELECT expires_at FROM point_ledger WHERE order_item_id = ? AND kind = 'EARN'", item).single()["expires_at"])
 
     private fun uniq() = UUID.randomUUID().toString().replace("-", "").take(16)
 
@@ -145,14 +153,11 @@ class T1HiddenTest {
         return buy.json["tradeId"].asLong()
     }
 
-    private fun pay(buyer: Long, trades: List<Long>, point: Long): Resp =
-        Api.post("/orders", mapOf("tradeIds" to trades, "pointToUse" to point), buyer, "t1h-" + UUID.randomUUID())
-
     private data class Bought(val item: Long, val seller: Long)
 
     private fun purchase(buyer: Long, price: Long): Bought {
         val tradeId = trade(buyer, price)
-        val r = pay(buyer, listOf(tradeId), 0)
+        val r: Resp = Api.post("/orders", mapOf("tradeIds" to listOf(tradeId), "pointToUse" to 0), buyer, "t1h-" + UUID.randomUUID())
         assertEquals(201, r.status, "결제: $r")
         assertEquals("PAID", r.json["status"].asText(), "결제: $r")
         val item = r.json["items"].single()["orderItemId"].asLong()
@@ -161,12 +166,14 @@ class T1HiddenTest {
 
     private fun ok(step: String, r: Resp) = assertEquals(200, r.status, "$step: $r")
 
-    private fun deliver(b: Bought) {
+    private fun toDelivering(b: Bought) {
         ok("발송", Api.post("/order-items/${b.item}/shipment", null, b.seller))
         ok("입고", Api.post("/admin/order-items/${b.item}/receipt", null))
         ok("검수", Api.post("/admin/order-items/${b.item}/inspection", mapOf("result" to "PASS")))
-        ok("배송 완료", Api.post("/admin/order-items/${b.item}/delivery", null))
     }
 
-    private fun confirm(b: Bought, buyer: Long) = ok("구매 확정", Api.post("/order-items/${b.item}/confirm", null, buyer))
+    private fun deliver(b: Bought) {
+        toDelivering(b)
+        ok("배송 완료", Api.post("/admin/order-items/${b.item}/delivery", null))
+    }
 }

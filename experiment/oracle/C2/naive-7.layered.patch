@@ -1,0 +1,104 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt b/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
+@@ -158,6 +158,9 @@
+     /** 잠금을 기다리는 사이에 바뀌었을 수 있으므로 잠근 뒤 DB의 현재 값으로 다시 읽는다. */
+     fun reload(bid: Bid)
+ 
++    /** 그 사용자의 그 쪽(BUY·SELL) ACTIVE 입찰 전부 — 유효기간이 지났지만 아직 만료 처리되지 않은 것 포함. 사이즈 id·입찰 id 순. */
++    fun activeOf(userId: Long, side: String): List<Bid>
++
+     /**
+      * 반대편 최우선 체결 가능 입찰(§3.3). 체결 가능 = ACTIVE이고 expires_at > 현재.
+      * 순서: 가격(구매는 높은 순, 판매는 낮은 순) → created_at → id. 자기(userId) 입찰은 건너뛴다.
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+@@ -40,6 +40,12 @@
+ 
+     override fun reload(bid: Bid) = em.refresh(bid)
+ 
++    override fun activeOf(userId: Long, side: String): List<Bid> =
++        em.createQuery(
++            "SELECT b FROM Bid b WHERE b.userId = :user AND b.side = :side AND b.status = 'ACTIVE' ORDER BY b.productSizeId, b.id",
++            Bid::class.java,
++        ).setParameter("user", userId).setParameter("side", side).resultList
++
+     override fun bestCounter(productSizeId: Long, side: String, userId: Long, limitPrice: Long?, now: Instant): Bid? {
+         val counterSide = if (side == "BUY") "SELL" else "BUY"
+         val crossing = when {
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
+--- a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
+@@ -143,6 +143,7 @@
+     private val bids: BidRepository,
+     private val events: BidEventRepository,
+     private val matches: MatchRecorder,
++    private val bidCanceller: RestrictedBidCanceller,
+ ) {
+     fun run(now: Instant): BatchResult =
+         targets.forEachIsolated("payment-due", BatchTarget.OVERDUE_TRADES, now) { tradeId -> tx.execute { expire(tradeId, now) }!! }
+@@ -162,6 +163,7 @@
+         val buyer = users.find(trade.buyerId)!!
+         users.reload(buyer)
+         buyer.restrictIfWarned(warnings.createdAtAfter(trade.buyerId, User.warningWindowStart(now)), now)
++        if (buyer.purchaseRestrictedUntil?.isAfter(now) == true) bidCanceller.cancelActive(trade.buyerId, "BUY", now)
+ 
+         // 구매 입찰 이벤트가 판매 입찰 이벤트보다 먼저
+         events.add(bids.find(trade.buyBidId)!!.cancelForUnpaid(trade, now))
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt b/app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt
+--- a/app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt
+@@ -6,8 +6,10 @@
+ import com.ccle.layered.domain.MarketClock
+ import com.ccle.layered.domain.ProductSizeRepository
+ import com.ccle.layered.domain.notFound
++import org.springframework.stereotype.Component
+ import org.springframework.stereotype.Service
+ import org.springframework.transaction.support.TransactionTemplate
++import java.time.Instant
+ 
+ /** 입찰 취소(§3.2). 등록자만, ACTIVE만. 판정 순서: 404 → 403 → (사이즈 잠금 뒤) 409. */
+ @Service
+@@ -33,3 +35,23 @@
+         }!!
+     }
+ }
++
++/**
++ * 제한이 새로 걸리거나 갱신될 때(판매 제한 = 판매자 귀책, 구매 제한 = payment-due) 그 사용자의 그 쪽 ACTIVE 입찰을 모두 취소한다.
++ * 유효기간이 지났지만 아직 bid-expiry가 처리하지 않은 ACTIVE 입찰도 대상이다. 입찰마다 그 사이즈를 잠그고(§3.3) 다시 읽은 뒤
++ * ACTIVE인 것만 ACTIVE → CANCELLED(이벤트 trade_id NULL). 호출자의 트랜잭션 안에서 부른다.
++ */
++@Component
++class RestrictedBidCanceller(
++    private val sizes: ProductSizeRepository,
++    private val bids: BidRepository,
++    private val events: BidEventRepository,
++) {
++    fun cancelActive(userId: Long, side: String, now: Instant) {
++        for (bid in bids.activeOf(userId, side)) {
++            sizes.lock(bid.productSizeId)
++            bids.reload(bid)
++            if (bid.status == "ACTIVE") events.add(bid.cancel(now))
++        }
++    }
++}
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt b/app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt
+--- a/app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt
+@@ -73,6 +73,7 @@
+     private val trades: TradeRepository,
+     private val users: UserRepository,
+     private val penalties: SellerPenaltyRepository,
++    private val bidCanceller: RestrictedBidCanceller,
+ ) {
+ 
+     fun apply(item: OrderItem, reason: String, now: Instant) {
+@@ -82,5 +83,6 @@
+         val seller = users.find(sellerId)!!
+         users.reload(seller)
+         seller.restrictIfPenalized(penalties.createdAtAfter(sellerId, User.penaltyWindowStart(now)), now)
++        if (seller.saleRestrictedUntil?.isAfter(now) == true) bidCanceller.cancelActive(sellerId, "SELL", now)
+     }
+ }

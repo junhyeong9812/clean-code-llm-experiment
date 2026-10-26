@@ -1,101 +1,153 @@
-diff -ruN a/app/src/main/kotlin/com/ccle/layered/api/Dtos.kt n4/app/src/main/kotlin/com/ccle/layered/api/Dtos.kt
---- a/app/src/main/kotlin/com/ccle/layered/api/Dtos.kt	2026-10-26 12:52:46.699675386 +0900
-+++ n4/app/src/main/kotlin/com/ccle/layered/api/Dtos.kt	2026-10-26 12:53:15.466611806 +0900
-@@ -5,6 +5,7 @@
- import com.ccle.layered.domain.Dispute
- import com.ccle.layered.domain.OrderSnapshot
- import com.ccle.layered.domain.Refund
-+import com.ccle.layered.domain.SellerPenalty
- import com.ccle.layered.domain.SettlementItem
- import com.ccle.layered.domain.Trade
- import com.ccle.layered.service.BidDetail
-@@ -208,3 +209,9 @@
- data class SettlementItemView(val orderItemId: Long, val amount: Long, val fee: Long, val status: String) {
-     constructor(item: SettlementItem) : this(item.orderItemId, item.amount, item.fee, item.status)
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt b/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
+@@ -158,6 +158,9 @@
+     /** 잠금을 기다리는 사이에 바뀌었을 수 있으므로 잠근 뒤 DB의 현재 값으로 다시 읽는다. */
+     fun reload(bid: Bid)
+ 
++    /** 그 사용자의 그 쪽(BUY·SELL) ACTIVE 입찰 전부 — 유효기간이 지났지만 아직 만료 처리되지 않은 것 포함. 사이즈 id·입찰 id 순. */
++    fun activeOf(userId: Long, side: String): List<Bid>
++
+     /**
+      * 반대편 최우선 체결 가능 입찰(§3.3). 체결 가능 = ACTIVE이고 expires_at > 현재.
+      * 순서: 가격(구매는 높은 순, 판매는 낮은 순) → created_at → id. 자기(userId) 입찰은 건너뛴다.
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/User.kt b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -55,22 +55,28 @@
+      * 구매 경고에 따른 제한(§7): 최근 30일 안(created_at > 현재 − 30일)이면서 마지막 제한이 걸린 시각(purchase_restricted_until − 7일)
+      * 뒤의 경고가 3건 이상이면 purchase_restricted_until = 현재 + 7일. 제한을 건 경고는 다음 계산에서 빠지므로 횟수는 다시 센다.
+      * recentWarningTimes = created_at > warningWindowStart(now)인 경고의 created_at(방금 쓴 경고 포함).
++     * 반환: 제한을 새로 걸었거나 갱신했으면 true.
+      */
+-    fun restrictIfWarned(recentWarningTimes: List<Instant>, now: Instant) {
++    fun restrictIfWarned(recentWarningTimes: List<Instant>, now: Instant): Boolean {
+         val lastRestrictedAt = purchaseRestrictedUntil?.minus(PURCHASE_RESTRICTION)
+         val counted = recentWarningTimes.count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+-        if (counted >= WARNINGS_TO_RESTRICT) purchaseRestrictedUntil = now.plus(PURCHASE_RESTRICTION)
++        if (counted < WARNINGS_TO_RESTRICT) return false
++        purchaseRestrictedUntil = now.plus(PURCHASE_RESTRICTION)
++        return true
+     }
+ 
+     /**
+      * 판매자 패널티에 따른 판매 제한(ADR-0004 §6): 최근 30일 안(created_at > 현재 − 30일)이면서 마지막 제한이 걸린 시각
+      * (sale_restricted_until − 30일) 뒤의 패널티가 3건 이상이면 sale_restricted_until = 현재 + 30일. 구매 경고와 같은 해석이다.
+      * recentPenaltyTimes = created_at > penaltyWindowStart(now)인 패널티의 created_at(방금 쓴 패널티 포함).
++     * 반환: 제한을 새로 걸었거나 갱신했으면 true.
+      */
+-    fun restrictIfPenalized(recentPenaltyTimes: List<Instant>, now: Instant) {
++    fun restrictIfPenalized(recentPenaltyTimes: List<Instant>, now: Instant): Boolean {
+         val lastRestrictedAt = saleRestrictedUntil?.minus(SALE_RESTRICTION)
+         val counted = recentPenaltyTimes.count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+-        if (counted >= PENALTIES_TO_RESTRICT) saleRestrictedUntil = now.plus(SALE_RESTRICTION)
++        if (counted < PENALTIES_TO_RESTRICT) return false
++        saleRestrictedUntil = now.plus(SALE_RESTRICTION)
++        return true
+     }
+ 
+     companion object {
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+@@ -40,6 +40,12 @@
+ 
+     override fun reload(bid: Bid) = em.refresh(bid)
+ 
++    override fun activeOf(userId: Long, side: String): List<Bid> =
++        em.createQuery(
++            "SELECT b FROM Bid b WHERE b.userId = :user AND b.side = :side AND b.status = 'ACTIVE' ORDER BY b.productSizeId, b.id",
++            Bid::class.java,
++        ).setParameter("user", userId).setParameter("side", side).resultList
++
+     override fun bestCounter(productSizeId: Long, side: String, userId: Long, limitPrice: Long?, now: Instant): Bid? {
+         val counterSide = if (side == "BUY") "SELL" else "BUY"
+         val crossing = when {
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
+--- a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
+@@ -143,6 +143,7 @@
+     private val bids: BidRepository,
+     private val events: BidEventRepository,
+     private val matches: MatchRecorder,
++    private val bidCanceller: RestrictedBidCanceller,
+ ) {
+     fun run(now: Instant): BatchResult =
+         targets.forEachIsolated("payment-due", BatchTarget.OVERDUE_TRADES, now) { tradeId -> tx.execute { expire(tradeId, now) }!! }
+@@ -161,7 +162,7 @@
+         warnings.add(BuyerWarning.issue(trade, now))
+         val buyer = users.find(trade.buyerId)!!
+         users.reload(buyer)
+-        buyer.restrictIfWarned(warnings.createdAtAfter(trade.buyerId, User.warningWindowStart(now)), now)
++        val restricted = buyer.restrictIfWarned(warnings.createdAtAfter(trade.buyerId, User.warningWindowStart(now)), now)
+ 
+         // 구매 입찰 이벤트가 판매 입찰 이벤트보다 먼저
+         events.add(bids.find(trade.buyBidId)!!.cancelForUnpaid(trade, now))
+@@ -171,6 +172,8 @@
+             val counter = bids.bestCounter(sell.productSizeId, "SELL", sell.userId, sell.price, now)
+             if (counter != null) matches.record(sell, counter, now)
+         }
++        // 제한이 걸렸으면 그 구매자의 ACTIVE 구매 입찰을 취소한다
++        if (restricted) bidCanceller.cancelActive(trade.buyerId, "BUY", now)
+         return true
+     }
+ }
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt b/app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt
+--- a/app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt
+@@ -6,8 +6,10 @@
+ import com.ccle.layered.domain.MarketClock
+ import com.ccle.layered.domain.ProductSizeRepository
+ import com.ccle.layered.domain.notFound
++import org.springframework.stereotype.Component
+ import org.springframework.stereotype.Service
+ import org.springframework.transaction.support.TransactionTemplate
++import java.time.Instant
+ 
+ /** 입찰 취소(§3.2). 등록자만, ACTIVE만. 판정 순서: 404 → 403 → (사이즈 잠금 뒤) 409. */
+ @Service
+@@ -33,3 +35,23 @@
+         }!!
+     }
  }
 +
-+/** 판매자 패널티 조회 응답 1행. settled = 주간 정산에 반영됨(정산 행에 붙음). */
-+data class PenaltyView(val penaltyId: Long, val orderItemId: Long, val amount: Long, val createdAt: Instant, val settled: Boolean) {
-+    constructor(penalty: SellerPenalty) :
-+        this(penalty.id!!, penalty.orderItemId, penalty.amount, penalty.createdAt, penalty.settlementId != null)
++/**
++ * 제한이 새로 걸리거나 갱신될 때(판매 제한 = 판매자 귀책, 구매 제한 = payment-due) 그 사용자의 그 쪽 ACTIVE 입찰을 모두 취소한다.
++ * 유효기간이 지났지만 아직 bid-expiry가 처리하지 않은 ACTIVE 입찰도 대상이다. 입찰마다 그 사이즈를 잠그고(§3.3) 다시 읽은 뒤
++ * ACTIVE인 것만 ACTIVE → CANCELLED(이벤트 trade_id NULL). 호출자의 트랜잭션 안에서 부른다.
++ */
++@Component
++class RestrictedBidCanceller(
++    private val sizes: ProductSizeRepository,
++    private val bids: BidRepository,
++    private val events: BidEventRepository,
++) {
++    fun cancelActive(userId: Long, side: String, now: Instant) {
++        for (bid in bids.activeOf(userId, side)) {
++            sizes.lock(bid.productSizeId)
++            bids.reload(bid)
++            if (bid.status == "ACTIVE") events.add(bid.cancel(now))
++        }
++    }
 +}
-diff -ruN a/app/src/main/kotlin/com/ccle/layered/api/OrderController.kt n4/app/src/main/kotlin/com/ccle/layered/api/OrderController.kt
---- a/app/src/main/kotlin/com/ccle/layered/api/OrderController.kt	2026-10-26 12:52:46.699928420 +0900
-+++ n4/app/src/main/kotlin/com/ccle/layered/api/OrderController.kt	2026-10-26 12:53:37.863698599 +0900
-@@ -2,6 +2,7 @@
- 
- import com.ccle.layered.service.OrderQueryService
- import com.ccle.layered.service.PaymentService
-+import com.ccle.layered.service.PenaltyQueryService
- import com.ccle.layered.service.PointQueryService
- import com.ccle.layered.service.SettlementQueryService
- import com.ccle.layered.service.UserService
-@@ -14,7 +15,7 @@
- import org.springframework.web.bind.annotation.RequestHeader
- import org.springframework.web.bind.annotation.RestController
- 
--/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2)와 판매자 정산 조회(ADR-0004 §10.3). */
-+/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2)와 판매자 정산 조회(ADR-0004 §10.3)·패널티 조회. */
- @RestController
- class OrderController(
-     private val users: UserService,
-@@ -22,6 +23,7 @@
-     private val orderQuery: OrderQueryService,
-     private val pointQuery: PointQueryService,
-     private val settlementQuery: SettlementQueryService,
-+    private val penaltyQuery: PenaltyQueryService,
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt b/app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt
+--- a/app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt
+@@ -73,6 +73,7 @@
+     private val trades: TradeRepository,
+     private val users: UserRepository,
+     private val penalties: SellerPenaltyRepository,
++    private val bidCanceller: RestrictedBidCanceller,
  ) {
  
-     @PostMapping("/orders")
-@@ -61,4 +63,10 @@
-         val userId = users.requireUser(userIdOf(userHeader))
-         return settlementQuery.list(userId).map { SettlementView(it) }
+     fun apply(item: OrderItem, reason: String, now: Instant) {
+@@ -81,6 +82,8 @@
+         penalties.add(SellerPenalty.issue(sellerId, item, now))
+         val seller = users.find(sellerId)!!
+         users.reload(seller)
+-        seller.restrictIfPenalized(penalties.createdAtAfter(sellerId, User.penaltyWindowStart(now)), now)
++        if (seller.restrictIfPenalized(penalties.createdAtAfter(sellerId, User.penaltyWindowStart(now)), now)) {
++            bidCanceller.cancelActive(sellerId, "SELL", now)
++        }
      }
-+
-+    @GetMapping("/me/penalties")
-+    fun penalties(@RequestHeader("X-User-Id", required = false) userHeader: String?): List<PenaltyView> {
-+        val userId = userIdOf(userHeader) ?: return emptyList()
-+        return penaltyQuery.list(userId).map { PenaltyView(it) }
-+    }
  }
-diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt n4/app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt
---- a/app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt	2026-10-26 12:52:46.701223430 +0900
-+++ n4/app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt	2026-10-26 12:53:15.458060736 +0900
-@@ -99,4 +99,7 @@
- 
-     /** 아직 정산에 붙지 않았고 created_at < cutoff 인 패널티, id 순(§10.2). */
-     fun unsettledBefore(cutoff: Instant): List<SellerPenalty>
-+
-+    /** 그 판매자의 패널티 전부, created_at 내림차순(같으면 id 내림차순). */
-+    fun listOf(sellerId: Long): List<SellerPenalty>
- }
-diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt n4/app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt
---- a/app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt	2026-10-26 12:52:46.702248686 +0900
-+++ n4/app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt	2026-10-26 12:53:15.458263965 +0900
-@@ -34,4 +34,10 @@
-             "SELECT p FROM SellerPenalty p WHERE p.settlementId IS NULL AND p.createdAt < :cutoff ORDER BY p.id",
-             SellerPenalty::class.java,
-         ).setParameter("cutoff", cutoff).resultList
-+
-+    override fun listOf(sellerId: Long): List<SellerPenalty> =
-+        em.createQuery(
-+            "SELECT p FROM SellerPenalty p WHERE p.sellerId = :seller ORDER BY p.createdAt DESC, p.id DESC",
-+            SellerPenalty::class.java,
-+        ).setParameter("seller", sellerId).resultList
- }
-diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/PenaltyQueryService.kt n4/app/src/main/kotlin/com/ccle/layered/service/PenaltyQueryService.kt
---- a/app/src/main/kotlin/com/ccle/layered/service/PenaltyQueryService.kt	1970-01-01 09:00:00.000000000 +0900
-+++ n4/app/src/main/kotlin/com/ccle/layered/service/PenaltyQueryService.kt	2026-10-26 12:53:15.458386731 +0900
-@@ -0,0 +1,12 @@
-+package com.ccle.layered.service
-+
-+import com.ccle.layered.domain.SellerPenalty
-+import com.ccle.layered.domain.SellerPenaltyRepository
-+import org.springframework.stereotype.Service
-+
-+/** `GET /me/penalties`: 판매자 본인 패널티, created_at 내림차순(같으면 id 내림차순). 사용자 확인은 부르는 쪽이 한다. */
-+@Service
-+class PenaltyQueryService(private val penalties: SellerPenaltyRepository) {
-+
-+    fun list(sellerId: Long): List<SellerPenalty> = penalties.listOf(sellerId)
-+}

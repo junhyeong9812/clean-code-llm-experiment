@@ -1,42 +1,75 @@
---- a/app/src/main/kotlin/com/ccle/layered/domain/Point.kt
-+++ b/app/src/main/kotlin/com/ccle/layered/domain/Point.kt
-@@ -32,7 +32,7 @@
-         private set
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
+@@ -318,13 +318,12 @@
+     }
  
      /**
--     * 예약 배분(USE 행에 부른다): 사용 가능 묶음을 (expires_at, id) 순으로 받아 앞에서부터 차감하고 배분 행을 돌려준다.
-+     * 예약 배분(USE 행에 부른다): 사용 가능 묶음을 받아 앞에서부터 차감하고 배분 행을 돌려준다.
-      * 사용 가능액 확인을 같은 구매자 잠금 안에서 했으므로 모자랄 수 없다.
+-     * 구매 확정(ADR-0004 §4.1)의 확인과 확정 시각: DELIVERED만, confirmed_at = min(현재, delivered_at + 7일)
+-     * (7일 뒤의 확정은 자동 확정과 같다). 바꾸지 않는다 — 구매자 행을 잠근 뒤 markConfirmed.
++     * 구매 확정(ADR-0004 §4.1)의 확인: DELIVERED만.
++     * 바꾸지 않는다 — 구매자 행을 잠근 뒤 markConfirmed.
       */
-     fun allocate(bundles: List<PointLedgerEntry>): List<PointAllocation> {
-@@ -285,7 +285,7 @@
-     /** 사용 가능액(§5.2): EARN·AVAILABLE·expires_at > 현재 묶음의 remaining 합. */
-     fun usable(userId: Long, now: Instant): Long
+     fun confirmationTime(now: Instant): Instant {
+         requireStatus("DELIVERED")
+-        val lastDay = deliveredAt!!.plus(CONFIRM_WITHIN)
+-        return if (now.isBefore(lastDay)) now else lastDay
++        return now
+     }
  
--    /** 차감할 사용 가능 묶음(remaining > 0), (expires_at, id) 순. */
-+    /** 차감할 사용 가능 묶음(remaining > 0). */
-     fun usableBundles(userId: Long, now: Instant): List<PointLedgerEntry>
+     /** 확정 반영(§4.1·auto-confirm): CONFIRMED, confirmed_at. */
+@@ -338,13 +337,13 @@
+     fun isShipmentOverdue(now: Instant): Boolean = status == "PAID" && !paidAt!!.plus(SHIP_WITHIN).isAfter(now)
  
-     /** 그 주문의 USE 행(없으면 null). */
---- a/app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt
-+++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt
-@@ -34,7 +34,7 @@
-         em.createNativeQuery(
-             "SELECT * FROM point_ledger" +
-                 " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at > :now AND remaining > 0" +
--                " ORDER BY expires_at, id",
-+                " ORDER BY created_at, id",
-             PointLedgerEntry::class.java,
-         ).setParameter("user", userId).setParameter("now", now).resultList.map { it as PointLedgerEntry }
+     /**
+-     * 자동 확정(ADR-0004 §5 auto-confirm)의 확정 시각: DELIVERED이고 delivered_at + 7일 ≤ 현재면 delivered_at + 7일(소급), 아니면 null.
++     * auto-confirm(ADR-0004 §5) 대상 확인: DELIVERED이고 delivered_at + 7일 ≤ 현재일 때만, 아니면 null.
+      * 바꾸지 않는다 — 구매자 행을 잠근 뒤 markConfirmed.
+      */
+     fun autoConfirmationTime(now: Instant): Instant? {
+         if (status != "DELIVERED") return null
+         val due = deliveredAt!!.plus(CONFIRM_WITHIN)
+-        return if (due.isAfter(now)) null else due
++        return if (due.isAfter(now)) null else now
+     }
  
---- a/app/src/main/kotlin/com/ccle/layered/service/PointBook.kt
-+++ b/app/src/main/kotlin/com/ccle/layered/service/PointBook.kt
-@@ -18,7 +18,7 @@
- @Component
- class PointBook(private val points: PointRepository, private val balances: PointBalanceRepository) {
+     /** 구매자 취소(§4.2)의 확인: PAID만(발송 기한이 지나도 배치 전이면 PAID라 취소된다). 바꾸지 않는다. */
+@@ -400,7 +399,7 @@
+         /** shipment-deadline 대상의 paid_at 상한(이 시각 이하면 발송 기한 초과). */
+         fun shipmentOverdueCutoff(now: Instant): Instant = now.minus(SHIP_WITHIN)
  
--    /** 예약: USE RESERVED 1행 → 사용 가능 묶음 (expires_at, id) 순 차감·배분 → available 감소. */
-+    /** 예약: USE RESERVED 1행 → 사용 가능 묶음 차감·배분 → available 감소. */
-     fun reserve(use: PointLedgerEntry, now: Instant) {
-         points.add(use)
-         use.allocate(points.usableBundles(use.userId, now)).forEach(points::addAllocation)
+-        /** auto-confirm 대상의 delivered_at 상한(이 시각 이하면 자동 확정). */
++        /** auto-confirm 대상의 delivered_at 상한(이 시각 이하면 auto-confirm 대상). */
+         fun autoConfirmCutoff(now: Instant): Instant = now.minus(CONFIRM_WITHIN)
+     }
+ }
+--- a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
+@@ -238,7 +238,7 @@
+ }
+ 
+ /**
+- * auto-confirm(ADR-0004 §5): 배송 완료 7일이 지난 DELIVERED 항목을 id 순으로 CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2.
++ * auto-confirm(ADR-0004 §5): 배송 완료 7일이 지난 DELIVERED 항목을 id 순으로 CONFIRMED → §8.2.
+  * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
+  * 단독 배치(run)는 격리하고, weekly-settlement 안(runStoppingOnFailure)에서는 격리하지 않는다(ADR-0004 §15의 1 — 실패하면 정산하지 않는다).
+  */
+@@ -314,7 +314,7 @@
+ }
+ 
+ /**
+- * weekly-settlement(ADR-0004 §10): 먼저 auto-confirm을 수행하고(소급 확정 시각이 이미 마감된 주에 들어가지 않게), 정산할 주를 오래된 주부터 정산한다.
++ * weekly-settlement(ADR-0004 §10): 먼저 auto-confirm을 수행하고, 정산할 주를 오래된 주부터 정산한다.
+  * 한 주 = 모든 판매자를 트랜잭션 하나로(§9.2 — 실패하면 그 주 전체가 롤백되고 예외가 전파된다. 앞 주는 커밋된 채).
+  * 격리하지 않는다(§15의 1): 앞 auto-confirm이 1건이라도 실패하면 정산하지 않고, 한 주가 실패하면 뒤 주를 정산하지 않는다.
+  */
+--- a/app/src/main/kotlin/com/ccle/layered/service/BuyerItemService.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/BuyerItemService.kt
+@@ -49,7 +49,7 @@
+     private val refunds: RefundRepository,
+ ) {
+ 
+-    /** 구매 확정. DELIVERED만, confirmed_at = min(현재, delivered_at + 7일). */
++    /** 구매 확정. DELIVERED만. */
+     fun confirm(userId: Long, itemId: Long): ItemDetail {
+         val now = clock.now()
+         return tx.execute {

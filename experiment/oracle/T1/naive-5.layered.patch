@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Settlement.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Settlement.kt
+@@ -31,7 +31,7 @@
+         fun pending(lastPeriodStart: LocalDate?, now: Instant): List<SettlementWeek> {
+             val latest = LocalDate.ofInstant(now, KST).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+             val weeks = mutableListOf<SettlementWeek>()
+-            var cutoff = lastPeriodStart?.plusDays(14) ?: latest
++            var cutoff = lastPeriodStart?.plusDays(7) ?: latest
+             while (!cutoff.isAfter(latest)) {
+                 weeks += SettlementWeek(cutoff)
+                 cutoff = cutoff.plusDays(7)

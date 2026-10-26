@@ -1,5 +1,13 @@
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1105-1111 fix  # 예약 배분 정렬 hunk(정답 패치 원래 쪽 범위, 문맥 3줄 — C2 와 같은 규칙)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1088-1123 read  # reservePoints: USE 예약 + 묶음 차감·배분
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1149-1156 read  # confirmEarn: expires_at = confirmed_at + 365일
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:663-678 read  # approveOrder: EARN PENDING, created_at = paidAt
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1514-1542 read  # point-expiry 배치(증상이 드러나는 곳 — 고칠 곳 아님)
+# T1 symbols — 줄 번호는 주입 사본 기준(inject 가 원본 :876 한 줄을 지워 그 뒤 줄은 원본 −1).
+# fix = 정답 패치 hunk 의 원래 쪽 줄 범위(문맥 3줄 포함, import·주석만 바꾸는 hunk 제외 — C2 와 같은 규칙).
+# edit = 정답 패치가 고치는 파일 전체(첫 편집 적중 전용) — 합류점 대안 정답(confirmItem)도 같은 파일이라 따로 적지 않는다.
+# read = 읽어야 할 곳.
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:873-879 fix  # 지점 1: 구매자 확정 시각(confirmOrderItem)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1504-1510 fix  # 지점 2: 자동 확정 시각(autoConfirmItems)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1-1771 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:869-879 read  # confirmOrderItem: 구매자 확정
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:881-888 read  # confirmItem: 확정 반영 합류점(대안 정답 위치)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1489-1511 read  # autoConfirmItems: 자동 확정 배치
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:902-918 read  # openDispute: 분쟁 기한 = confirmed_at + 14일(증상이 드러나는 곳 — 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1594-1604 read  # 정산 대상 SQL confirmed_at < cutoff(증상이 드러나는 곳 — 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1606-1623 read  # settleWeeks: auto-confirm 먼저 → 주 루프(오진 유도 — 고칠 곳 아님)

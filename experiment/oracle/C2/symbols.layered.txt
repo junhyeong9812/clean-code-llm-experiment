@@ -1,15 +1,25 @@
-# C2 symbols — edit = 정답 패치가 고치는 기존 파일 전체(첫 편집 적중 전용, 두 구조 같은 기준). fix = 정답 패치 hunk 의 원래 쪽 줄 범위(문맥 3줄 포함, 두 구조 같은 규칙 — import·주석만 바꾸는 hunk 는 제외). read = 읽어야 할 곳. 새 파일은 기준 사본에 없어 제외
-app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:22-27 fix  # 생성자 주입 hunk
-app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:61-64 fix  # 엔드포인트 삽입 hunk(클래스 끝)
-app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:208-210 fix  # 응답 DTO 삽입 hunk(파일 끝)
-app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:99-102 fix  # 포트에 조회 메서드 추가 hunk
-app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt:34-37 fix  # 어댑터 구현 hunk
-app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:1-210 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
-app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:1-64 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
-app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:1-102 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
-app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt:1-37 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
-app/src/main/kotlin/com/ccle/layered/service/SettlementQueryService.kt:18-30 read  # 본보기 조회 서비스(새 서비스 파일은 경로가 없어 symbols 밖)
-app/src/main/kotlin/com/ccle/layered/service/UserService.kt:13-17 read  # requireUser(401 UNKNOWN_USER)
-app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:68-92 read  # SellerPenalty 엔티티(settlementId·issue·attachTo)
-app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:81-81 read  # 판매자 귀책 패널티 생성
-app/src/main/kotlin/com/ccle/layered/domain/Settlement.kt:106-106 read  # 정산이 패널티에 settlement_id를 붙이는 곳
+# C2 symbols — fix = 정답 패치 hunk 의 원래 쪽 줄 범위(문맥 3줄 포함, 두 구조 같은 규칙 — import·주석만 바꾸는 hunk 는 제외). edit = 정답 패치가 고치는 기존 파일 전체(첫 편집 적중 전용). read = 읽어야 할 곳. 새 파일은 기준 사본에 없어 제외
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:55-76 fix  # 제한 판정이 '새로 걸림/갱신' 신호를 돌려주게(restrictIfWarned·restrictIfPenalized)
+app/src/main/kotlin/com/ccle/layered/domain/Bid.kt:158-163 fix  # 포트: 사용자·쪽의 ACTIVE 입찰 조회
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:40-45 fix  # 어댑터 구현
+app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt:33-35 fix  # 일괄 취소 컴포넌트 삽입 hunk(파일 끝)
+app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:73-78 fix  # SellerFaults 생성자 주입
+app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:81-86 fix  # 판매 제한이 걸리는 곳(SellerFaults.apply 끝)
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:143-148 fix  # PaymentDueBatch 생성자 주입
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:161-167 fix  # 구매 제한이 걸리는 곳(PaymentDueBatch.expire — 재매칭 전)
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:1-142 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/layered/domain/Bid.kt:1-188 edit  # 〃
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:1-81 edit  # 〃
+app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt:1-35 edit  # 〃
+app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:1-86 edit  # 〃
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:1-357 edit  # 〃
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:38-46 read  # 제한은 새 입찰에만(등록 시 403)
+app/src/main/kotlin/com/ccle/layered/domain/Bid.kt:20-28 read  # 사이즈 잠금 포트
+app/src/main/kotlin/com/ccle/layered/domain/Bid.kt:88-93 read  # Bid.cancel(ACTIVE → CANCELLED 이벤트)
+app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt:12-35 read  # 사용자 입찰 취소(단건)
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:104-127 read  # bid-expiry(가장 가까운 본보기: 사이즈 잠금 → 상태 변경 + 이벤트)
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:129-176 read  # PaymentDueBatch — 경고·구매 제한·판매 입찰 복구·재매칭
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:215-238 read  # shipment-deadline 진입(→ SellerFaults)
+app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:66-86 read  # SellerFaults — 패널티·판매 제한
+app/src/main/kotlin/com/ccle/layered/service/FulfillmentService.kt:76-96 read  # 검수 불합격 진입(→ SellerFaults)
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:66-75 read  # 호가

@@ -1,11 +1,11 @@
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -1105,7 +1105,7 @@
-         val bundles = em.createNativeQuery(
-             "SELECT * FROM point_ledger" +
-                 " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at > :now AND remaining > 0" +
--                " ORDER BY created_at, id",
-+                " ORDER BY created_at DESC, id DESC",
-             PointLedgerEntry::class.java,
-         ).setParameter("user", userId).setParameter("now", now).resultList
-         var need = amount
+@@ -1597,7 +1597,7 @@
+      * CLAWBACK: REFUNDED_AFTER_CONFIRM이고 cancelled_at < cutoff, INCLUDED 수 > CLAWBACK 수.
+      */
+     private val settlementTargetSql =
+-        "(i.status IN ('CONFIRMED', 'DISPUTED') AND i.confirmed_at < :cutoff" +
++        "(i.status IN ('CONFIRMED', 'DISPUTED') AND i.confirmed_at <= :cutoff" +
+             " AND NOT EXISTS (SELECT 1 FROM settlement_items s WHERE s.order_item_id = i.id AND s.status = 'INCLUDED'))" +
+             " OR (i.status = 'REFUNDED_AFTER_CONFIRM' AND i.cancelled_at < :cutoff" +
+             " AND (SELECT count(*) FILTER (WHERE s.status = 'INCLUDED') - count(*) FILTER (WHERE s.status = 'CLAWBACK')" +

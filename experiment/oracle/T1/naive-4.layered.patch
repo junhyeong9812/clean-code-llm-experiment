@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaSettlementRepository.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaSettlementRepository.kt
+@@ -18,7 +18,7 @@
+      * CLAWBACK: REFUNDED_AFTER_CONFIRM이고 cancelled_at < cutoff, INCLUDED 수 > CLAWBACK 수.
+      */
+     private val targetCondition =
+-        "(i.status IN ('CONFIRMED', 'DISPUTED') AND i.confirmed_at < :cutoff" +
++        "(i.status IN ('CONFIRMED', 'DISPUTED') AND LEAST(i.confirmed_at, i.delivered_at + INTERVAL '7 days') < :cutoff" +
+             " AND NOT EXISTS (SELECT 1 FROM settlement_items s WHERE s.order_item_id = i.id AND s.status = 'INCLUDED'))" +
+             " OR (i.status = 'REFUNDED_AFTER_CONFIRM' AND i.cancelled_at < :cutoff" +
+             " AND (SELECT count(*) FILTER (WHERE s.status = 'INCLUDED') - count(*) FILTER (WHERE s.status = 'CLAWBACK')" +

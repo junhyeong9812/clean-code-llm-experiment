@@ -5,70 +5,56 @@ import support.Batches
 import support.Clock
 import support.Db
 import support.Resp
+import java.time.DayOfWeek
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.temporal.TemporalAdjusters
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * 증상: 먼저 결제했지만 나중에 구매 확정한 포인트(A)와, 나중에 결제했지만 먼저 확정한 포인트(B)를 가진 사용자가
- * 포인트를 쓴 뒤 B의 유효기간이 끝나면, 쓰지 않은 B가 소멸돼 남은 포인트가 줄어든다.
+ * 증상: 배송 완료 뒤 아무도 구매 확정하지 않은 항목이, 배송 완료 7일째가 속한 주가 아니라 그 뒤 주의 판매자 정산에 들어간다.
  */
 class T1Test {
 
+    private val kst = ZoneId.of("Asia/Seoul")
+
     @Test
-    fun `유효기간이 먼저 끝나는 포인트를 먼저 써서 쓰고 남은 포인트가 소멸되지 않는다`() {
+    fun `아무도 확정하지 않은 항목은 배송 완료 7일째가 속한 주의 정산에 들어간다`() {
         val buyer = newUser()
+        val bought = purchase(buyer, 80_000)
+        ok("발송", Api.post("/order-items/${bought.item}/shipment", null, bought.seller))
+        ok("입고", Api.post("/admin/order-items/${bought.item}/receipt", null))
+        ok("검수", Api.post("/admin/order-items/${bought.item}/inspection", mapOf("result" to "PASS")))
 
-        // A를 먼저 결제하고, 시계를 조금 옮겨 B를 결제한다
-        val a = purchase(buyer, 100_000)
-        Clock.advance(Duration.ofMinutes(1))
-        val b = purchase(buyer, 60_000)
-        deliver(a)
-        deliver(b)
+        // 다음 목요일 15:00(KST)에 배송 완료
+        val thursday = LocalDate.ofInstant(Clock.now(), kst).with(TemporalAdjusters.next(DayOfWeek.THURSDAY))
+        moveTo(thursday.atTime(15, 0).atZone(kst).toInstant())
+        ok("배송 완료", Api.post("/admin/order-items/${bought.item}/delivery", null))
 
-        // B를 먼저 확정하고, 이틀 뒤 A를 확정한다 → B의 유효기간이 A보다 이틀 먼저 끝난다
-        confirm(b, buyer)
-        Clock.advance(Duration.ofDays(2))
-        confirm(a, buyer)
+        // 배송 완료 7일째(다음 주 목요일)가 속한 주 = 그 주 월요일부터, 마감 = 다음 월요일 00:00(KST)
+        val seventhDay = thursday.plusDays(7)
+        val weekStart = seventhDay.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        val cutoff = weekStart.plusDays(7).atStartOfDay(kst).toInstant()
 
-        val before = points(buyer)
-        assertTrue(before.usable > 1_000, "준비: 두 묶음 모두 사용 가능해야 한다 $before")
-        // 두 적립의 만료 시각(사용 전에 읽는다 — 이 시점 그 사용자의 원장 행은 적립 둘뿐)
-        val ends = Db.query(
-            "SELECT (extract(epoch FROM expires_at) * 1000)::bigint AS ms FROM point_ledger" +
-                " WHERE user_id = ? AND expires_at IS NOT NULL ORDER BY 1",
-            buyer,
-        ).map { Instant.ofEpochMilli((it["ms"] as Number).toLong()) }
-        assertEquals(2, ends.size, "준비: 유효기간이 정해진 적립이 두 건이어야 한다 $ends")
+        // 아무도 확정하지 않은 채 그 주가 마감된 뒤(화요일 10:00)에 주간 정산을 돌린다
+        moveTo(cutoff.plus(Duration.ofHours(34)))
+        val batch = Batches.run("weekly-settlement")
+        assertEquals(200, batch.status, "weekly-settlement: $batch")
 
-        // 1,000P 사용(B의 적립보다 크고 A+B보다 작다)
-        val pay = pay(buyer, listOf(trade(buyer, 100_000)), 1_000)
-        assertEquals(201, pay.status, "포인트 사용 결제: $pay")
-        assertEquals("PAID", pay.json["status"].asText(), "포인트 사용 결제: $pay")
-
-        // B의 유효기간만 끝나고 A는 아직 남은 시각(두 적립의 만료 시각 사이)으로 옮기고 소멸 배치를 돌린다
-        Clock.moveTo(ends[0].plus(Duration.between(ends[0], ends[1]).dividedBy(2)))
-        val batch = Batches.run("point-expiry")
-        assertEquals(200, batch.status, "point-expiry: $batch")
-
-        // B가 먼저 쓰였다면 B에는 남은 것이 없어 소멸할 것이 없다 — 쓰고 남은 포인트가 그대로 있어야 한다
-        val after = points(buyer)
-        assertEquals(before.usable - 1_000, after.usable, "쓰고 남은 사용 가능 포인트: 전 $before, 후 $after")
-        assertEquals(before.available - 1_000, after.available, "쓰고 남은 포인트: 전 $before, 후 $after")
+        val r = Api.get("/me/settlements", bought.seller)
+        assertEquals(200, r.status, "정산 조회: $r")
+        val weeks = r.json.filter { s -> s["items"].any { it["orderItemId"].asLong() == bought.item } }.map { it["periodStart"].asText() }
+        assertEquals(listOf(weekStart.toString()), weeks, "그 항목이 들어간 정산 주(period_start): $r")
     }
 
     // ---- 준비 도우미(HTTP·DB) ----
 
-    private data class Points(val available: Long, val pending: Long, val usable: Long)
-
-    private fun points(user: Long): Points {
-        val r = Api.get("/me/points", user)
-        assertEquals(200, r.status, "포인트 조회: $r")
-        return Points(r.json["available"].asLong(), r.json["pending"].asLong(), r.json["usable"].asLong())
-    }
+    private fun moveTo(t: Instant) = Clock.moveTo(t).also { assertTrue(it.status in 200..299, "시계 이동: $it") }
 
     private fun uniq() = UUID.randomUUID().toString().replace("-", "").take(16)
 
@@ -102,30 +88,17 @@ class T1Test {
         return buy.json["tradeId"].asLong()
     }
 
-    private fun pay(buyer: Long, trades: List<Long>, point: Long): Resp =
-        Api.post("/orders", mapOf("tradeIds" to trades, "pointToUse" to point), buyer, "t1-" + UUID.randomUUID())
-
     private data class Bought(val item: Long, val seller: Long)
 
     /** 체결 1건을 포인트 없이 결제하고 그 주문 항목을 돌려준다. */
     private fun purchase(buyer: Long, price: Long): Bought {
         val tradeId = trade(buyer, price)
-        val r = pay(buyer, listOf(tradeId), 0)
+        val r: Resp = Api.post("/orders", mapOf("tradeIds" to listOf(tradeId), "pointToUse" to 0), buyer, "t1-" + UUID.randomUUID())
         assertEquals(201, r.status, "결제: $r")
         assertEquals("PAID", r.json["status"].asText(), "결제: $r")
         val item = r.json["items"].single()["orderItemId"].asLong()
-        val seller = Db.long("SELECT seller_id FROM trades WHERE id = ?", tradeId)
-        return Bought(item, seller)
+        return Bought(item, Db.long("SELECT seller_id FROM trades WHERE id = ?", tradeId))
     }
 
     private fun ok(step: String, r: Resp) = assertEquals(200, r.status, "$step: $r")
-
-    private fun deliver(b: Bought) {
-        ok("발송", Api.post("/order-items/${b.item}/shipment", null, b.seller))
-        ok("입고", Api.post("/admin/order-items/${b.item}/receipt", null))
-        ok("검수", Api.post("/admin/order-items/${b.item}/inspection", mapOf("result" to "PASS")))
-        ok("배송 완료", Api.post("/admin/order-items/${b.item}/delivery", null))
-    }
-
-    private fun confirm(b: Bought, buyer: Long) = ok("구매 확정", Api.post("/order-items/${b.item}/confirm", null, buyer))
 }

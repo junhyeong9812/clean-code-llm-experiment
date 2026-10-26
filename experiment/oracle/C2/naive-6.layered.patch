@@ -1,0 +1,31 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+@@ -48,10 +48,12 @@
+             else -> " AND price >= :limit"
+         }
+         val order = if (side == "BUY") "price ASC" else "price DESC"
++        // 제한 중인 사용자의 입찰은 체결 상대에서 뺀다
++        val restricted = if (counterSide == "BUY") "purchase_restricted_until" else "sale_restricted_until"
+         val query = em.createNativeQuery(
+             "SELECT * FROM bids" +
+                 " WHERE product_size_id = :size AND side = :side AND status = 'ACTIVE' AND expires_at > :now" +
+-                " AND user_id <> :user" + crossing +
++                " AND user_id <> :user AND user_id NOT IN (SELECT id FROM users WHERE $restricted > :now)" + crossing +
+                 " ORDER BY $order, created_at ASC, id ASC LIMIT 1",
+             Bid::class.java,
+         )
+@@ -66,9 +68,10 @@
+     override fun book(productSizeId: Long, now: Instant): Book {
+         val row = em.createNativeQuery(
+             """
+-            SELECT max(price) FILTER (WHERE side = 'BUY'), min(price) FILTER (WHERE side = 'SELL')
+-              FROM bids
+-             WHERE product_size_id = :size AND status = 'ACTIVE' AND expires_at > :now
++            SELECT max(b.price) FILTER (WHERE b.side = 'BUY' AND NOT coalesce(u.purchase_restricted_until > :now, false)),
++                   min(b.price) FILTER (WHERE b.side = 'SELL' AND NOT coalesce(u.sale_restricted_until > :now, false))
++              FROM bids b JOIN users u ON u.id = b.user_id
++             WHERE b.product_size_id = :size AND b.status = 'ACTIVE' AND b.expires_at > :now
+             """,
+         ).setParameter("size", productSizeId).setParameter("now", now).singleResult as Array<*>
+         return Book(bestBuy = (row[0] as Number?)?.toLong(), bestSell = (row[1] as Number?)?.toLong())

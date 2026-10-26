@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
+@@ -330,7 +330,7 @@
+     fun markConfirmed(confirmedAt: Instant) {
+         check(status == "DELIVERED") { "DELIVERED가 아닌 항목 $id 를 확정하려 했다: $status" }
+         status = "CONFIRMED"
+-        this.confirmedAt = confirmedAt
++        this.confirmedAt = minOf(confirmedAt, deliveredAt!!.plus(CONFIRM_WITHIN))
+     }
+ 
+     /** 발송 기한 초과(ADR-0004 §5 shipment-deadline): PAID이고 paid_at + 3일 ≤ 현재. 바꾸지 않는다 — 판매자 귀책은 잠금 뒤. */

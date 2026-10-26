@@ -1,66 +1,53 @@
 diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
---- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt	2026-10-26 12:52:46.681003396 +0900
-+++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt	2026-10-26 12:52:59.099880845 +0900
-@@ -30,6 +30,7 @@
- import com.ccle.god.web.OrderItemView
- import com.ccle.god.web.OrderView
- import com.ccle.god.web.PaymentResult
-+import com.ccle.god.web.PenaltyView
- import com.ccle.god.web.PointsView
- import com.ccle.god.web.RefundView
- import com.ccle.god.web.SettlementItemView
-@@ -1736,6 +1737,21 @@
-         }
-     }!!
- 
-+    /** `GET /me/penalties`: 본인(판매자) 패널티, created_at 내림차순(같으면 id 내림차순). settled = settlement_id 있음. */
-+    fun listPenalties(userId: Long): List<PenaltyView> =
-+        em.createQuery(
-+            "SELECT p FROM SellerPenalty p WHERE p.sellerId = :seller ORDER BY p.createdAt DESC",
-+            SellerPenalty::class.java,
-+        ).setParameter("seller", userId).resultList.map {
-+            PenaltyView(
-+                penaltyId = it.id!!,
-+                orderItemId = it.orderItemId,
-+                amount = it.amount,
-+                createdAt = it.createdAt,
-+                settled = it.settlementId != null,
-+            )
-+        }
-+
-     // ---- 기동 (ADR-0003 §9의 7) ----
- 
-     /**
-diff -ruN a/app/src/main/kotlin/com/ccle/god/web/Dtos.kt b/app/src/main/kotlin/com/ccle/god/web/Dtos.kt
---- a/app/src/main/kotlin/com/ccle/god/web/Dtos.kt	2026-10-26 12:52:46.681457171 +0900
-+++ b/app/src/main/kotlin/com/ccle/god/web/Dtos.kt	2026-10-26 12:52:59.096202859 +0900
-@@ -108,3 +108,6 @@
- )
- 
- data class SettlementItemView(val orderItemId: Long, val amount: Long, val fee: Long, val status: String)
-+
-+/** 판매자 패널티 조회 응답 1행. settled = 주간 정산에 반영됨(정산 행에 붙음). */
-+data class PenaltyView(val penaltyId: Long, val orderItemId: Long, val amount: Long, val createdAt: Instant, val settled: Boolean)
-diff -ruN a/app/src/main/kotlin/com/ccle/god/web/OrderController.kt b/app/src/main/kotlin/com/ccle/god/web/OrderController.kt
---- a/app/src/main/kotlin/com/ccle/god/web/OrderController.kt	2026-10-26 12:52:46.681605448 +0900
-+++ b/app/src/main/kotlin/com/ccle/god/web/OrderController.kt	2026-10-26 12:52:59.095802220 +0900
-@@ -10,7 +10,7 @@
- import org.springframework.web.bind.annotation.RequestHeader
- import org.springframework.web.bind.annotation.RestController
- 
--/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2), 판매자 정산 조회(ADR-0004 §10.3). */
-+/** 주문 결제·조회(ADR-0003 §5.1·§5.3), 포인트 조회(§5.2), 판매자 정산 조회(ADR-0004 §10.3)·패널티 조회. */
- @RestController
- class OrderController(private val marketplace: Marketplace) {
- 
-@@ -51,4 +51,10 @@
-         val userId = marketplace.requireUser(userHeader)
-         return marketplace.listSettlements(userId)
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -191,6 +191,24 @@
+         }!!
      }
-+
-+    @GetMapping("/me/penalties")
-+    fun penalties(@RequestHeader("X-User-Id", required = false) userHeader: String?): List<PenaltyView> {
-+        val userId = marketplace.requireUser(userHeader)
-+        return marketplace.listPenalties(userId)
+ 
++    /**
++     * 제한이 새로 걸리거나 갱신될 때(판매 제한 = 판매자 귀책, 구매 제한 = payment-due) 그 사용자의 그 쪽 ACTIVE 입찰을 모두 취소한다.
++     * 유효기간이 지났지만 아직 bid-expiry가 처리하지 않은 ACTIVE 입찰도 대상이다. 입찰마다 그 사이즈를 잠그고(§3.3) 다시 읽은 뒤
++     * ACTIVE인 것만 ACTIVE → CANCELLED(이벤트 trade_id NULL). 호출자의 트랜잭션 안에서 부른다.
++     */
++    private fun cancelActiveBids(userId: Long, side: String, now: Instant) {
++        val active = em.createQuery(
++            "SELECT b FROM Bid b WHERE b.userId = :user AND b.side = :side AND b.status = 'ACTIVE' ORDER BY b.productSizeId, b.id",
++            Bid::class.java,
++        ).setParameter("user", userId).setParameter("side", side).resultList
++        for (bid in active) {
++            lockProductSize(bid.productSizeId)
++            em.refresh(bid)
++            if (bid.status != "ACTIVE") continue
++            bid.status = "CANCELLED"
++        }
 +    }
- }
++
+     /** 입찰 조회(§3.4). 등록자만. tradeId = 살아 있는 체결. */
+     fun getBid(userId: Long, bidId: Long): BidView {
+         val bid = em.find(Bid::class.java, bidId) ?: notFound("없는 입찰: $bidId")
+@@ -963,7 +981,10 @@
+             Instant::class.java,
+         ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+             .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+-        if (recentPenalties >= 3) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
++        if (recentPenalties >= 3) {
++            seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
++            cancelActiveBids(sellerId, "SELL", now)
++        }
+     }
+ 
+     // ---- 환불 (ADR-0004 §7) ----
+@@ -1400,7 +1421,11 @@
+             Instant::class.java,
+         ).setParameter("user", trade.buyerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+             .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+-        if (recentWarnings >= 3) buyer.purchaseRestrictedUntil = now.plus(Duration.ofDays(7))
++        if (recentWarnings >= 3) {
++            buyer.purchaseRestrictedUntil = now.plus(Duration.ofDays(7))
++            // 그 구매자의 다른 ACTIVE 구매 입찰은 아래 재매칭보다 먼저 취소한다(되살아난 판매 입찰과 체결되지 않게)
++            cancelActiveBids(trade.buyerId, "BUY", now)
++        }
+ 
+         // 구매 입찰 MATCHED → CANCELLED (판매 입찰 이벤트보다 먼저)
+         val buy = em.find(Bid::class.java, trade.buyBidId)

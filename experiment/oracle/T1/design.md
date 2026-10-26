@@ -1,145 +1,194 @@
-# T1 설계 — 포인트 사용 배분 순서(bug)
+# T1 설계 — 확정 시각 상한(bug)
 
-> ADR-0005(개정 1) §3.2 T1 행. 작성 기준 커밋 `3304c68`(feat/tasks-a-judge). 줄 번호는 별도 표시가 없으면 원본(= inject 적용 후와 같음 — 주입은 줄 수를 바꾸지 않는다).
+> tasks-redesign task 02. 설계 브리프(T1 절 + "선검증 반영" 절 — 반영 절이 본문보다 우선)를 따른다. 옛 T1(포인트 사용 배분 순서)은 git `5131584`의 이력이다.
+> 작성 기준: 브랜치 `feat/tasks-redesign`, HEAD `0fe3f36`. 앱 원본은 main `5131584`와 같다.
+> 줄 번호: "원본"은 저장소의 `god/`·`layered/` 소스, 표시가 없으면 **주입 사본** 기준이다. 주입은 지점 1에서 한 줄을 지운다. 그래서 god `Marketplace.kt`의 원본 :877 뒤 줄과 layered `domain/Order.kt`의 원본 :327 뒤 줄은 주입 사본에서 원본 −1이다. 다른 파일은 줄 수가 그대로다. symbols도 주입 사본 기준이다.
 
 ## 1. 의도
 
-- 규칙: 결제에서 포인트를 쓰면(예약) 사용 가능한 적립 묶음을 **만료가 이른 것부터**, 만료 시각이 같으면 id 순으로 차감한다(ADR-0003 §5.2·ADR-0002 §9.6 FIFO).
-- 주입: 배분 정렬 `(expires_at, id)` → `(created_at, id)`. 두 구조 모두 같은 한 줄이다.
-- 증상: 적립 순서와 만료 순서가 다르면(먼저 결제한 주문을 나중에 확정) 유효기간이 많이 남은 묶음을 먼저 쓴다. 만료가 이른 묶음은 남고, 그 만료 때 소멸된다.
-- 기존 계약 테스트는 이 주입을 잡지 못한다. `PointRuleTest` FIFO 두 테스트는 `Db.createPointBundle` 픽스처를 쓴다. 이 픽스처는 `paid = confirmedAt − 9일 + 1분`이고 `expires_at = confirmedAt + 365일`이다. 그래서 생성 순서와 만료 순서가 늘 같다(behavior-tests `support/Db.kt:149-166`).
+- 규칙(ADR-0004 §4.1·§5, ADR-0002 §9.7):
+  - 구매자 확정: `confirmed_at = min(현재, delivered_at + 7일)`.
+  - 자동 확정(`auto-confirm`, `weekly-settlement`가 먼저 수행): DELIVERED이고 `delivered_at + 7일 ≤ 현재`이면 `confirmed_at = delivered_at + 7일`(소급).
+  - 하류 효과: 정산 대상 주(`confirmed_at < cutoff`), 분쟁 기한(`confirmed_at + 14일`), 적립 만료(`confirmed_at + 365일`), 등급 산정 월.
+- 주입: 두 지점 모두 확정 시각으로 "지금"을 기록한다. 두 구조가 같은 의미다.
+- 증상: 7일 뒤 확정된 항목이 정산에서 늦은 주로 밀린다. 분쟁 기한도 늦게 끝난다.
+- 난이도 수단: 분리(증상은 정산·분쟁에서 보이고, 고칠 곳은 확정) · 여러 지점(규칙 지점 2) · 오진 유도(정산 cutoff·주 루프).
 
-## 2. 구조별 원인 위치
+## 2. 주입(`inject.{god,layered}.patch`)
 
-| 구조 | 고칠 곳(fix) | 경로 |
+| 구조 | 지점 1: 구매자 확정 | 지점 2: 자동 확정 |
 |---|---|---|
-| god | `Marketplace.kt:1108` `" ORDER BY created_at, id"` | `payOrder`(:596) → `reservePoints`(:1092-1123)의 묶음 조회 |
-| layered | `infra/JpaPointRepositories.kt:37` `" ORDER BY created_at, id"` | `PaymentService`(:115) → `PointBook.reserve`(:22-26) → `PointRepository.usableBundles`(선언 `domain/Point.kt:289`) → `JpaPointRepository.usableBundles`(:33-39) → `PointLedgerEntry.allocate`(`domain/Point.kt:38-51`, 받은 순서대로 차감) |
+| god | `Marketplace.kt` 원본 :876-877 → 주입 :876. `lastDay` 계산 줄을 지우고 `confirmItem(item, confirmedAt = now, now = now)` | 원본 :1508 → 주입 :1507. 가드 `due`(:1503-1504)는 그대로, `confirmItem(item, confirmedAt = now, now = now)` |
+| layered | `domain/Order.kt` 원본 :326-327 → 주입 :326. `confirmationTime`: `requireStatus("DELIVERED"); return now`(lastDay 삭제) | 원본 :347 → 주입 :346. `autoConfirmationTime`: `return if (due.isAfter(now)) null else now` |
 
-- 고칠 곳 수: 1 대 1.
-- 그대로 두는 같은 규칙의 해제 쪽: 복구 정렬 `expires_at DESC, id DESC`(god `:1215`, layered `infra/JpaPointRepositories.kt:73`). 해제(`releasePoints` god `:1126`, layered `PointBook.release` `:29`)는 배분 행을 그대로 되돌리므로 정렬이 없다.
+- 상수: layered `CONFIRM_WITHIN`(`Order.kt` 주입 :396)은 남는다. 가드(:345)와 `autoConfirmCutoff`(:403)에서 계속 쓴다. god는 `Duration.ofDays(7)` 리터럴이 자동 확정 가드 두 곳(:1498 대상 조건, :1503 `due`)에 남는다. 두 구조 모두 지점 2의 가드가 `delivered_at + 7일`을 계산해 둔 채 쓰지 않는 모양이다(대칭).
+- 주입 사본은 두 구조 모두 경고 없이 컴파일된다(스모크 — §10).
 
-## 3. 정답
+### 2.1 규칙 서술 주석 — 중립 문장으로 바꿈(지우지 않음)
 
-- `fix.god.patch`·`fix.layered.patch`: 위 한 줄을 `" ORDER BY expires_at, id"`로 되돌린다. 주석은 되돌리지 않는다. 코드만 바꾸면 정답이다.
-- **대안 정답이 통과해야 하는 이유:** 숨은 테스트는 묶음별 `remaining`, `/me/points`, 소멸 배치 뒤 잔액만 본다. SQL·정렬 문구·배분 행 순서는 보지 않는다. 그래서 다음도 통과한다.
-  - 정렬 `expires_at, created_at`·`expires_at, id DESC`처럼 만료가 같을 때의 순서를 달리한 것. 숨은 테스트의 세 묶음은 만료 시각이 모두 다르다.
-  - 메모리에서 정렬하기(예: layered `allocate` 앞에서 `sortedWith(compareBy({ it.expiresAt }, { it.id }))`, god `bundles.sortedBy`).
-  - 정렬을 서비스나 도메인으로 옮긴 리팩터링.
-- 만료가 같을 때 id 순을 깨는 대안은 숨은 테스트를 통과한다. 그러나 회귀 `PointRuleTest."FIFO - 만료 시각이 같으면 id 순"`에서 실패한다. 이 계약은 ADR에 있으므로 정상적인 판정이다.
+선검증 반영에 따라 주석은 지우지 않는다. 시각 규칙만 뺀 중립 문장으로 바꾼다(두 구조 같은 방식). 그래서 layered KDoc 자리만 비어 눈에 띄는 일이 없다.
 
-## 4. 숨은 테스트(`hidden/T1HiddenTest.kt`)
+전수 grep: 두 구조 `src/`에서 `grep -rn "7일\|delivered_at + 7\|소급\|confirmed_at\|confirmedAt\|확정 시각"`. 그 결과에서 확정 시각 규칙(`min(현재, …)`·`= delivered_at + 7일`·`소급`)을 서술한 주석만 골랐다.
 
-자연 흐름은 다음과 같다. 모두 HTTP로 진행한다. 사용자·상품만 DB에 직접 넣는다.
-
-1. 결제 A(100,000) → +1분 → 결제 B(60,000) → +1분 → 결제 C(80,000). 각각 포인트 없이 결제한다.
-2. 셋 다 발송·입고·검수 PASS·배송 완료.
-3. B 확정 → +1일 → A 확정 → +1일 → C 확정.
-4. 생성 순서는 A < B < C(id도 같음), 만료 순서는 B < A < C가 된다.
-
-단언(결과만):
-
-- 준비 확인(D12 실측 장치): 세 묶음의 `created_at`·id·`expires_at` 순서가 위와 같다. 사용액 1,000이 B보다 크고, A+B보다 작고, C보다 크다. 적립액은 상수로 두지 않고 DB에서 읽는다.
-- 1,000P 사용 뒤: B `remaining` = 0, A = A − (1,000 − B), C = C 그대로. 사용 가능액·available은 1,000만큼 줄어든다.
-- 시계를 B의 `expires_at`으로 옮기고 `point-expiry`를 돌린다. 그 사용자의 EXPIRE 행은 0이고 available·usable은 그대로다.
-- 시계를 A의 `expires_at`으로 옮기고 `point-expiry`를 돌린다. available = usable = C 전부.
-
-세 묶음을 쓰는 이유는 생성 역순(LIFO, naive-3)을 가려내기 위해서다. 묶음이 둘(A·B)이면 생성 역순도 B부터 써서 정답과 결과가 같다.
-
-### D12 실측(T1 부분) — 적립 묶음의 `created_at`·`expires_at`이 정해지는 때
-
-| | `created_at` | `expires_at` |
+| 구조 | 위치(주입 사본) | 원문 → 주입 후 |
 |---|---|---|
-| god | 승인 반영 때 `paidAt`(`Marketplace.kt:674`, `approveOrder` :641) | 확정 때 `confirmedAt + 365일`(`:1154`). `confirmedAt = min(현재, delivered_at + 7일)`(`:876-877`), auto-confirm은 `delivered_at + 7일`(:1508) |
-| layered | `PointLedgerEntry.pendingEarn(paidAt)`(`domain/Point.kt:180-190`, 호출 `domain/Order.kt:253`) | `confirmEarn` → `confirmedAt + EARN_VALID_FOR(365일)`(`domain/Point.kt:84-90`). `confirmationTime = min(현재, delivered_at + 7일)`(`domain/Order.kt:324-328`), 자동 확정 `autoConfirmationTime`(:344-348) |
+| god | `Marketplace.kt:869` KDoc(confirmOrderItem) | "구매 확정(§4.1). 구매자만, DELIVERED만. confirmed_at = min(현재, delivered_at + 7일)(7일 뒤의 확정은 자동 확정과 같다) → §8.2." → "구매 확정(§4.1). 구매자만, DELIVERED만 → §8.2." |
+| god | `Marketplace.kt:1490` KDoc(autoConfirmItems) | "…≤ 현재인 항목을 id 순으로 CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2." → "…≤ 현재인 항목을 id 순으로 CONFIRMED → §8.2." |
+| god | `Marketplace.kt:1607` KDoc(settleWeeks) | "먼저 auto-confirm을 수행하고(소급 확정 시각이 이미 마감된 주에 들어가지 않게), 정산할 주를…" → "먼저 auto-confirm을 수행하고, 정산할 주를…" |
+| layered | `domain/Order.kt:321-322` KDoc(confirmationTime) | "…확인과 확정 시각: DELIVERED만, confirmed_at = min(현재, delivered_at + 7일) / (7일 뒤의 확정은 자동 확정과 같다). 바꾸지 않는다 — …" → "구매 확정(ADR-0004 §4.1)의 확인: DELIVERED만. / 바꾸지 않는다 — …"(두 줄 유지) |
+| layered | `domain/Order.kt:340` KDoc(autoConfirmationTime) | "자동 확정(ADR-0004 §5 auto-confirm)의 확정 시각: DELIVERED이고 delivered_at + 7일 ≤ 현재면 delivered_at + 7일(소급), 아니면 null." → "auto-confirm(ADR-0004 §5) 대상 확인: DELIVERED이고 delivered_at + 7일 ≤ 현재일 때만, 아니면 null." |
+| layered | `domain/Order.kt:402` KDoc(autoConfirmCutoff — 가드, 규칙 서술 아님) | "…상한(이 시각 이하면 자동 확정)." → "…상한(이 시각 이하면 auto-confirm 대상)." — TASK.md 핵심어 "자동 확정"의 layered 전용 grep 적중을 없애려고 바꿨다(god에는 "자동 확정" 문구가 없다) |
+| layered | `service/BuyerItemService.kt:52` KDoc(confirm) | "구매 확정. DELIVERED만, confirmed_at = min(현재, delivered_at + 7일)." → "구매 확정. DELIVERED만." |
+| layered | `service/BatchService.kt:241` KDoc(AutoConfirmBatch) | "…CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2." → "…CONFIRMED → §8.2." |
+| layered | `service/BatchService.kt:317` KDoc(WeeklySettlementBatch) | god :1607과 같은 괄호 삭제 |
 
-- 두 구조 모두 생성 시각은 결제 승인 시각, 만료 시각은 확정 시각 + 365일이다. 같은 흐름이 같은 결과를 낸다.
-- 실측: 주입 상태 두 구조에서 숨은 테스트의 준비 확인(순서 3개)이 모두 통과했다. 실패는 그다음 첫 결과 단언 `만료가 가장 이른 묶음(B)부터 다 써야 한다 ==> expected: <0> but was: <600>`에서 났다(god·layered 같음, 진단 실행).
-- 확정 사이에 시계를 옮기지 않으면 결과가 같아진다. 같은 요청 시각에 확정한 묶음은 `expires_at`이 같다. 그러면 정답 `(expires_at, id)`가 id 순, 곧 생성 순과 같아지고, 주입 `(created_at, id)`와 배분이 같아진다. 이는 코드에서 도출한 결론이다(`confirmedAt = 현재`). 이 변형은 따로 돌리지 않았다.
-- 결제 사이 +1분은 필수가 아니다. 같은 시각이면 `created_at`이 같아 id로 갈리고, 주입 결과는 여전히 A부터다. 준비 확인에서 `created_at` 엄격 순서를 보려고 넣었다.
+- 바꾼 개수: **god 3, layered 6**(규칙 서술 5 + 핵심어 대칭용 가드 문구 1). 원본 layered는 같은 규칙을 더 여러 층(도메인 2·서비스 3)에 서술했다. ADR §3.1 본문은 "지운다"이지만, 선검증 반영 절이 "중립 문장으로 바꾼다"로 우선한다.
+- **누출 점검(M-1 반영, 2026-10-27):** 처음 판은 layered `Order.kt:321`("확인과 확정 시각")·`:340`("자동 확정 …의 확정 시각")을 남겼다. TASK.md 핵심어 "확정 시각"으로 grep하면 layered만 고칠 두 지점에 바로 닿았다(god 적중 0). 위 표처럼 god 수준으로 중립화했다(줄 수 유지). 재점검: 두 구조의 주입 사본 `app/src` 전체를 grep한 결과는 다음과 같다.
 
-## 5. 공개 테스트(`cases/T1/checks/.../pub/T1Test.kt`)
+  | 핵심어 | god | layered |
+  |---|---|---|
+  | 확정 시각 | 0 | 0 |
+  | 자동 확정 | 0 | 0 |
+  | 소급 | 0 | 0 |
+  | 분쟁 접수 기한 | 0 | 0 |
+  | 7일 | 3 — 구매 제한 `:1392`(무관), 자동 확정 가드 KDoc `:1490`(지점 2 바로 위), 정산 주 KDoc `:1608` | 7 — 구매 제한 `User.kt:55·56`(무관), 정산 주 `Settlement.kt:14·28`, 가드 `BatchTargets.kt:22`·`BatchService.kt:241`·`Order.kt:340`(지점 2 바로 위) |
 
-- 묶음 2개(A 먼저 결제·나중 확정 +2일, B 나중 결제·먼저 확정) → 1,000P 사용 → +364일(B만 만료) → `point-expiry` → `/me/points`의 usable·available이 사용 전 − 1,000이다.
-- 주입 상태 실측: `expected: <600> but was: <0>`(B 600 소멸, A는 이미 다 씀).
-- 공개 테스트의 DB 직접 조회: 준비(사용자·상품 INSERT, 판매자 id)와 시계 이동 지점을 정할 만료 시각 읽기(리뷰 루프 1·2 — 최소 형태 `point_ledger` + `expires_at`만, 원인 줄 근처 조건 문구 없음). 단언은 HTTP 응답만 본다. naive-3(생성 역순)은 공개 테스트를 통과한다. 이는 의도한 것이며, 숨은 테스트가 잡는다.
+  - "7일"은 두 구조 모두 지점 2 바로 위의 가드 KDoc 1곳에 닿는다(대칭). 지점 1 근처에는 두 구조 모두 적중이 없다. layered의 추가 적중(가드 2·제한 2·정산 2)은 원본이 같은 가드를 여러 층에 서술한 결과다. 지점 2로 이어지는 가드 서술이 layered에 2곳 더 있다는 것을 비대칭으로 기록한다.
+- 남긴 가드 서술: 이 규칙은 바꾸지 않았으므로 그대로 둔다. god `:1490`의 "delivered_at + 7일 ≤ 현재인 항목"이 1곳이다. layered는 `domain/BatchTargets.kt:22`, `Order.kt:340`("≤ 현재일 때만"), `BatchService.kt:241`("배송 완료 7일이 지난")의 3곳이다.
 
-## 6. 순진한 오답(naive-N, 각각 숨은 테스트 실패 — 실측 표 §9)
+### 2.2 남는 단서(올바른 구현 잔여물) — 위협으로 기록
 
-| N | 패치(두 구조 같은 한 줄) | 사용 1,000 뒤 (A, B, C) remaining | 숨은 테스트 실패 지점 |
+| 구조 | 잔여물 | 개수 |
+|---|---|---|
+| god | 지점 2 가드의 `val due = …plus(Duration.ofDays(7))`(:1503)가 계산되고 비교에만 쓰인다. `confirmItem(…, confirmedAt = now, now = now)`처럼 확정 시각 인자가 `now`와 따로 있다(:876·:1507) | 코드 2 |
+| layered | 지점 2 가드의 `val due`(:345)가 같은 모양으로 남는다. `confirmer.confirm(item, item.confirmationTime(now), now)`(`BuyerItemService.kt:57`)에서 인자가 따로 있다. **추가:** `confirmationTime(now)`가 `requireStatus` 뒤 `return now`만 남는다(`Order.kt:324-327`). 이름이 "확정 시각을 계산하는 함수"인데 계산이 없어 눈에 띈다 | 코드 3 |
+
+- layered의 `confirmationTime` 흔적은 구조가 만든 차이다. 계산을 함수로 뽑아 둔 구조이기 때문에 생긴다. god에는 대응하는 함수가 없다. 처치 효과 과제로 표시하지 않고 결과 해석 때 기전 지표로 본다(ADR §9 위협).
+
+## 3. 수단 배치와 대칭
+
+| 수단 | god | layered | 대칭 판단 |
 |---|---|---|---|
-| 1 | `ORDER BY expires_at DESC, id DESC`(만료 늦은 것부터 — 복구 정렬을 그대로 베낌) | (800, 600, 0) | B remaining 0 아님 |
-| 2 | `ORDER BY id`(id 순 — 생성 순과 같음) | (0, 600, 800) | 〃 |
-| 3 | `ORDER BY created_at DESC, id DESC`(최근 적립부터, LIFO) | (1000, 400, 0) | 〃(공개는 통과) |
+| 분리 | 증상: 정산 대상 SQL `:1600`(`settleWeek` :1634), 분쟁 기한 `:909`. 고칠 곳: `:876`·`:1507` | 증상: `infra/JpaSettlementRepository.kt:21`, 분쟁 기한 `domain/Order.kt:358`. 고칠 곳: `Order.kt:326`·`:346` | 같다(증상에서 확정까지 2홉) |
+| 여러 지점 | 규칙 지점 2(`:876`, `:1507`), **631줄 떨어짐**, 각자 `Duration.ofDays(7)` | 규칙 지점 2(`:326`, `:346`), 한 클래스 **20줄 간격**, 상수 `CONFIRM_WITHIN` 공유 | 수 같음. 합류점 1곳의 대안 정답도 두 구조에 같은 조건으로 있다(§4). **거리 비대칭은 기록만 한다**(사용자 결정 2026-10-27 — 처치 효과 과제로 표시하지 않고 design.md·ADR §9 위협에 적는다) |
+| 오진 유도 | 정산 주 루프 시작 `plusDays(14)` `:1615`, cutoff 배타 `<` `:1600`, 적립 만료 `+365` `:1153` | `domain/Settlement.kt:34` `plusDays(14)`, `JpaSettlementRepository.kt:21` `<`, 적립 만료 `domain/Point.kt:88` | 같다 |
 
-- 고려했으나 패치로 만들지 않은 오답: "사용은 그대로 두고 소멸 배치만 고치기". 예를 들어 point-expiry가 만료 묶음을 소멸하지 않거나, 다른 묶음에서 빼게 바꾸는 것이다. 숨은 테스트의 1,000P 사용 직후 묶음별 remaining 단언(B = 0)에서 소멸 배치를 돌리기 전에 실패하므로 통과할 수 없다.
+## 4. 정답
+
+- `fix.{god,layered}.patch`: 두 지점의 코드를 원본으로 되돌린다. god는 `lastDay` 줄을 복원하고 `confirmedAt = due`로 바꾼다. layered는 `lastDay` 계산을 복원하고 `null else due`로 바꾼다. 주석은 되돌리지 않는다(중립 문장 그대로). 코드만 고치면 정답이다.
+- **대안 정답(합류점):** 두 경로가 모이는 확정 반영에서 `min(confirmedAt, delivered_at + 7일)`로 자르는 1곳 수정도 정답이다. 두 구조가 같은 조건이다.
+  - god `confirmItem`(:881-888): `item.confirmedAt = minOf(confirmedAt, item.deliveredAt!!.plus(Duration.ofDays(7)))`. 포인트 확정에도 그 값을 넘긴다.
+  - layered `ItemConfirmer.confirm`(`service/BuyerItemService.kt:28-33`) 또는 `Order.markConfirmed`(`Order.kt:330`)에서 같은 자르기를 한다.
+  - `alt-1.{god,layered}.patch`: confirmItem / ItemConfirmer 판. 포인트 확정에도 자른 값을 넘긴다.
+  - symbols에서 합류점은 `fix`가 아니라 `edit`(첫 편집 적중 인정)와 `read`로 넣었다. god는 합류점이 고칠 파일과 같은 파일이라 `edit`가 이미 덮는다.
+  - 저장 확정 시각만 자르고 포인트 확정에 자르지 않은 값을 넘기는 변형은 오답이다(naive-6). 적립 만료가 어긋나고, 숨은 테스트 A·B의 적립 `expires_at` 단언이 잡는다.
+- **숨은 테스트가 대안을 막지 않는 이유:** 응답 `confirmedAt`·DB `confirmed_at`·분쟁 응답 코드·`GET /me/settlements`의 주만 본다. 계산 위치나 상수 이름은 보지 않는다.
+
+## 5. 순진한 오답(naive-N — 전부 숨은 테스트에서 실패해야 채택)
+
+| N | 패치(두 구조 같은 의미) | 기대 실패 지점 |
+|---|---|---|
+| 1 | 부분: 구매자 확정만 고침(지점 1) | B — 정산 주 단언(그 항목이 W 주 정산에 없음) |
+| 2 | 부분: 자동 확정만 고침(지점 2). 공개 테스트는 통과 | A — 응답 confirmedAt 단언 |
+| 3 | 오진: 정산 cutoff `confirmed_at < :cutoff` → `<=`(god `:1600`, layered `JpaSettlementRepository.kt:21`) | A — confirmedAt. B — 정산 주(확정 시각 = 마감 + 1시간이라 `<=`로도 안 들어감) |
+| 4 | 오진: 정산이 `LEAST(confirmed_at, delivered_at + 7일) < :cutoff`로 주를 고름(같은 두 곳). 공개 테스트는 통과 | A — confirmedAt. B — 정산은 맞고 DB `confirmed_at` 단언에서 실패 |
+| 6 | 부분(합류점): 저장 확정 시각만 `min(…, delivered_at + 7일)`로 자르고 포인트 확정에는 자르지 않은 값을 넘김(god `confirmItem` :886만, `confirmEarn(…, confirmedAt, …)` 그대로 / layered `Order.markConfirmed` :333 안에서만) | A — 적립 expires_at(확정 시각 단언은 통과). B — 적립 expires_at(정산·확정 시각 단언은 통과) |
+| 5 | 오진: 정산 주 루프 시작 `lastPeriodStart + 14` → `+ 7`(god `:1615`, layered `Settlement.kt:34`) | A — confirmedAt. B — 정산 주(지난 주를 한 번 더 정산할 뿐, 항목은 여전히 다음 주로 밀림) |
+
+- 실측 실패 메시지는 §10 표에 있다.
+- 고려했으나 패치로 만들지 않은 것: 분쟁 기한 쪽만 `delivered_at + 21일`로 바꾸기. A의 confirmedAt 단언에서 먼저 실패하므로 naive-4와 같은 부류다.
+
+## 6. 숨은 테스트(`hidden/T1HiddenTest.kt`) — 결과만 단언, 결정적
+
+- **A(구매자 늦은 확정):**
+  - 같은 구매자의 항목 두 개를 같은 시각 D에 배송 완료한다(D = 시드 시계).
+  - 시계를 D+10일로 옮겨 둘 다 구매자 확정한다.
+  - 단언: 응답 `confirmedAt` = DB `confirmed_at` = D+7일. 그 항목 EARN 행 `expires_at` = D+7일+365일.
+  - 시계를 기한(D+7일+14일) 1시간 전으로 옮겨 항목 1에 분쟁을 접수한다. 201이어야 한다.
+  - 시계를 기한 1시간 뒤로 옮겨 항목 2에 분쟁을 접수한다. 409 `DEADLINE_PASSED`이고 항목은 CONFIRMED 그대로여야 한다.
+  - 시계는 뒤로 못 가므로 항목을 미리 두 개 만들어 기한 전 → 기한 뒤 순으로 실행한다.
+- **B(자동 확정):**
+  - 다음 화요일 정오(KST)에 배송 완료(D′)한다. 아무도 확정하지 않는다.
+  - W = D′+7일이 속한 주다. W 마감(다음 월요일 00:00 KST) 1시간 뒤에 `weekly-settlement`를 돌린다.
+  - 단언: 판매자 `GET /me/settlements`에서 그 항목이 들어간 정산은 period_start = W 월요일 하나뿐이고 INCLUDED다. DB `status` = CONFIRMED, `confirmed_at` = D′+7일, EARN `expires_at` = D′+7일+365일.
+- 두 메서드는 각자 현재 시계에서 출발하므로 실행 순서와 무관하다.
+- 공개 테스트와의 관계: 공개 테스트는 자동 확정 경로만 본다. 목요일 15:00 배송 완료, 마감 34시간 뒤 정산, 정산 주만 단언한다. 그래서 naive-2·naive-4는 공개 테스트를 통과하고 숨은 테스트에서 실패한다(의도).
+- 기존 계약 회귀: 정답이 원본 복원이라 regression-exclude가 없다. 주입 상태에서는 `BatchTest`·`BuyerActionTest`·`SettlementTest` 등이 깨질 수 있다. 판정은 정답 사본 기준이다.
+
+### 6.1 숨은 테스트가 고칠 곳을 실제로 지나는 호출 경로(주입 사본 줄)
+
+| 시나리오 | god | layered |
+|---|---|---|
+| A 확정 | `POST /order-items/{id}/confirm` → `web/ItemController.kt:34-40` → `Marketplace.confirmOrderItem` :870 → **지점 1 :876** → `confirmItem` :882(합류점) → `item.confirmedAt` :886 | `api/ItemController.kt:42-48` → `BuyerItemService.confirm` :53 → `item.confirmationTime(now)` :57 → `Order.confirmationTime` :324 → **지점 1 :326** → `ItemConfirmer.confirm` :28(합류점) → `Order.markConfirmed` :330 |
+| A 분쟁 | `POST /order-items/{id}/disputes` → `web/ItemController.kt:52-58` → `openDispute` :903 → 기한 :909 | `api/ItemController.kt:60-66` → `BuyerItemService.openDispute` :74 → `Order.openDispute` :356 → 기한 :358 |
+| B 자동 확정 | `POST /admin/batches/weekly-settlement` → `web/AdminController.kt:35-37` → `Marketplace.runBatch` :1270 → `"weekly-settlement"` :1281 → `settleWeeks` :1611 → `autoConfirmItems(now, null)` :1612 → :1494 → **지점 2 :1507** → `confirmItem` :882 | `api/AdminController.kt:41-43` → `BatchService.run` :82 → `"weekly-settlement"` :93 → `WeeklySettlementBatch.run` :328 → `autoConfirm.runStoppingOnFailure` :329 → `AutoConfirmBatch` :254 → `confirm` :256 → `item.autoConfirmationTime(now)` :258 → `Order.kt:343` → **지점 2 :346** → `confirmer.confirm` :262(합류점) |
+| B 정산 | `settleWeeks` 주 루프 :1615-1621 → `settleWeek` :1634 → 대상 SQL :1600 → `GET /me/settlements` → `OrderController.kt:49` → `listSettlements` :1706 | `SettlementWeek.pending`(`domain/Settlement.kt:31`) → `settle` :343 → `settlements.targets(week.cutoff)` :345 → `JpaSettlementRepository.kt:20-21` → `GET /me/settlements` → `api/OrderController.kt:59-60` |
+
+- 실측 근거: 주입(none)에서 A·B가 실패하고 정답(fix)에서 둘 다 통과한다. naive-1은 B만, naive-2는 A만 실패한다(§10). 이로써 A는 지점 1을, B는 지점 2를 지난다는 것이 두 구조에서 실행으로 확인된다.
 
 ## 7. 제외한 유사 지점과 사유
 
-- 복구 정렬(god `:1215`, layered `infra/JpaPointRepositories.kt:73`): 같은 규칙의 반대쪽이다. 주입하면 복구 경로 계약 테스트(`RefundTest` 등)가 깨지고 고칠 곳이 2가 된다. ADR §3.2에 따라 그대로 둔다.
-- 소멸 배치 대상 순서(god `:1514-1542` "id 순으로 소멸", layered `BatchService.kt:269`·`KeysetBatchTargets.kt:41`): 묶음마다 독립된 트랜잭션이라 순서는 결과에 영향이 없다. 손대지 않는다.
-- 사용 가능액(`usablePoints` god `:1080`, layered `JpaPointRepository.usable` :25): 합계라 순서가 없다.
-- 입찰 매칭 정렬 `created_at ASC, id ASC`(god `:255`, layered `infra/JpaBidRepositories.kt:55`): 다른 규칙이다. 주입 문구와 모양이 같아 에이전트가 참고할 수 있지만 고칠 대상이 아니다.
+- 정산 cutoff·주 루프·적립 만료 `+365`·분쟁 `+14일`: 하류 규칙이라 그대로 둔다. 오진 유도 수단이다.
+- 등급 산정 기준 금액 SQL(`confirmed_at ∈ [from, to)` — god `:1549`, layered `infra/JpaUserRepository.kt:18`): 하류이므로 손대지 않는다.
+- 자동 확정 대상 선택(`delivered_at <= now − 7일` — god `:1497-1498`, layered `KeysetBatchTargets.kt:36`·`Order.autoConfirmCutoff` :403): 가드는 그대로 둔다. 주입하면 고칠 곳이 늘고 계약 테스트가 대상 수로 깨진다.
 
-## 8. 지운 주석과 남는 올바른 구현 잔여물
+## 8. regression-exclude · verify-exclude
 
-지운 주석(inject 패치에 포함, 저장소 전체 grep `expires_at, id`·`만료.*(가까|이른|먼저)`·`FIFO`·`usableBundles`로 확인):
+- 둘 다 비어 있다(주석 1줄만). 정답은 원본 동작을 되돌린다(inject + fix = 원본 코드, 주석만 중립 문장). 정답이 의도적으로 바꾸는 계약 테스트·verify 검사가 없다. 실측은 §10의 fix 전 단계 행이다.
 
-| 구조 | 위치(원본) | 원문 → 주입 후 |
-|---|---|---|
-| god | `Marketplace.kt:1089` KDoc | "사용 가능 묶음을 (expires_at, id) 순으로 차감해" → "사용 가능 묶음에서 차감해" |
-| layered | `domain/Point.kt:35` KDoc(`allocate`) | "사용 가능 묶음을 (expires_at, id) 순으로 받아" → "사용 가능 묶음을 받아" |
-| layered | `domain/Point.kt:288` KDoc(`PointRepository.usableBundles`) | "(remaining > 0), (expires_at, id) 순." → "(remaining > 0)." |
-| layered | `service/PointBook.kt:21` KDoc(`reserve`) | "사용 가능 묶음 (expires_at, id) 순 차감·배분" → "사용 가능 묶음 차감·배분" |
+## 9. symbols
 
-지운 개수는 god 1, layered 3이다. 원본 layered는 같은 규칙을 세 층(서비스·도메인·포트)에 서술했다.
+- `fix`: 정답 패치 hunk의 원래 쪽(주입 사본) 범위, 문맥 3줄 포함. god `Marketplace.kt:873-879`·`:1504-1510`, layered `Order.kt:323-329`·`:343-349`.
+- `edit`: 고칠 파일 전체(god `Marketplace.kt:1-1771`, layered `Order.kt:1-534`)와 layered 합류점 파일(`BuyerItemService.kt:1-121`).
+  - god는 거의 모든 로직이 `Marketplace.kt` 한 파일이라 `edit` 적중이 넓다. 옛 과제와 같은 정의에서 나오는 성질이다. 첫 편집 적중은 god에서 쉽게 참이 된다(해석 주의).
+- `read`: 확정 두 지점·합류점·자동 확정 배치·분쟁 기한·정산 SQL·주 루프.
 
-남는 올바른 구현 잔여물은 복구 쪽 "만료가 늦은 것부터(같으면 id 큰 것부터)"다. 이는 사용 규칙의 거울상이라 단서가 된다.
+## 10. 채택 조건 실측
 
-| 구조 | 위치 | 종류 | 개수 |
-|---|---|---|---|
-| god | `Marketplace.kt:1187` KDoc(restorePoints), `:1215` SQL | 주석 1 + 코드 1 | 2 |
-| layered | `domain/Point.kt:208` KDoc(PointRestoration), `domain/Point.kt:303` KDoc(restorableBundles), `infra/JpaPointRepositories.kt:73` SQL | 주석 2 + 코드 1 | 3 |
+(check 결과 — 아래 표는 `experiment/results/checks/checks.jsonl`의 T1 행에서 옮김)
 
-- 남긴 이유: 복구 규칙은 이 과제가 주입하는 규칙(사용 배분)이 아니다. 그 정렬 코드는 ADR §3.2가 그대로 두라고 정했다. 주석만 지우면 코드(DESC 정렬)가 남으므로 단서 제거 효과도 없다.
-- 미해결(메인 판단 요청): 복구 쪽 주석 god 1·layered 2도 지울지 정해야 한다. 지우면 잔여물은 god 1, layered 1(SQL만)로 맞춰진다.
+모든 행: `code_sha` 0fe3f36, `code_dirty` True(T1 산출물 미커밋). 2026-10-27, 순차 실행. 시각은 행의 `at`.
 
-## 9. 두 구조 비대칭과 "어느 구조에 유리한가"
+| 구조 | 패치 | 회차 | 단계 | success | 결과 | 숨은 테스트 실패 단언(실패 메시지 첫 단언) |
+|---|---|---|---|---|---|---|
+| god | none | 1 | public,hidden | False | public fail · hidden fail(2/2) | A: 응답 confirmedAt `expected 2026-10-07T15:00Z but was 2026-10-10T15:00Z` · B: 정산 주 `expected [2026-10-19] but was []` |
+| layered | none | 1 | public,hidden | False | 〃 | 〃(같은 값) |
+| god | fix | 1 | 전 단계 | **True** | public·hidden pass, contract 122/122, contract2 89/89, verify 위반 0(두 단계) | — |
+| layered | fix | 1 | 전 단계 | **True** | 〃 | — |
+| god | fix | 2~5 | public,hidden | True ×4 | pass | — |
+| layered | fix | 2~5 | public,hidden | True ×4 | pass | — |
+| god | naive-1(구매자만) | 1 | public,hidden | False | public fail · hidden fail(1/2) | B: 정산 주 `expected [2026-11-02] but was []`(A 통과) |
+| layered | naive-1 | 1 | 〃 | False | 〃 | 〃 |
+| god | naive-2(자동만) | 1 | 〃 | False | **public pass** · hidden fail(1/2) | A: 응답 confirmedAt(B 통과) |
+| layered | naive-2 | 1 | 〃 | False | 〃 | 〃 |
+| god | naive-3(`<=`) | 1 | 〃 | False | public fail · hidden fail(2/2) | A: confirmedAt · B: 정산 주 `[2026-10-19]` vs `[]` |
+| layered | naive-3 | 1 | 〃 | False | 〃 | 〃 |
+| god | naive-4(정산 LEAST) | 1 | 〃 | False | **public pass** · hidden fail(2/2) | A: confirmedAt · B: DB confirmed_at `expected 2026-10-20T03:00Z but was 2026-10-25T16:00Z`(정산 주 단언은 통과) |
+| layered | naive-4 | 1 | 〃 | False | 〃 | 〃 |
+| god | naive-5(루프 +7) | 1 | 〃 | False | public fail · hidden fail(2/2) | A: confirmedAt · B: `weekly-settlement → 400 UNEXPECTED_ERROR`(이미 정산한 주를 다시 정산하다 서버 오류 — 원인 로그는 보지 않음) |
+| layered | naive-5 | 1 | 〃 | False | 〃 | 〃 |
+| god | alt-1(합류점) | 1 | public,hidden | **True** | pass | — |
+| layered | alt-1 | 1 | public,hidden | **True** | pass | — |
 
-- **경로 길이:**
-  - god: 결제에서 배분까지 한 파일, 한 함수다(`reservePoints` :1092-1123). 차감 루프와 정렬이 15줄 안에 있다.
-  - layered: 서비스 → 도메인 → 포트 → infra로 4파일을 지난다. 도메인 `allocate`는 "받은 순서대로" 차감할 뿐이라 순서 결정이 infra SQL에 숨어 있다. 도메인부터 읽은 에이전트는 포트 구현까지 한 번 더 따라가야 한다.
-  - 경로 길이는 god에 유리하다.
-- **단서 근접성:**
-  - layered: 거울 규칙 SQL(`:73`)이 고칠 곳(`:37`)과 같은 파일 36줄 아래에 있다. 포트 선언 주석(`Point.kt:303` 복구 순서)도 지운 주석 자리(`:288`) 15줄 아래에 있다.
-  - god: 거울 SQL(`:1215`)·KDoc(`:1187`)이 고칠 곳에서 80~107줄 떨어져 있다. 1,772줄 파일을 offset으로 읽으면 같은 창에 들어올 수 있다.
-  - 단서 근접성은 layered에 약간 유리하다.
-- **증상에서 출발하는 탐색:** 증상 문장이 "소멸"을 말하므로 point-expiry 배치부터 볼 가능성이 크다. god는 같은 파일 `:1514`, layered는 `service/BatchService.kt:268`·`infra/KeysetBatchTargets.kt:41`이다. 거기서 결제 쪽으로 되돌아가는 거리는 god가 짧다.
-- **판단:** 큰 편향은 없다. 경로는 god, 단서 밀도는 layered에 유리해 방향이 엇갈린다. 고칠 곳 1 대 1, 같은 의미의 한 줄이므로 처치 효과 과제(C2·T2·P2)로 표시하지 않는다. 결과 해석 때 layered의 포트 간접 1단(`usableBundles`)이 첫 겨냥 턴을 늦추는지 기전 지표로 본다.
+- fix는 구조마다 5/5다(전 단계 1회 + public·hidden 4회). 주입 상태에서는 숨은 테스트가 실패한다. naive 5종은 두 구조 모두 숨은 테스트에서 실패한다. 실패 단언은 §5의 기대와 같다. 대안 정답 alt-1은 두 구조 모두 통과한다.
+- naive-5는 의미 단언이 아니라 배치 서버 오류(400)로 실패한다. 결정적으로 실패하지만 실패 이유는 "주를 잘못 고른 결과"가 아니라 "중복 정산 오류"다. 메인 판정(2026-10-27): 받아들인다. 주입이 그대로 남아 있으므로 A의 confirmedAt 단언이 어차피 실패한다.
+- 변경 이력: 첫 none 2회(01:40·01:44)와 fix 전 단계 2회(01:54·02:04)는 숨은 테스트 A의 confirmedAt 단언 메시지를 고치기 전에 돌렸다. 그 메시지에 응답 본문 전체를 넣어 300자 잘림으로 expected/actual이 안 보였다. 메시지만 바꿨고 단언 내용은 같다. 그 뒤 none을 두 구조에서 다시 돌렸다(위 표의 none 행 = 수정 뒤, 결과 같음).
 
-## 10. regression-exclude · verify-exclude
+### 10.1 후속 반영 뒤 재확인(M-1 누출 수정 + 적립 만료 단언 + naive-6, 2026-10-27 03:45~04:20)
 
-- 둘 다 빈 파일이다. fix 상태는 원본 코드와 같고(inject + fix = 원본, 주석만 다름), 정답이 깨는 계약은 없다. 실측: fix 전 단계 표(아래).
+바뀐 것: layered 주입 주석 3곳(§2.1), 숨은 테스트 A·B에 EARN `expires_at` 단언 추가, `naive-6` 추가. 패치를 다시 만든 뒤 public,hidden 단계만 1회씩 순차 실행했다. 고정 SHA에서의 전체 재채택(fix 5회 등)은 메인 몫이다.
 
-## 11. 채택 조건 실측
-
-`experiment/results/checks/checks.jsonl`의 T1 행(2026-10-26, 각 1회 — fix 5회 반복은 메인 몫):
-
-| 구조 | 패치 | 단계 | success | outcome |
+| 구조 | 패치 | success | 결과 | 숨은 테스트 실패 단언 |
 |---|---|---|---|---|
-| god | none | public,hidden | False | public fail · hidden fail |
-| layered | none | public,hidden | False | public fail · hidden fail |
-| god | fix | 전 단계 | **True** | public·hidden pass, contract 122/122, contract2 89/89, verify 위반 0 |
-| layered | fix | 전 단계 | **True** | 〃 |
-| god | naive-1·2·3 | hidden | False ×3 | hidden fail |
-| layered | naive-1·2·3 | hidden | False ×3 | hidden fail |
+| god | none | False | public fail · hidden fail(2/2) | A: 응답 confirmedAt · B: 정산 주(이전과 같음) |
+| layered | none | False | 〃 | 〃 |
+| god | fix | True | pass | — |
+| layered | fix | True | pass | — |
+| god | alt-1 | True | pass | — |
+| layered | alt-1 | True | pass | — |
+| god | naive-6 | False | **public pass** · hidden fail(2/2) | A: 적립 유효기간 `expected 2027-10-07T15:00Z but was 2027-10-10T15:00Z` · B: 자동 확정 적립 유효기간 `expected 2027-10-20T03:00Z but was 2027-10-25T16:00Z` |
+| layered | naive-6 | False | 〃 | 〃(같은 값) |
+| god | naive-4 | False | public pass · hidden fail(2/2) | A: 응답 confirmedAt · B: DB confirmed_at — 첫 실행(§10)과 같은 단언·같은 값(결정적) |
+| layered | naive-4 | False | 〃 | 〃 |
 
-- 주입 상태 실패 메시지(진단 실행으로 확인): 숨은 테스트 `만료가 가장 이른 묶음(B)부터 다 써야 한다 ==> expected: <0> but was: <600>`(두 구조), 공개 테스트(god) `쓰고 남은 사용 가능 포인트 … expected: <600> but was: <0>`.
-- naive의 실패 메시지는 check 행에 남지 않아 따로 보지 않았다. 준비 확인은 정렬과 무관하므로(주입 상태에서 통과) 실패 지점은 배분 단언이다(§6 표의 계산).
-
-## 리뷰 루프 1 반영 (2026-10-26)
-
-- 공개 테스트가 시계를 `+364일` 상수로 옮기던 것을 **DB의 두 적립 만료 시각 사이**로 옮기게 바꿨다(공개 테스트에 규칙 상수(유효기간 365일) 금지 — 명세 §2. 365로 grep하면 god는 고칠 곳 46줄 옆, layered는 다른 파일이라 단서 거리도 비대칭이었다).
-- 해제 쪽 "만료가 늦은 것부터" 서술(god KDoc `:1187`, layered `Point.kt:208`·`:303`)은 남긴다 — ADR §3.1의 삭제 범위는 주입·변경되는 규칙의 서술이고, 같은 의미의 DESC 코드도 두 구조에 남는다. 단서로 기록(god 2·layered 3 잔여물).
-
-- symbols fix = 정답 패치 hunk 의 원래 쪽 줄 범위(문맥 3줄 포함 — god `Marketplace.kt:1105-1111`, layered `JpaPointRepositories.kt:34-40`). C2 와 같은 규칙(import·주석만 바꾸는 hunk 제외)이라 과제를 합쳐 첫 겨냥 턴을 집계해도 정의가 섞이지 않는다.
+- §10 표의 행은 이 반영 전의 주입·숨은 테스트로 잰 것이다. naive-1·2·3·5의 실패 단언은 확정 시각·정산 단언에서 나고, 새 단언(적립 만료)은 그 뒤에 있으므로 결과가 바뀌지 않을 것으로 본다. 다시 돌리지는 않았다.

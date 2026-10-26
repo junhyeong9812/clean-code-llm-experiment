@@ -1,11 +1,11 @@
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -1105,7 +1105,7 @@
-         val bundles = em.createNativeQuery(
-             "SELECT * FROM point_ledger" +
-                 " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at > :now AND remaining > 0" +
--                " ORDER BY created_at, id",
-+                " ORDER BY id",
-             PointLedgerEntry::class.java,
-         ).setParameter("user", userId).setParameter("now", now).resultList
-         var need = amount
+@@ -1504,7 +1504,7 @@
+                 if (item.status != "DELIVERED" || due!!.isAfter(now)) {
+                     false
+                 } else {
+-                    confirmItem(item, confirmedAt = now, now = now)
++                    confirmItem(item, confirmedAt = due, now = now)
+                     true
+                 }
+             }!!

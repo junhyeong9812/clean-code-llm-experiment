@@ -1,8 +1,16 @@
-app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt:34-40 fix  # 예약 배분 정렬 hunk(정답 패치 원래 쪽 범위, 문맥 3줄 — C2 와 같은 규칙)
-app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt:33-39 read  # usableBundles 구현
-app/src/main/kotlin/com/ccle/layered/domain/Point.kt:34-51 read  # allocate: 받은 순서대로 차감·배분
-app/src/main/kotlin/com/ccle/layered/domain/Point.kt:288-289 read  # PointRepository.usableBundles 선언
-app/src/main/kotlin/com/ccle/layered/service/PointBook.kt:21-26 read  # reserve: usableBundles → allocate
-app/src/main/kotlin/com/ccle/layered/domain/Point.kt:80-90 read  # confirmEarn: expires_at = confirmed_at + 365일
-app/src/main/kotlin/com/ccle/layered/domain/Point.kt:179-190 read  # pendingEarn: created_at = paidAt
-app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:268-288 read  # point-expiry 배치(증상이 드러나는 곳 — 고칠 곳 아님)
+# T1 symbols — 줄 번호는 주입 사본 기준(inject 가 domain/Order.kt 원본 :326 한 줄을 지워 그 파일의 그 뒤 줄은 원본 −1. 다른 파일은 줄 수 그대로).
+# fix = 정답 패치 hunk 의 원래 쪽 줄 범위(문맥 3줄 포함, import·주석만 바꾸는 hunk 제외 — C2 와 같은 규칙).
+# edit = 정답 패치가 고치는 파일 전체 + 합류점 대안 정답 파일(첫 편집 적중 전용). read = 읽어야 할 곳.
+app/src/main/kotlin/com/ccle/layered/domain/Order.kt:323-329 fix  # 지점 1: 구매자 확정 시각(confirmationTime)
+app/src/main/kotlin/com/ccle/layered/domain/Order.kt:343-349 fix  # 지점 2: 자동 확정 시각(autoConfirmationTime)
+app/src/main/kotlin/com/ccle/layered/domain/Order.kt:1-534 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용 — markConfirmed 합류점 포함)
+app/src/main/kotlin/com/ccle/layered/service/BuyerItemService.kt:1-121 edit  # 합류점 대안 정답(ItemConfirmer.confirm) 파일(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/layered/domain/Order.kt:320-334 read  # confirmationTime·markConfirmed
+app/src/main/kotlin/com/ccle/layered/domain/Order.kt:339-347 read  # autoConfirmationTime
+app/src/main/kotlin/com/ccle/layered/service/BuyerItemService.kt:18-34 read  # ItemConfirmer.confirm: 확정 반영 합류점(대안 정답 위치)
+app/src/main/kotlin/com/ccle/layered/service/BuyerItemService.kt:52-60 read  # BuyerItemService.confirm: 구매자 확정 진입
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:240-266 read  # AutoConfirmBatch
+app/src/main/kotlin/com/ccle/layered/domain/Order.kt:352-362 read  # openDispute: 분쟁 기한 = confirmed_at + 14일(증상이 드러나는 곳 — 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/layered/infra/JpaSettlementRepository.kt:15-25 read  # 정산 대상 SQL confirmed_at < cutoff(증상이 드러나는 곳 — 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/layered/domain/Settlement.kt:26-40 read  # SettlementWeek.pending 주 루프(오진 유도 — 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:316-335 read  # WeeklySettlementBatch: auto-confirm 먼저 → 주별 정산

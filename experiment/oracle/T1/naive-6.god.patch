@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -883,7 +883,7 @@
+         val buyerId = em.find(PurchaseOrder::class.java, item.orderId).buyerId
+         lockUser(buyerId)
+         item.status = "CONFIRMED"
+-        item.confirmedAt = confirmedAt
++        item.confirmedAt = minOf(confirmedAt, item.deliveredAt!!.plus(Duration.ofDays(7)))
+         confirmEarn(item, buyerId, confirmedAt, now)
+     }
+ 

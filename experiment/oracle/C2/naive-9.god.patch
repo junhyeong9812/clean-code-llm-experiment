@@ -1,0 +1,54 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -191,6 +191,25 @@
+         }!!
+     }
+ 
++    /**
++     * 제한이 새로 걸리거나 갱신될 때(판매 제한 = 판매자 귀책, 구매 제한 = payment-due) 그 사용자의 그 쪽 ACTIVE 입찰을 모두 취소한다.
++     * 유효기간이 지났지만 아직 bid-expiry가 처리하지 않은 ACTIVE 입찰도 대상이다. 입찰마다 그 사이즈를 잠그고(§3.3) 다시 읽은 뒤
++     * ACTIVE인 것만 ACTIVE → CANCELLED(이벤트 trade_id NULL). 호출자의 트랜잭션 안에서 부른다.
++     */
++    private fun cancelActiveBids(userId: Long, side: String, now: Instant) {
++        val active = em.createQuery(
++            "SELECT b FROM Bid b WHERE b.userId = :user AND b.side = :side AND b.status = 'ACTIVE' AND b.expiresAt > :now ORDER BY b.productSizeId, b.id",
++            Bid::class.java,
++        ).setParameter("user", userId).setParameter("side", side).setParameter("now", now).resultList
++        for (bid in active) {
++            lockProductSize(bid.productSizeId)
++            em.refresh(bid)
++            if (bid.status != "ACTIVE") continue
++            bid.status = "CANCELLED"
++            em.persist(BidEvent(bidId = bid.id!!, fromStatus = "ACTIVE", toStatus = "CANCELLED", tradeId = null, createdAt = now))
++        }
++    }
++
+     /** 입찰 조회(§3.4). 등록자만. tradeId = 살아 있는 체결. */
+     fun getBid(userId: Long, bidId: Long): BidView {
+         val bid = em.find(Bid::class.java, bidId) ?: notFound("없는 입찰: $bidId")
+@@ -963,7 +982,10 @@
+             Instant::class.java,
+         ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+             .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+-        if (recentPenalties >= 3) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
++        if (recentPenalties >= 3) {
++            seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
++            cancelActiveBids(sellerId, "SELL", now)
++        }
+     }
+ 
+     // ---- 환불 (ADR-0004 §7) ----
+@@ -1400,7 +1422,11 @@
+             Instant::class.java,
+         ).setParameter("user", trade.buyerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+             .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+-        if (recentWarnings >= 3) buyer.purchaseRestrictedUntil = now.plus(Duration.ofDays(7))
++        if (recentWarnings >= 3) {
++            buyer.purchaseRestrictedUntil = now.plus(Duration.ofDays(7))
++            // 그 구매자의 다른 ACTIVE 구매 입찰은 아래 재매칭보다 먼저 취소한다(되살아난 판매 입찰과 체결되지 않게)
++            cancelActiveBids(trade.buyerId, "BUY", now)
++        }
+ 
+         // 구매 입찰 MATCHED → CANCELLED (판매 입찰 이벤트보다 먼저)
+         val buy = em.find(Bid::class.java, trade.buyBidId)

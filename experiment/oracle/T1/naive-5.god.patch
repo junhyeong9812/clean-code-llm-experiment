@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1612,7 +1612,7 @@
+         autoConfirmItems(now, isolatedAs = null)
+         val latest = LocalDate.ofInstant(now, kst).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+         val lastPeriodStart = em.createQuery("SELECT max(s.periodStart) FROM Settlement s", LocalDate::class.java).singleResult
+-        var cutoff = lastPeriodStart?.plusDays(14) ?: latest
++        var cutoff = lastPeriodStart?.plusDays(7) ?: latest
+         var processed = 0
+         while (!cutoff.isAfter(latest)) {
+             val week = cutoff
