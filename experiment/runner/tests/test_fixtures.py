@@ -57,13 +57,14 @@ class Smoke1(unittest.TestCase):
 class Smoke2(unittest.TestCase):
     """Bash 편집으로 끝난 정상 실행."""
 
-    def test_bash_edit_counts_as_first_edit_without_hit(self):
+    def test_bash_edit_counts_as_first_edit_with_file_hit(self):
         evs, _ = load("smoke2-haiku-normal.jsonl")
         cs, turns = events.calls(evs)
         self.assertEqual(turns, result(evs)["num_turns"])
         m = events.metrics(cs, events.parse_symbols("notes/greeting.txt:1 fix"))
         self.assertEqual(m["first_edit_turn"], 3)
-        self.assertIsNone(m["first_edit_hit"])
+        # 계약 갱신(tasks-redesign): Bash 편집도 첫 편집 적중 대상 — 파일 단위로 정답 파일
+        self.assertEqual((m["first_edit_tool_turn"], m["first_edit_via"], m["first_edit_hit"]), (3, "Bash", True))
         self.assertEqual(events.audit(cs), [])
 
 

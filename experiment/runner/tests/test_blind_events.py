@@ -602,20 +602,26 @@ class TestEdits(unittest.TestCase):
         self.assertEqual(sum(m["lines_read"].values()), 0)
 
     def test_bash_edits_are_first_edit_with_hit_none(self):
-        cmds = ["sed -i 's/a/b/' app/A.kt", "patch -p1 < x.diff", "echo x | tee notes/a.txt",
-                "echo hi > notes/greeting.txt", "echo x >> build.gradle.kts",
-                "cat > app/x.sql <<EOF\nselect 1\nEOF",
-                "printf x > c.yml", "echo y > d.yaml", "echo z > README.md", "echo s > run.sh"]
-        for cmd in cmds:
+        # 계약 갱신(tasks-redesign, ADR §5.2 개정): 대상을 아는 Bash 편집도 첫 편집 적중의 '첫 편집'이다 — 적중은 파일 단위
+        cmds = {"sed -i 's/a/b/' app/A.kt": "app/A.kt", "echo x | tee notes/a.txt": "notes/a.txt",
+                "echo hi > notes/greeting.txt": "notes/greeting.txt", "echo x >> build.gradle.kts": "build.gradle.kts",
+                "cat > app/x.sql <<EOF\nselect 1\nEOF": "app/x.sql", "printf x > c.yml": "c.yml",
+                "echo y > d.yaml": "d.yaml", "echo z > README.md": "README.md", "echo s > run.sh": "run.sh"}
+        for cmd, tgt in cmds.items():
             with self.subTest(cmd=cmd):
                 evs = seq(("Bash", {"command": "ls"}, "x", False), ("Bash", {"command": cmd}, "", False),
                           self.edit("/work/app/A.kt", snippet(110, 2)))
                 m = events.metrics(calls_of(evs), spans())
                 self.assertEqual(m["first_edit_turn"], 2)
-                # 계약 갱신(루프 2): 첫 편집 적중은 첫 Edit 계열 호출 기준(ADR §5.2) — 앞선 Bash 편집과 무관
-                self.assertEqual(m["first_edit_tool_turn"], 3)
-                self.assertTrue(m["first_edit_hit"])
-                self.assertEqual(m["edited_paths"], ["app/A.kt"])
+                self.assertEqual((m["first_edit_tool_turn"], m["first_edit_path"], m["first_edit_via"]), (2, tgt, "Bash"))
+                self.assertIs(m["first_edit_hit"], tgt == "app/A.kt")
+                self.assertEqual(m["edited_paths"], list(dict.fromkeys([tgt, "app/A.kt"])))
+        # 입력 파일을 볼 수 없는 patch: 편집 턴에는 들지만 대상은 '모름' — 첫 편집 적중은 다음 편집 도구로
+        evs = seq(("Bash", {"command": "ls"}, "x", False), ("Bash", {"command": "patch -p1 < x.diff"}, "", False),
+                  self.edit("/work/app/A.kt", snippet(110, 2)))
+        m = events.metrics(calls_of(evs), spans())
+        self.assertEqual((m["first_edit_turn"], m["first_edit_tool_turn"], m["edit_unknown_turns"]), (2, 3, [2]))
+        self.assertTrue(m["first_edit_hit"])
 
     def test_bash_non_edits(self):
         cmds = ["./gradlew test 2>&1 | tail -50", "ls > /dev/null", "echo x > out.log", "python - <<EOF\nprint(1)\nEOF",

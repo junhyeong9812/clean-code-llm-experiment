@@ -55,7 +55,8 @@ class Edits(unittest.TestCase):
         cs = [events.Call(1, "Bash", {"command": "echo x | tee notes/a.txt"}, "a", False),
               events.Call(2, "Edit", {"file_path": "/work/app/A.kt"}, "b", False, "", False, meta)]
         m = events.metrics(cs, events.parse_symbols("app/A.kt:100-110 fix"))
-        self.assertEqual((m["first_edit_turn"], m["first_edit_tool_turn"], m["first_edit_hit"]), (1, 2, True))
+        # 계약 갱신(tasks-redesign): 대상을 아는 Bash 편집(tee)이 첫 편집 — 정답 파일이 아니라 적중 아님
+        self.assertEqual((m["first_edit_turn"], m["first_edit_tool_turn"], m["first_edit_hit"]), (1, 1, False))
 
     def test_limit_only_read_is_not_full_read(self):
         meta = {"file": {"startLine": 1, "numLines": 5, "totalLines": 900}}

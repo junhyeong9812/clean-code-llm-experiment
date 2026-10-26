@@ -149,6 +149,11 @@ def build_work(case: str, structure: str, work: Path) -> None:
         sh(["patch", "-p1", "--forward", "--no-backup-if-mismatch", "-i", str(inject)], cwd=work)
 
 
+def base_files(base: Path) -> set:
+    """실행 전 사본의 파일 목록(사본 기준 상대 경로) — Bash 쓰기가 새 파일을 만든 것인지 가르는 데(events.metrics)."""
+    return {str(p.relative_to(base)) for p in base.rglob("*") if p.is_file()}
+
+
 def make_home(home: Path, timeout_s: int, with_creds: bool = True):
     """격리 HOME: settings.json(금지 도구) + Gradle 사용자 홈(오프라인 init·데몬 끔) + 로그인 파일 사본(셸 모드는 없음)."""
     (home / ".claude").mkdir(parents=True)
@@ -539,7 +544,7 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         row.update(bad_event_lines=bad, init=events.init_info(evs), turns=turns, result_turns=res.get("num_turns"),
                    result_subtype=res.get("subtype"), is_error=res.get("is_error"),
                    duration_ms=res.get("duration_ms"), **tok,
-                   **events.metrics(cs, symbols(case, structure)), audit_violations=violations,
+                   **events.metrics(cs, symbols(case, structure), existing=base_files(rd / "base")), audit_violations=violations,
                    **classify(evs, rc, timed_out, violations, tail(err, 4000) + limit_evidence(evs), tok, n_asst))
         row["result_count"] = events.result_count(evs)  # 2 이상이면 큐에 쌓인 턴 — 토큰은 마지막 result 기준(표시)
         harness = events.harness_problems(row["init"]) if any(e.get("subtype") == "init" for e in evs) \
