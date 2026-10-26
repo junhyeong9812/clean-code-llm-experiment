@@ -1,4 +1,4 @@
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1108-1108 fix  # 예약 배분 정렬(주입 지점)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1105-1111 fix  # 예약 배분 정렬 hunk(정답 패치 원래 쪽 범위, 문맥 3줄 — C2 와 같은 규칙)
 app/src/main/kotlin/com/ccle/god/Marketplace.kt:1088-1123 read  # reservePoints: USE 예약 + 묶음 차감·배분
 app/src/main/kotlin/com/ccle/god/Marketplace.kt:1149-1156 read  # confirmEarn: expires_at = confirmed_at + 365일
 app/src/main/kotlin/com/ccle/god/Marketplace.kt:663-678 read  # approveOrder: EARN PENDING, created_at = paidAt

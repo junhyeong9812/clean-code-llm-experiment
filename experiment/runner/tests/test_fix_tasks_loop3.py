@@ -116,6 +116,8 @@ class Rejudge(unittest.TestCase):
         r = self.rows()[0]
         self.assertEqual((r["valid"], r["invalid_reason"], r["rejudge_tries"]), (False, "judge_unresolved", 2))
         self.assertFalse((self.res / "held" / "r1").exists())
+        # 종단 — 자동 재실행 대상에서 빠진다(보관본이 지워져도)
+        self.assertIn(("T1", "god", "sonnet", 1), runner.done_keys(self.res))
 
     def test_broken_row_skipped(self):
         bad = self.res / "held" / "r0"

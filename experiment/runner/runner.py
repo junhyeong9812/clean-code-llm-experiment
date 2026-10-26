@@ -299,7 +299,8 @@ def append_row(results: Path, row: dict) -> None:
 
 
 def done_keys(results: Path) -> set:
-    """valid 행의 (case, structure, model, rep). 깨진 줄(강제 종료로 반쯤 쓰인 append)은 건너뛰고 알린다."""
+    """valid 행과 판정 미해결(judge_unresolved — 종단, 재실행은 사용자 확인 뒤 따로) 행의 (case, structure, model, rep).
+    깨진 줄(강제 종료로 반쯤 쓰인 append)은 건너뛰고 알린다."""
     keys, bad = set(), 0
     p = results / "runs.jsonl"
     if p.exists():
@@ -311,7 +312,7 @@ def done_keys(results: Path) -> set:
             except json.JSONDecodeError:
                 bad += 1
                 continue
-            if r.get("valid"):
+            if r.get("valid") or r.get("invalid_reason") == "judge_unresolved":
                 keys.add((r["case"], r["structure"], r["model"], r["rep"]))
     if bad:
         print(f"[runner] runs.jsonl 깨진 줄 {bad}개 건너뜀", flush=True)

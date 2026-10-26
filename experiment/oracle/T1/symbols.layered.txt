@@ -1,4 +1,4 @@
-app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt:37-37 fix  # 예약 배분 정렬(주입 지점)
+app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt:34-40 fix  # 예약 배분 정렬 hunk(정답 패치 원래 쪽 범위, 문맥 3줄 — C2 와 같은 규칙)
 app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt:33-39 read  # usableBundles 구현
 app/src/main/kotlin/com/ccle/layered/domain/Point.kt:34-51 read  # allocate: 받은 순서대로 차감·배분
 app/src/main/kotlin/com/ccle/layered/domain/Point.kt:288-289 read  # PointRepository.usableBundles 선언
