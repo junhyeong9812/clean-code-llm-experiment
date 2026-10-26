@@ -48,10 +48,14 @@ FETCH_VALUE_LONG = {"--output", "--header", "--request", "--data", "--data-raw",
 FETCH_VALUE_SHORT = set("oOXHduwTFAemcbxKrEeiYy")  # 묶은 짧은 옵션(-sX)의 마지막 글자가 이 중이면 다음 토큰이 값
 
 
+JOIN = "\x00"  # 여러 줄에 걸친 따옴표를 한 줄로 합칠 때 줄바꿈 대신(split_heredocs) — 토큰에서 다시 줄바꿈으로
+
+
 def shell_tokens(cmd: str) -> list:
     """셸 명령을 토큰으로(연산자·리다이렉트 분리, 줄바꿈은 명령 경계). 따옴표가 깨졌으면 공백 분리로 대체."""
     out = []
     for line in cmd.splitlines():
+        line = re.sub(r"(?<![\w$])\d+(?=[<>])", "", line)  # fd 번호(2>&1·2>/dev/null)는 인자가 아니다
         try:
             lx = shlex.shlex(line, posix=True, punctuation_chars=";&|()<>")
             lx.whitespace_split = True
@@ -59,12 +63,14 @@ def shell_tokens(cmd: str) -> list:
             toks = list(lx)
         except ValueError:
             toks = re.findall(r"[;&|()<>]+|[^\s;&|()<>]+", line)
-        out += [re.sub(r"^\d+(?=[<>])", "", t) if re.fullmatch(r"\d*[<>&|]+", t) else t for t in toks] + ["\n"]
+        out += [re.sub(r"^\d+(?=[<>])", "", t) if re.fullmatch(r"\d*[<>&|]+", t) else t.replace(JOIN, "\n")
+                for t in toks] + ["\n"]
     return out
 
 
-def commands(cmd: str) -> list:
-    """[(명령 이름, 인자 목록)] — 연산자에서 끊고, 리다이렉트와 그 대상은 인자에서 뺀다(대상은 ('>', 대상) 항목으로)."""
+def commands(cmd: str, marks: bool = False) -> list:
+    """[(명령 이름, 인자 목록)] — 연산자에서 끊고, 리다이렉트와 그 대상은 인자에서 뺀다(대상은 ('>', 대상) 항목으로).
+    marks=True 면 서브셸 괄호를 ('(', [], [])·(')', [], []) 항목으로 남긴다(작업 위치 복원 — segments)."""
     out, cur, redir = [], [], []
     toks = shell_tokens(cmd)
     i = 0
@@ -74,6 +80,8 @@ def commands(cmd: str) -> list:
             if cur or redir:
                 out.append((cur[0] if cur else "", cur[1:], redir))
             cur, redir = [], []
+            if marks:
+                out += [(ch, [], []) for ch in t if ch in "()"]
         elif t in REDIRECTS or re.fullmatch(r"[<>&]+", t):
             nxt = toks[i + 1] if i + 1 < len(toks) else ""
             if nxt not in SHELL_OPS:
@@ -144,7 +152,7 @@ def unwrap(cmds: list, depth: int = 0) -> list:
         if name in ("sh", "bash", "zsh", "dash") and "-c" in args and depth < 2:
             j = args.index("-c")
             if j + 1 < len(args):
-                out += unwrap(commands(args[j + 1]), depth + 1)
+                out += [("(", [], [])] + unwrap(commands(args[j + 1]), depth + 1) + [(")", [], [])]  # 하위 셸
                 continue
         out.append((name, args, redir))
     return out
@@ -455,6 +463,7 @@ class Seg:
     redir: list
     body: str  # 이 명령에 걸린 heredoc 본문(없으면 "")
     cwd: str
+    subst: bool = False  # 그 줄에 명령 치환($(…)·`…`)이 있다 — 쓰기 대상을 풀 수 없다
 
 
 def split_heredocs(cmd: str) -> list:
@@ -464,6 +473,14 @@ def split_heredocs(cmd: str) -> list:
     while i < len(lines):
         line, bodies = lines[i], []
         i += 1
+        while line.endswith("\\") and i < len(lines):  # 줄 이음
+            line, i = line[:-1] + " " + lines[i], i + 1
+        if _open_quote(line):  # 따옴표가 다음 줄로 이어짐(python -c "…" 여러 줄) — 닫히는 줄까지 합친다
+            for j in range(i, min(i + 200, len(lines))):
+                joined = JOIN.join([line] + lines[i:j + 1])
+                if not _open_quote(joined):
+                    line, i = joined, j + 1
+                    break
         for m in HEREDOC.finditer(line):
             body = []
             while i < len(lines) and (lines[i].lstrip("\t") if m[1] else lines[i]) != m[3]:
@@ -474,6 +491,14 @@ def split_heredocs(cmd: str) -> list:
         k = iter(range(len(bodies)))
         out.append((HEREDOC.sub(lambda _: f" <<__HD{next(k)}__ ", line), bodies))
     return out
+
+
+def _open_quote(line: str) -> bool:
+    try:
+        shlex.split(line)
+        return False
+    except ValueError:
+        return True
 
 
 def resolve(cwd: str, p: str) -> str:
@@ -490,19 +515,28 @@ def in_work(cwd: str) -> bool:
 
 def segments(cmd: str, cwd: str = WORK) -> tuple:
     """(명령 조각 목록, 호출이 끝난 뒤 작업 위치). `cd`·`pushd` 는 뒤 조각과 다음 Bash 호출의 작업 위치를 바꾼다(Bash 도구는
-    호출 사이에 작업 위치를 유지하고, 사본 밖으로 나가면 사본 루트로 되돌린다). `cd -`·변수 경로는 풀지 않는다."""
-    out = []
+    호출 사이에 작업 위치를 유지하고, 사본 밖으로 나가면 사본 루트로 되돌린다). `cd -`·변수 경로는 풀지 않는다.
+    서브셸 `( … )`·`sh -c "…"` 안의 cd 는 괄호가 끝나면 되돌린다. xargs 는 벗기지 않고 그대로 둔다(bash_writes 가 '모름' 판정)."""
+    out, stack = [], []
     for line, bodies in split_heredocs(cmd):
-        for name, args, redir in unwrap(commands(line)):
-            if name in ("cd", "pushd"):
-                d = next((a for a in args if not a.startswith("-")), None)
-                if d is None:
-                    cwd = "~" if not args else cwd
-                elif not d.startswith(("$", "~")):
-                    cwd = posixpath.normpath(posixpath.join(cwd, d))
-                continue
-            body = "\n".join(bodies[int(m[1])] for op, t in redir if op == "<<" for m in [HD_MARK.fullmatch(t)] if m)
-            out.append(Seg(name, args, [(op, t) for op, t in redir if op != "<<"], body, cwd))
+        subst = "$(" in line or "`" in line
+        for raw in commands(line, marks=True):
+            for name, args, redir in ([raw] if raw[0] == "xargs" else unwrap([raw])):
+                if name == "(":
+                    stack.append(cwd)
+                    continue
+                if name == ")":
+                    cwd = stack.pop() if stack else cwd
+                    continue
+                if name in ("cd", "pushd"):
+                    d = next((a for a in args if not a.startswith("-")), None)
+                    if d is None:
+                        cwd = "~" if not args else cwd
+                    elif not d.startswith(("$", "~")):
+                        cwd = posixpath.normpath(posixpath.join(cwd, d))
+                    continue
+                body = "\n".join(bodies[int(m[1])] for op, t in redir if op == "<<" for m in [HD_MARK.fullmatch(t)] if m)
+                out.append(Seg(name, args, [(op, t) for op, t in redir if op != "<<"], body, cwd, subst))
     return out, (cwd if in_work(cwd) else WORK)
 
 
@@ -761,30 +795,58 @@ SCRIPT_WRITE_HINT = re.compile(r"writeFile|appendFile|createWriteStream|File\.wr
 def bash_writes(segs: list) -> tuple:
     """(사본 안 쓰기 대상 — 사본 기준 상대 경로, 대상을 모르는 쓰기 명령 이름 목록). ADR §5.2 Bash 편집:
     `>`·`>>`·`&>` 리다이렉트 · tee · sed -i · perl -i · cp/mv/install 목적지 · patch·git apply(heredoc 본문의 +++ 대상) ·
-    python(-c·heredoc 본문의 파일 쓰기 — py_write_targets). 입력 파일을 볼 수 없는 patch, 내용을 볼 수 없는 스크립트 파일
-    실행(python x.py), 쓰기 흔적이 있는 다른 인터프리터 인라인 코드는 '모름'으로 남긴다."""
+    python(-c·heredoc 본문의 파일 쓰기 — py_write_targets). 대상을 풀 수 없는 쓰기는 '모름'(명령 이름)으로 남긴다:
+    입력 파일을 볼 수 없는 patch, 글롭(`app/*.kt`)·명령 치환(`$(…)`) 대상, 파일을 못 찾은 sed/perl -i, xargs·find -exec 로
+    넘긴 sed/perl -i, 경로를 풀 수 없는 python 쓰기('python'). 내용을 볼 수 없는 스크립트 실행('python-script')과 쓰기 흔적이
+    있는 다른 인터프리터 코드('<이름>-hint')는 쓰기였는지도 모른다(UNSURE_WRITERS)."""
     out, unknown = [], []
 
     def add(cwd, p):
+        if any(ch in p for ch in "*?["):  # 글롭은 펼친 대상을 이벤트에서 알 수 없다
+            unknown.append("glob")
+            return
         r = resolve(cwd, p)
         if _work_target(r) and r not in out:
             out.append(r)
 
+    def inplace_tool(args):  # xargs·find -exec 뒤의 sed -i·perl -i
+        for i, a in enumerate(args):
+            if os_base(a) in ("sed", "perl") and (_sed_inplace(args[i + 1:]) if os_base(a) == "sed" else
+                                                  any(x.startswith("-") and not x.startswith("--") and "i" in x
+                                                      for x in args[i + 1:])):
+                return True
+        return False
+
     for s in segs:
+        n_out, n_unk = len(out), len(unknown)
+        writer = False
         for op, t in s.redir:
             if op in (">", ">>", ">|", "&>", "&>>") and not t.startswith("&"):
+                writer = True
                 add(s.cwd, t)
         pos = _pos(s.args)
         if s.name == "tee":
+            writer = True
             for f in pos:
                 add(s.cwd, f)
+        elif s.name in ("xargs", "find") and inplace_tool(s.args):
+            unknown.append(s.name)
         elif s.name == "sed" and _sed_inplace(s.args):
-            for f in _files_after_script(s.args, {"-e", "-f", "--expression", "--file"}):
+            writer = True
+            files = _files_after_script(s.args, {"-e", "-f", "--expression", "--file"})
+            for f in files:
                 add(s.cwd, f)
+            if not files:
+                unknown.append("sed")
         elif s.name == "perl" and any(a.startswith("-") and not a.startswith("--") and "i" in a for a in s.args):
-            for f in _files_after_script(s.args, {"-e", "-E"}):
+            writer = True
+            files = _files_after_script(s.args, {"-e", "-E"})
+            for f in files:
                 add(s.cwd, f)
+            if not files:
+                unknown.append("perl")
         elif s.name in ("cp", "mv", "install") and len(pos) >= 2:
+            writer = True
             dst = pos[-1]
             if dst.endswith("/") or dst in (".", "..") or "." not in posixpath.basename(dst):
                 for src in pos[:-1]:
@@ -815,17 +877,22 @@ def bash_writes(segs: list) -> tuple:
             elif s.body:
                 src = s.body
             elif pos and pos[0].endswith(".py"):
-                unknown.append(s.name)  # 스크립트 파일 내용은 이벤트에 없다
+                unknown.append("python-script")  # 스크립트 파일 내용은 이벤트에 없다
             if src is not None:
                 tg, unk = py_write_targets(src)
                 for f in tg:
                     add(s.cwd, f)
                 if unk:
-                    unknown.append(s.name)
+                    unknown.append("python")
         elif s.name in ("node", "ruby", "perl", "php") and \
                 SCRIPT_WRITE_HINT.search(s.body + " " + " ".join(s.args)):
-            unknown.append(s.name)
+            unknown.append(f"{s.name}-hint")
+        if writer and s.subst and len(unknown) == n_unk:  # 명령 치환이 낀 쓰기 — 펼친 대상을 모른다
+            unknown.append("subst")
     return out, unknown
+
+
+UNSURE_WRITERS = ("python-script",)  # 이것과 '-hint' 는 쓰기였는지도 모른다 — 첫 편집 턴에 넣지 않는다
 
 
 def bash_edit(cmd: str) -> bool:
@@ -897,7 +964,7 @@ def metrics(cs: list, spans: list, existing=None) -> dict:
             if mods and out["first_edit_tool_turn"] is None:  # Bash 편집은 줄 범위를 모른다 — 적중은 파일 단위(symbols 경로)
                 out.update(first_edit_tool_turn=c.turn, first_edit_path=mods[0], first_edit_via="Bash")
                 out["first_edit_hit"] = any(p in {sp.path for sp in fixes} for p in mods) if fixes else None
-            wrote = bool(tg) or any(u in ("patch", "git") for u in unk)
+            wrote = bool(tg) or any(u not in UNSURE_WRITERS and not u.endswith("-hint") for u in unk)
         if out["first_edit_turn"] is None and wrote:
             out["first_edit_turn"] = c.turn  # 편집 수단과 무관한 첫 편집(새 파일 생성 포함)
     if out["first_targeted_turn_by_span"]:

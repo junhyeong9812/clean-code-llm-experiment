@@ -255,7 +255,8 @@ class TestPython(unittest.TestCase):
         self.assertEqual(bw("python3 -m pytest -q"), ([], []))
 
     def test_script_file_unknown(self):
-        self.assertEqual(bw("python3 fix.py"), ([], ["python3"]))
+        # 계약 갱신(리뷰 루프 1): '모름' 이름은 쓰기 확실성으로 나눈다 — 스크립트 파일은 쓰기였는지도 모름
+        self.assertEqual(bw("python3 fix.py"), ([], ["python-script"]))
 
     def test_unresolvable_path_unknown(self):
         targets, unknown = self.py("import sys\nopen(sys.argv[1],'w').write('x')")
@@ -282,7 +283,8 @@ class TestPython(unittest.TestCase):
 
 class TestOtherInterpreters(unittest.TestCase):
     def test_node_write_unknown(self):
-        self.assertEqual(bw("node -e \"require('fs').writeFileSync('a.js','x')\""), ([], ["node"]))
+        # 계약 갱신(리뷰 루프 1): 쓰기 흔적만 있는 인터프리터 코드는 '<이름>-hint'
+        self.assertEqual(bw("node -e \"require('fs').writeFileSync('a.js','x')\""), ([], ["node-hint"]))
 
     def test_node_read_only_not_unknown(self):
         self.assertEqual(bw("node -e \"console.log(1)\""), ([], []))
