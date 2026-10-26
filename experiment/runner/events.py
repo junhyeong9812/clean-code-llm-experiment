@@ -13,6 +13,9 @@ from urllib.parse import urlsplit
 WORK = "/work"
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 READ_DEFAULT_LIMIT = 2000  # Read 도구 기본 상한(줄)
+# 겨냥 Read 폭 상한(줄, 사용자 결정 2026-10-26): 이보다 넓게 돌려받은 Read 는 span 을 덮어도 겨냥이 아니라 청크 읽기 —
+# god 의 큰 파일을 나눠 읽기만 해도 겨냥으로 포화되는 것을 막는다(layered 는 파일이 작아 구조에 비대칭으로 걸린다)
+READ_TARGET_MAX = 400
 
 # 감사: 도구 *입력*에만 적용한다. 결과(파일 내용)까지 보면 코드 안 문자열 때문에 오탐이 난다(앞 실험).
 AUDIT_INPUT = [r"/home/jun", r"clean-code-llm-experiment", r"\boracle\b", r"experiment/", r"study-note",
@@ -21,8 +24,12 @@ AUDIT_INPUT = [r"/home/jun", r"clean-code-llm-experiment", r"\boracle\b", r"expe
 FORBIDDEN_TOOLS = {"WebFetch", "WebSearch", "RemoteTrigger", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
                    "SendMessage", "Workflow", "ListAgents"}
 # 외부로 나가는 명령. curl·wget 은 로컬 서비스(앱·가짜 PG·DB) 디버깅에 정당하게 쓰이므로 목적지가 로컬이 아닐 때만.
-AUDIT_BASH = [r"(^|[\s;&|(])(nc|ncat|ssh|scp|sftp|rsync|gh|telnet)\s", r"\bgit\s+(clone|fetch|pull|push|ls-remote|remote)\b",
-              r"\b(pip3?|npm|npx|apt(-get)?|sdk)\s+(install|i|add)\b"]
+# 외부 접속 통제의 정본은 허용 목록 프록시(runner — 에이전트는 --internal 네트워크)다. 이 감사는 시도를 드러내는 보조.
+NET_CMDS = {"nc", "ncat", "ssh", "scp", "sftp", "rsync", "gh", "telnet"}
+GIT_NET = {"clone", "fetch", "pull", "push", "ls-remote", "remote"}
+PKG_CMDS = {"pip", "pip3", "npm", "npx", "apt", "apt-get", "sdk"}
+CONTENT_FIELDS = {"content", "new_string", "old_string", "edits", "new_source"}
+WRAPPERS = {"timeout", "env", "nice", "nohup", "xargs", "sudo", "time", "command", "exec", "stdbuf"}
 # 실험 저장소가 공개 원격(GitHub)에 있으므로 그 호스트 이름은 도구·명령 종류와 무관하게 입력에서 잡는다(가장 현실적인 누출 경로).
 AUDIT_REMOTE = re.compile(r"(?i)github\.com|githubusercontent\.com|gitlab\.com|bitbucket\.org")
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "db", "::1"}
@@ -93,10 +100,41 @@ def host_of(target: str) -> str:
     return h.split(":", 1)[0].lower()
 
 
+def net_target_external(name: str, args: list) -> bool:
+    """nc·telnet 은 첫 위치 인자 호스트가 로컬이 아니면, rsync·scp 는 원격 지정(host:path)이 있으면, 나머지는 항상."""
+    pos = [x for x in args if not x.startswith("-")]
+    if name in ("nc", "ncat", "telnet"):
+        return bool(pos) and host_of(pos[0]) not in LOCAL_HOSTS
+    if name in ("rsync", "scp"):
+        return any(re.match(r"^[^/\s]+:", x) and host_of(x.split(":", 1)[0]) not in LOCAL_HOSTS for x in pos)
+    return True
+
+
+def unwrap(cmds: list, depth: int = 0) -> list:
+    """`timeout 30 curl …`·`env A=1 curl …`·`sh -c "…"` 를 벗겨 실제 명령을 드러낸다(재귀 2단계)."""
+    out = []
+    for name, args, redir in cmds:
+        while name in WRAPPERS and args:
+            rest = [a for a in args if not a.startswith("-") and "=" not in a]
+            while rest and re.fullmatch(r"[\d.]+[smhd]?|[A-Z]+", rest[0]):  # 옵션 값(timeout 30·nice -n 5·-s KILL)
+                rest = rest[1:]
+            if not rest:
+                break
+            i = args.index(rest[0])
+            name, args = os_base(rest[0]), args[i + 1:]
+        if name in ("sh", "bash", "zsh", "dash") and "-c" in args and depth < 2:
+            j = args.index("-c")
+            if j + 1 < len(args):
+                out += unwrap(commands(args[j + 1]), depth + 1)
+                continue
+        out.append((name, args, redir))
+    return out
+
+
 def fetch_hosts(cmd: str) -> list:
     """curl·wget 의 목적지 호스트(위치 인자와 --url). `$VAR`(DB_URL·PG_URL 등)·로컬 파일 경로는 판정하지 않는다."""
     out = []
-    for name, args, _ in commands(cmd):
+    for name, args, _ in unwrap(commands(cmd)):
         if name not in ("curl", "wget"):
             continue
         skip = False
@@ -268,13 +306,21 @@ def audit(cs: list) -> list:
     for c in cs:
         if c.name in FORBIDDEN_TOOLS:
             hits.add(f"tool:{c.name}")
-        text = json.dumps(c.input, ensure_ascii=False)
+        # 편집·쓰기 도구의 내용(new_string·content)은 결과와 같은 성격(코드 문자열) — 경로 필드만 본다
+        fields = {k: v for k, v in c.input.items() if k not in CONTENT_FIELDS}
+        text = json.dumps(fields, ensure_ascii=False)
         hits.update(f"input:{p}" for p in AUDIT_INPUT if re.search(p, text))
         if AUDIT_REMOTE.search(text):
             hits.add("input:remote-host")
         if c.name == "Bash":
             cmd = str(c.input.get("command", ""))
-            hits.update(f"bash:{p}" for p in AUDIT_BASH if re.search(p, cmd))
+            for name, args, _ in unwrap(commands(cmd)):
+                if name in NET_CMDS and net_target_external(name, args):
+                    hits.add(f"bash:{name}")
+                elif name == "git" and args and args[0] in GIT_NET:
+                    hits.add(f"bash:git {args[0]}")
+                elif name in PKG_CMDS and args and args[0] in ("install", "i", "add"):
+                    hits.add(f"bash:{name} {args[0]}")
             for host in fetch_hosts(cmd):
                 if host not in LOCAL_HOSTS:
                     hits.add(f"bash:url:{host}")
@@ -317,22 +363,35 @@ def _overlap(a1, a2, b1, b2) -> bool:
     return a1 <= b2 and b1 <= a2
 
 
+def read_range(c: Call):
+    """Read 가 돌려받은 (시작, 끝) 줄. 구조화 결과가 없으면 입력 offset·limit 으로 추정."""
+    f = (c.meta or {}).get("file") or {}
+    if f.get("startLine") is not None and f.get("numLines") is not None:
+        return int(f["startLine"]), int(f["startLine"]) + max(int(f["numLines"]), 1) - 1
+    s = int(c.input.get("offset") or 1)
+    return s, s + int(c.input.get("limit") or READ_DEFAULT_LIMIT) - 1
+
+
+def chunk_read(c: Call) -> bool:
+    """offset 을 준 Read 지만 폭이 READ_TARGET_MAX 를 넘는다(파일 전체 읽기는 아님)."""
+    if c.name != "Read" or c.is_error or c.input.get("offset") is None or whole_file_read(c):
+        return False
+    s, e = read_range(c)
+    return e - s + 1 > READ_TARGET_MAX
+
+
 def targeted(c: Call, spans: list) -> list:
-    """이 호출이 겨냥한 span 목록. 겨냥 = offset 을 준 Read 의 범위가 span 과 겹침 · Grep 결과 줄이 span 안 ·
-    Edit 결과 스니펫 줄이 span 과 겹침. offset 없는 Read(파일 전체)는 겨냥이 아니다(full_read 로 따로)."""
+    """이 호출이 겨냥한 span 목록(ADR §5.2):
+    - Read: offset 을 준 Read 가 span 을 **전부 덮고** 돌려받은 폭이 READ_TARGET_MAX 이하. 더 넓으면 청크 읽기(따로 기록),
+      offset 없는 Read·파일 전체를 돌려받은 Read 는 전체 읽기(따로 기록).
+    - Grep·Bash grep: 결과 줄이 span 안. Edit: 편집한 원래 줄 범위가 span 과 겹침."""
     hit = []
     if c.is_error:
         return hit
-    if c.name == "Read" and (c.input.get("offset") is not None or c.input.get("limit") is not None) \
-            and not whole_file_read(c):
+    if c.name == "Read" and c.input.get("offset") is not None and not whole_file_read(c) and not chunk_read(c):
         p = norm_path(str(c.input.get("file_path", "")))
-        f = (c.meta or {}).get("file") or {}
-        if f.get("startLine") is not None and f.get("numLines") is not None:  # 실제로 돌려받은 범위
-            s, e = int(f["startLine"]), int(f["startLine"]) + max(int(f["numLines"]), 1) - 1
-        else:
-            s = int(c.input.get("offset") or 1)
-            e = s + int(c.input.get("limit") or READ_DEFAULT_LIMIT) - 1
-        hit = [sp for sp in spans if sp.path == p and _overlap(s, e, sp.start, sp.end)]
+        s, e = read_range(c)
+        hit = [sp for sp in spans if sp.path == p and s <= sp.start and sp.end <= e]
     elif c.name == "Grep" and c.result:
         base = norm_path(str(c.input.get("path", "")))
         paths = {sp.path for sp in spans}
@@ -484,9 +543,9 @@ def bash_edit(cmd: str) -> bool:
 def metrics(cs: list, spans: list) -> dict:
     out = {"tool_calls": len(cs), "tools": {}, "subagent_calls": 0,
            "lines_read": {"read": 0, "grep": 0, "bash": 0, "other": 0, "sub": 0},
-           "first_targeted_turn": None, "first_targeted_turn_by_span": {}, "full_read_turns": {},
+           "first_targeted_turn": None, "first_targeted_turn_by_span": {}, "full_read_turns": {}, "chunk_read_turns": {},
            "first_edit_turn": None, "first_edit_tool_turn": None, "first_edit_path": None, "first_edit_hit": None,
-           "edited_paths": []}
+           "edited_paths": [], "created_paths": []}
     keys = {f"{sp.path}:{sp.start}-{sp.end}": sp for sp in spans}
     for c in cs:
         out["tools"][c.name] = out["tools"].get(c.name, 0) + 1
@@ -498,6 +557,8 @@ def metrics(cs: list, spans: list) -> dict:
         if whole_file_read(c) and not c.is_error:
             p = norm_path(str(c.input.get("file_path", "")))
             out["full_read_turns"].setdefault(p, c.turn)
+        elif chunk_read(c):
+            out["chunk_read_turns"].setdefault(norm_path(str(c.input.get("file_path", ""))), c.turn)
         elif c.name == "Bash" and not c.is_error:  # Bash 로 통째 읽기(cat 파일) — 경로는 symbols 에 있는 것만
             for p in bash_cat_paths(str(c.input.get("command", "")), {sp.path for sp in spans}):
                 out["full_read_turns"].setdefault(p, c.turn)
@@ -510,7 +571,11 @@ def metrics(cs: list, spans: list) -> dict:
             p = norm_path(str(c.input.get("file_path", "")))
             if p and p not in out["edited_paths"]:
                 out["edited_paths"].append(p)
-            if out["first_edit_tool_turn"] is None:  # ADR §5.2 첫 편집 적중 = 첫 Edit 계열 호출 기준(앞선 Bash 편집과 무관)
+            creates = (c.meta or {}).get("type") == "create" or (c.name == "Write" and (c.meta or {}).get("originalFile") is None
+                                                                and c.meta is not None)
+            if creates:
+                out["created_paths"].append(p)
+            elif out["first_edit_tool_turn"] is None:  # ADR §5.2 첫 편집 적중 = 기존 파일을 고친 첫 Edit 계열 호출(새 파일 생성·Bash 편집과 무관)
                 out["first_edit_tool_turn"] = c.turn
                 out["first_edit_path"] = p
                 fixes = [sp for sp in spans if sp.kind == "fix"]

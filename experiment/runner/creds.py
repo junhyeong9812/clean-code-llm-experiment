@@ -36,6 +36,8 @@ def wait_fresh(origin: Path = ORIGIN, min_left_s: int = MIN_LEFT_S, sleep=time.s
     한다(러너가 호스트 CLI 를 부르면 호스트 ~/.claude 에 쓰고 병렬 실행끼리 refresh 토큰 회전이 겹친다).
     min_left_s 는 실행 시간 상한보다 길어야 한다(실행 중 컨테이너 사본이 스스로 갱신하지 않게).
     max_wait_s 를 넘기거나 stopped() 가 참이면 예외 — 무한 대기 대신 행(인프라·중단 무효)으로 드러낸다."""
+    if expiry(origin) == 0.0:  # 없음·깨짐 — 기다려도 풀리지 않는다(6시간 대기 대신 즉시 인프라 무효)
+        raise RuntimeError(f"로그인 파일을 읽을 수 없음(없음 또는 형식 오류): {origin}")
     waited = 0
     while expiry(origin) - now() < min_left_s:
         if stopped():
@@ -63,10 +65,14 @@ def _write_private(dst: Path, data: bytes) -> None:
     fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.fchmod(fd, 0o600)
-        os.write(fd, data)
+        view = memoryview(data)
+        while view:  # os.write 는 일부만 쓸 수 있다
+            view = view[os.write(fd, view):]
         os.fsync(fd)
     finally:
         os.close(fd)
+    if dst.read_bytes() != data:
+        raise OSError(f"쓰기 검증 실패: {dst}")
 
 
 def write_back(sandbox: Path, origin: Path = ORIGIN, lock: Path = LOCK) -> bool:

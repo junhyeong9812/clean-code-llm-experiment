@@ -52,6 +52,8 @@ GRADLE_WARM = CACHE / "gradle-warm"
 CLI_VERSION = "2.1.308"
 IMAGE = f"ccle-agent:cli-{CLI_VERSION}"
 DB_IMAGE = "ccle-postgres-seed:1k-s42"
+PROXY_IMAGE = "ccle-proxy:1"          # experiment/runner/proxy — 허용 목록(api.anthropic.com) 밖 거부
+EGRESS_NET = "ccle-egress"            # 프록시만 붙는 외부 연결 네트워크(실행 네트워크는 --internal)
 GRADLE_VERSION = "8.14.4"
 GRADLE_DIST = f"/opt/gradle/gradle-{GRADLE_VERSION}-bin.zip"
 PG_PORT = 15480
@@ -65,6 +67,9 @@ AGENT_ENV = {
     "GRADLE_USER_HOME": f"{AGENT_HOME}/.gradle", "GRADLE_RO_DEP_CACHE": AGENT_GRADLE_RO,
     "DB_URL": "jdbc:postgresql://db:5432/ccle_seed", "DB_USER": "ccle", "DB_PASSWORD": "ccle",
     "PG_URL": f"http://127.0.0.1:{PG_PORT}", "PG_TIMEOUT_MS": "2000",
+    # 외부 접속은 프록시로만(실행 네트워크가 --internal 이라 직접 나갈 길이 없다). 로컬 서비스는 프록시를 거치지 않는다
+    **{k: "http://proxy:3128" for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")},
+    **{k: "localhost,127.0.0.1,db" for k in ("NO_PROXY", "no_proxy")},
 }
 
 ENV_NOTE = ("빌드·테스트는 ./gradlew 로 한다(JDK 21과 의존성은 준비돼 있고 외부 네트워크는 쓸 수 없다). "
@@ -142,8 +147,8 @@ def build_work(case: str, structure: str, work: Path) -> None:
         sh(["patch", "-p1", "--forward", "--no-backup-if-mismatch", "-i", str(inject)], cwd=work)
 
 
-def make_home(home: Path, timeout_s: int) -> Path:
-    """격리 HOME: settings.json(웹 도구 금지) + Gradle 사용자 홈(오프라인 init·데몬 끔) + 로그인 파일 사본."""
+def make_home(home: Path, timeout_s: int, with_creds: bool = True):
+    """격리 HOME: settings.json(금지 도구) + Gradle 사용자 홈(오프라인 init·데몬 끔) + 로그인 파일 사본(셸 모드는 없음)."""
     (home / ".claude").mkdir(parents=True)
     (home / ".claude" / "settings.json").write_text(json.dumps(SETTINGS))
     g = home / ".gradle"
@@ -152,6 +157,8 @@ def make_home(home: Path, timeout_s: int) -> Path:
     (g / "init.d").mkdir(parents=True, exist_ok=True)
     shutil.copy2(HERE / "templates" / "offline.gradle", g / "init.d" / "offline.gradle")
     shutil.copy2(HERE / "templates" / "gradle.properties", g / "gradle.properties")
+    if not with_creds:  # 무료 인프라 확인(셸 모드)은 로그인 상태와 무관하게 돈다
+        return None
     # 실행이 끝날 때까지 사본이 만료되지 않게(시간 상한 + 10분 여유) — 실행 중 컨테이너가 스스로 갱신하지 않도록
     creds.wait_fresh(min_left_s=timeout_s + 600, stopped=_stop.is_set)
     return creds.copy_in(home)
@@ -172,7 +179,7 @@ def check_mounts(inspected: list, allowed: set) -> list:
 def remove_run(name: str) -> list:
     """그 실행의 컨테이너 3개·네트워크를 지우고, 지운 뒤에도 남은 자원 목록을 돌려준다(빈 목록 = 정리 완료).
     삭제 명령의 실패는 '없어서 실패'와 구분이 안 되므로 반환 코드 대신 남은 자원을 다시 조회해 판정한다."""
-    for c in (f"{name}-agent", f"{name}-pg", f"{name}-db"):
+    for c in (f"{name}-agent", f"{name}-pg", f"{name}-db", f"{name}-proxy"):
         subprocess.run(["docker", "rm", "-f", c], capture_output=True)
     subprocess.run(["docker", "network", "rm", name], capture_output=True)
     left = subprocess.run(["docker", "ps", "-aq", "--filter", f"label={LABEL}={name}"], capture_output=True, text=True)
@@ -182,17 +189,32 @@ def remove_run(name: str) -> list:
     return [f"container:{x}" for x in left.stdout.split()] + [f"network:{x}" for x in nets.stdout.split()]
 
 
+def ensure_egress() -> None:
+    if subprocess.run(["docker", "network", "inspect", EGRESS_NET], capture_output=True).returncode:
+        r = subprocess.run(["docker", "network", "create", "--label", f"{LABEL}-egress=1", EGRESS_NET],
+                           capture_output=True, text=True)
+        if r.returncode and "already exists" not in r.stderr:  # 병렬 실행이 동시에 만들 수 있다
+            raise RuntimeError(f"egress 네트워크 생성 실패: {r.stderr[-300:]}")
+
+
 def start_services(name: str) -> None:
+    """--internal 실행 네트워크(외부로 나갈 경로 없음) + DB(db) + 가짜 PG + 허용 목록 프록시(proxy, egress 에도 연결)."""
     lab = ["--label", f"{LABEL}={name}"]
-    sh(["docker", "network", "create", *lab, name])
+    ensure_egress()
+    sh(["docker", "network", "create", "--internal", *lab, name])
+    sh(["docker", "run", "-d", "--name", f"{name}-proxy", *lab, "--network", EGRESS_NET, PROXY_IMAGE])
+    sh(["docker", "network", "connect", "--alias", "proxy", name, f"{name}-proxy"])
     sh(["docker", "run", "-d", "--name", f"{name}-db", *lab, "--network", name, "--network-alias", "db",
         "--shm-size=1g", DB_IMAGE])
     sh(["docker", "run", "-d", "--name", f"{name}-pg", *lab, "--network", name,
         "-v", f"{FAKEPG}:/fakepg:ro", "-e", f"PG_PORT={PG_PORT}", "-e", "PG_DELAY_MS=3000", "-e", f"TZ={TZ}",
         IMAGE, "java", "-cp", "/fakepg/*", "com.ccle.behavior.pg.FakePgKt"])
     deadline = time.time() + 120
-    db_ok = pg_ok = False
-    while time.time() < deadline and not (db_ok and pg_ok):
+    db_ok = pg_ok = px_ok = False
+    while time.time() < deadline and not (db_ok and pg_ok and px_ok):
+        if not px_ok:
+            px_ok = subprocess.run(["docker", "exec", f"{name}-proxy", "nc", "-z", "127.0.0.1", "3128"],
+                                   capture_output=True).returncode == 0
         if _stop.is_set():
             raise RuntimeError("서비스 기동 중 중단")
         if not db_ok:
@@ -201,8 +223,8 @@ def start_services(name: str) -> None:
         if not pg_ok:
             pg_ok = "fake-pg ready" in sh(["docker", "logs", f"{name}-pg"], check=False).stdout
         time.sleep(0.5)
-    if not (db_ok and pg_ok):
-        raise RuntimeError(f"서비스 기동 실패 db={db_ok} pg={pg_ok}: {sh(['docker', 'logs', f'{name}-pg'], check=False).stderr[-300:]}")
+    if not (db_ok and pg_ok and px_ok):
+        raise RuntimeError(f"서비스 기동 실패 db={db_ok} pg={pg_ok} proxy={px_ok}: {sh(['docker', 'logs', f'{name}-pg'], check=False).stderr[-300:]}")
     sh(["docker", "exec", f"{name}-db", "psql", "-U", "ccle", "-d", "ccle_seed", "-Atqc", "SELECT 1"])
 
 
@@ -240,6 +262,18 @@ def attach_agent(name: str, out: Path, err: Path, timeout_s: int) -> tuple:
                 break
             time.sleep(1)
     return p.returncode, timed_out, time.time() - t0
+
+
+# CLI 자신이 여는 허용 목록 밖 접속(차단되는 것이 맞다 — 계정 MCP 커넥터 로드 = 하네스 유입). 거부돼도 무효로 보지 않는다.
+CLI_EXPECTED_REFUSED = {"mcp-proxy.anthropic.com"}  # 2.1.308 Haiku 스모크(프록시) 실측
+PROXY_REQ = re.compile(r"Request \(file descriptor \d+\): (?:CONNECT (\S+?)(?::\d+)? |(?:GET|POST|PUT|HEAD|DELETE|PATCH|OPTIONS) \w+://([^/:\s]+))")
+PROXY_REFUSED = re.compile(r'Proxying refused on filtered domain "([^"]+)"')
+
+
+def proxy_hosts(log: str) -> dict:
+    """프록시 로그 → 요청 호스트·거부 호스트(정렬). 거부가 있으면 누군가 허용 목록 밖으로 나가려 했다."""
+    req = {m[1] or m[2] for m in PROXY_REQ.finditer(log)}
+    return {"requested": sorted(h.lower() for h in req if h), "refused": sorted({h.lower() for h in PROXY_REFUSED.findall(log)})}
 
 
 def image_id(img: str) -> str:
@@ -354,19 +388,22 @@ def symbols(case: str, structure: str) -> list:
     return events.parse_symbols(p.read_text()) if p.is_file() else []
 
 
-def classify(evs: list, rc: int, timed_out: bool, violations: list, stderr: str = "", tok: dict = None) -> dict:
+def classify(evs: list, rc: int, timed_out: bool, violations: list, stderr: str = "", tok: dict = None,
+             n_assistant: int = None) -> dict:
     """valid = (result ∨ 러너 시간 상한) ∧ 감사 통과 ∧ 사용량 한도 아님 ∧ 토큰 측정됨 (ADR §6.4).
     - 시간 상한(result 없음): valid·censored, 부분 토큰이 0이어도 그대로(첫 응답 전 상한 — 측정값 0).
     - result 가 있는데 modelUsage 가 없으면 무효(no_modelusage) — 부분 합은 정식 토큰과 정의가 달라 섞지 않는다.
     - 오류 result(한도 문구 아님): 무효(agent_error) — API·연결·인증 오류로 끊긴 실행이 주 분석에 섞이지 않게.
     - result 없이 끝났는데 stderr 에 한도 문구: 사용량 한도(대기 뒤 재시도). 인프라 오류는 run_one 이 따로."""
     reason = events.end_reason(evs, timed_out)
-    if reason == "no_result" and events.LIMIT_TEXT.search(stderr or ""):
-        reason = "usage_limit"
+    if reason in ("no_result", "timeout") and events.LIMIT_TEXT.search(stderr or ""):
+        reason = "usage_limit"  # 한도·과부하 재시도 끝에 상한에 걸린 실행도 한도로(시간 상한 censored 가 아니다)
+    elif reason == "timeout" and n_assistant == 0:
+        reason = "no_activity"  # 첫 응답도 없이 상한 — 에이전트가 일하지 않은 인프라 문제
     invalid = None
     if violations:
         invalid = "audit"
-    elif reason in ("usage_limit", "no_result"):
+    elif reason in ("usage_limit", "no_result", "no_activity"):
         invalid = reason
     elif reason == "error":
         invalid = "agent_error"
@@ -418,7 +455,7 @@ def mask_file(p: Path, secrets: list) -> int:
 
 
 def run_one(case: str, structure: str, rep: int, model: str, results: Path, budget: str, timeout_s: int,
-            argv_override: list = None, keep: bool = False) -> dict:
+            argv_override: list = None) -> dict:
     run_id = f"{case}-{structure}-{model}-r{rep}-{int(time.time() * 1000) % 10**10}"
     name = f"ccle-{run_id}".lower()
     rd = RUNS / run_id
@@ -449,8 +486,8 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         row["image_id"] = image_id(IMAGE)
         build_work(case, structure, rd / "work")
         shutil.copytree(rd / "work", rd / "base", symlinks=True)
-        sb_creds = make_home(rd / "home", timeout_s)
-        secrets = creds.secrets(sb_creds)
+        sb_creds = make_home(rd / "home", timeout_s, with_creds=not argv_override)
+        secrets = creds.secrets(sb_creds) if sb_creds else []
         prompt = PROMPTS[case_type(case)]
         argv = argv_override or ["claude", "-p", prompt, "--model", model, "--output-format", "stream-json",
                                  "--verbose", "--max-budget-usd", budget, "--permission-mode", "bypassPermissions"]
@@ -462,6 +499,9 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             raise RuntimeError("에이전트 기동 전 중단")
         rc, timed_out, wall = attach_agent(name, out, err, timeout_s)
         row.update(rc=rc, timed_out=timed_out, wall_s=round(wall, 1))
+        px = proxy_hosts(sh(["docker", "logs", f"{name}-proxy"], check=False).stderr +
+                         sh(["docker", "logs", f"{name}-proxy"], check=False).stdout)
+        row["proxy"] = px
         down = [c for c in (f"{name}-db", f"{name}-pg")
                 if sh(["docker", "inspect", "-f", "{{.State.Running}}", c], check=False).stdout.strip() != "true"]
         if _stop.is_set():
@@ -479,15 +519,22 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         res = next((e for e in reversed(evs) if e.get("type") == "result"), {}) or {}
         violations = events.audit(cs)
         tok = events.tokens(evs)
+        n_asst = sum(1 for e in evs if e.get("type") == "assistant")
         row.update(bad_event_lines=bad, init=events.init_info(evs), turns=turns, result_turns=res.get("num_turns"),
                    result_subtype=res.get("subtype"), is_error=res.get("is_error"),
                    duration_ms=res.get("duration_ms"), **tok,
                    **events.metrics(cs, symbols(case, structure)), audit_violations=violations,
-                   **classify(evs, rc, timed_out, violations, tail(err, 4000), tok))
+                   **classify(evs, rc, timed_out, violations, tail(err, 4000) + tail(out, 4000), tok, n_asst))
         row["result_count"] = events.result_count(evs)  # 2 이상이면 큐에 쌓인 턴 — 토큰은 마지막 result 기준(표시)
-        harness = events.harness_problems(row["init"])
+        harness = events.harness_problems(row["init"]) if any(e.get("subtype") == "init" for e in evs) \
+            else ["init 이벤트 없음"]
         if harness and row["valid"]:
             row.update(valid=False, invalid_reason="harness", harness_problems=harness)
+        if row["init"].get("cli_version") not in (None, CLI_VERSION) and row["valid"]:
+            row.update(valid=False, invalid_reason="version_mismatch")
+        agent_refused = sorted(set(px["refused"]) - CLI_EXPECTED_REFUSED)
+        if agent_refused and row["valid"]:  # 허용 목록 밖 접속 시도(차단됨) — 결과는 깨끗해도 시도 자체를 무효로
+            row.update(valid=False, invalid_reason="network", network_refused=agent_refused)
         if down and row["valid"]:  # 실행 중 DB·가짜 PG 가 죽었으면 에이전트가 본 환경이 계약과 다르다
             row.update(valid=False, invalid_reason="infra", infra_error=f"실행 중 서비스 중지: {down}")
         row.update(judge(case, structure, rd / "work"))
@@ -521,11 +568,7 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         if alive is not None:  # 행을 쓴 뒤 잠금을 쥔 채 표식을 지운다 → sweep 이 이 시도를 고아로 보지 않는다
             (rd / "attempt.json").unlink(missing_ok=True)
             alive.close()
-        if keep:  # 디버그 보관이어도 로그인 사본은 남기지 않는다
-            if sb_creds is not None:
-                sb_creds.unlink(missing_ok=True)
-        else:
-            rm_tree(rd)
+        rm_tree(rd)  # 작업 사본·격리 HOME(로그인 사본 포함)은 남기지 않는다 — 보관은 diff·이벤트만(spec §2)
 
 
 def rm_tree(d: Path) -> None:
@@ -685,15 +728,36 @@ def _replace_dir(dst: Path, fill) -> None:
     tmp.rename(dst)
 
 
+def live_names() -> set:
+    """잠금이 쥐어진(진행 중) 시도의 docker 이름. 다른 러너 프로세스의 실행도 포함."""
+    live = set()
+    for d in RUNS.iterdir() if RUNS.is_dir() else []:
+        lk = d / "attempt.lock"
+        if not lk.is_file():
+            continue
+        with open(lk, "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                live.add(f"ccle-{d.name}".lower())
+    return live
+
+
 def cmd_cleanup(_a) -> int:
+    """고아 시도를 행으로 남기고, 진행 중이 아닌 러너 자원만 지운다(다른 러너의 진행 중 실행은 건드리지 않는다)."""
     print(f"orphans={sweep_orphans()}")
-    ids = sh(["docker", "ps", "-aq", "--filter", f"label={LABEL}"], check=False).stdout.split()
+    live = live_names()
+    rows = sh(["docker", "ps", "-a", "--filter", f"label={LABEL}", "--format", f'{{{{.ID}}}} {{{{.Label "{LABEL}"}}}}'],
+              check=False).stdout.split("\n")
+    ids = [x.split()[0] for x in rows if x.strip() and (len(x.split()) < 2 or x.split()[1] not in live)]
     if ids:
         sh(["docker", "rm", "-f", *ids], check=False)
-    nets = sh(["docker", "network", "ls", "-q", "--filter", f"label={LABEL}"], check=False).stdout.split()
+    nrows = sh(["docker", "network", "ls", "--filter", f"label={LABEL}", "--format", f'{{{{.ID}}}} {{{{.Label "{LABEL}"}}}}'],
+               check=False).stdout.split("\n")
+    nets = [x.split()[0] for x in nrows if x.strip() and (len(x.split()) < 2 or x.split()[1] not in live)]
     if nets:
         sh(["docker", "network", "rm", *nets], check=False)
-    print(f"containers={len(ids)} networks={len(nets)}")
+    print(f"containers={len(ids)} networks={len(nets)} live_skipped={len(live)}")
     return 0
 
 
@@ -737,7 +801,9 @@ def cmd_run(a) -> int:
             if _stop.is_set():  # 중단 뒤 아직 시작하지 않은 job 은 시도가 아니다 — 행을 만들지 않는다
                 return r
             with case_lock(c):
-                r = run_one(c, s, rep, a.model, results, a.budget, a.timeout, keep=a.keep)
+                if _stop.is_set():  # 잠금을 기다리는 동안 중단됨 — 시작하지 않은 job
+                    return r
+                r = run_one(c, s, rep, a.model, results, a.budget, a.timeout)
             if r.get("invalid_reason") != "usage_limit" or attempt > a.limit_retries or _stop.is_set():
                 return r
             print(f"{c} {s} r{rep}: 사용량 한도 — {a.limit_wait}s 대기 후 재시도({attempt})", flush=True)
@@ -763,7 +829,7 @@ def cmd_shell(a) -> int:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
     r = run_one(a.case, a.structure, 0, "shell", Path(a.results_dir).resolve(), "0", a.timeout,
-                argv_override=["bash", "-c", a.command], keep=a.keep)
+                argv_override=["bash", "-c", a.command])
     print(r.get("tail", ""))
     print(json.dumps({k: v for k, v in r.items() if k not in ("tail",)}, ensure_ascii=False))
     return 0 if r.get("infra_error") is None and r.get("rc") == 0 else 1
@@ -786,13 +852,11 @@ def main() -> int:
     p.add_argument("--limit-wait", type=int, default=900)
     p.add_argument("--limit-retries", type=int, default=3)
     p.add_argument("--results-dir", default=str(ROOT / "experiment" / "results"))
-    p.add_argument("--keep", action="store_true", help="실행 디렉터리를 지우지 않는다(디버깅)")
     p = sub.add_parser("shell")
     p.add_argument("--case", default="_smoke")
     p.add_argument("--structure", default="god")
     p.add_argument("--timeout", type=int, default=900)
     p.add_argument("--results-dir", default=str(CACHE / "shell-results"))
-    p.add_argument("--keep", action="store_true")
     p.add_argument("command")
     a = ap.parse_args()
     return {"prep": cmd_prep, "cleanup": cmd_cleanup, "run": cmd_run, "shell": cmd_shell}[a.cmd](a)

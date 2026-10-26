@@ -332,8 +332,8 @@ class TestAudit(unittest.TestCase):
 
     def test_bash_forbidden_commands(self):
         cases = [("ssh user@host", "ssh"), ("cd /work && scp a b:", "scp"),
-                 ("sftp h", "sftp"), ("rsync -a x y", "rsync"), ("nc -z db 5432", "nc"),
-                 ("ncat db 5432", "ncat"), ("gh pr list", "gh"), ("telnet db 5432", "telnet"),
+                 ("sftp h", "sftp"), ("rsync -a x evil:y", "rsync"), ("nc -z evil.com 80", "nc"),  # 계약 갱신(루프 3):
+                 ("ncat evil.com 80", "ncat"), ("gh pr list", "gh"), ("telnet evil.com 80", "telnet"),  # 로컬 대상은 허용
                  ("git clone /x/y", "clone"), ("git fetch origin", "fetch"),
                  ("git pull", "pull"), ("git push origin main", "push"),
                  ("git ls-remote x", "ls-remote"), ("git remote -v", "remote"),
@@ -457,32 +457,36 @@ class TestTargetedRead(unittest.TestCase):
         evs = seq(("Bash", {"command": "ls"}, "x", False), ("Read", inp, "1\tx", False))
         return events.metrics(calls_of(evs), spans())
 
-    def test_offset_limit_overlap(self):
-        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 110, "limit": 5})
+    # 계약 갱신(루프 3, 사용자 결정): 겨냥 Read = span 을 전부 덮고 폭 ≤ READ_TARGET_MAX(400)
+    def test_offset_limit_cover(self):
+        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 95, "limit": 30})
         self.assertEqual(m["first_targeted_turn"], 2)
         self.assertEqual(m["first_targeted_turn_by_span"].get("app/A.kt:100-120"), 2)
+        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 110, "limit": 5})  # 부분 겹침은 겨냥 아님
+        self.assertIsNone(m["first_targeted_turn"])
 
     def test_boundaries(self):
-        cases = [({"offset": 81, "limit": 20}, True),   # 81..100
-                 ({"offset": 80, "limit": 20}, False),  # 80..99
-                 ({"offset": 120, "limit": 1}, True),
-                 ({"offset": 121, "limit": 100}, False),
+        cases = [({"offset": 100, "limit": 21}, True),   # 100..120
+                 ({"offset": 101, "limit": 20}, False),  # 101..120
+                 ({"offset": 81, "limit": 40}, True),    # 81..120
+                 ({"offset": 81, "limit": 39}, False),   # 81..119
                  ({"offset": 1, "limit": 50}, False)]
         for kw, hit in cases:
             with self.subTest(kw=kw):
                 m = self.read_turn(dict(file_path="/work/app/A.kt", **kw))
                 self.assertEqual(m["first_targeted_turn"], 2 if hit else None)
 
-    def test_offset_without_limit_uses_2000(self):
-        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 1})  # 1..2000
-        self.assertEqual(m["first_targeted_turn"], 2)
-        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 1, "limit": 2000})
+    def test_offset_without_limit_is_chunk_read(self):
+        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 1})  # 1..2000 — 폭 상한 초과
+        self.assertIsNone(m["first_targeted_turn"])
+        self.assertEqual(m["chunk_read_turns"], {"app/A.kt": 2})
+        m = self.read_turn({"file_path": "/work/app/A.kt", "offset": 1, "limit": 400})  # 폭 400 = 상한 이내
         self.assertEqual(m["first_targeted_turn"], 2)
 
     def test_full_read_is_not_targeted_saturation(self):
         evs = seq(("Read", {"file_path": "/work/app/A.kt"}, "\n".join(f"{i}\tx" for i in range(1, 1773)), False),
                   ("Read", {"file_path": "./app/A.kt"}, "again", False),
-                  ("Read", {"file_path": "app/B.kt", "offset": 55, "limit": 3}, "x", False))
+                  ("Read", {"file_path": "app/B.kt", "offset": 50, "limit": 11}, "x", False))
         m = events.metrics(calls_of(evs), spans())
         self.assertEqual(m["full_read_turns"], {"app/A.kt": 1})
         self.assertNotIn("app/A.kt:100-120", m["first_targeted_turn_by_span"])
@@ -630,7 +634,7 @@ class TestEdits(unittest.TestCase):
     def test_earliest_targeted_across_kinds(self):
         evs = seq(("Read", {"file_path": "/work/app/A.kt"}, "x", False),
                   ("Grep", {"pattern": "f"}, "app/B.kt:55:f", False),
-                  ("Read", {"file_path": "/work/app/A.kt", "offset": 100, "limit": 5}, "x", False),
+                  ("Read", {"file_path": "/work/app/A.kt", "offset": 100, "limit": 21}, "x", False),
                   self.edit("/work/app/A.kt", snippet(110, 2)))
         m = events.metrics(calls_of(evs), spans())
         self.assertEqual(m["first_targeted_turn"], 2)
