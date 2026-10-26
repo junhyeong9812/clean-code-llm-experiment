@@ -181,7 +181,8 @@ def check_mounts(inspected: list, allowed: set) -> list:
 def remove_run(name: str) -> list:
     """그 실행의 컨테이너 3개·네트워크를 지우고, 지운 뒤에도 남은 자원 목록을 돌려준다(빈 목록 = 정리 완료).
     삭제 명령의 실패는 '없어서 실패'와 구분이 안 되므로 반환 코드 대신 남은 자원을 다시 조회해 판정한다."""
-    for c in (f"{name}-agent", f"{name}-pg", f"{name}-db", f"{name}-proxy", f"{name}-judge", f"{name}-jbuild"):
+    for c in (f"{name}-agent", f"{name}-pg", f"{name}-db", f"{name}-proxy", f"{name}-judge", f"{name}-jbuild",
+              f"{name}-tbuild", f"{name}-app"):
         subprocess.run(["docker", "rm", "-f", c], capture_output=True)
     subprocess.run(["docker", "network", "rm", name], capture_output=True)
     left = subprocess.run(["docker", "ps", "-aq", "--filter", f"label={LABEL}={name}"], capture_output=True, text=True)
@@ -553,8 +554,11 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             row.update(valid=False, invalid_reason="infra", infra_error=f"실행 중 서비스 중지: {down}")
         if row["valid"] and ORACLE.joinpath(case).is_dir() and not case.startswith("_"):
             row.pop("judge_skip", None)
-            remove_run(name)  # 판정 전에 에이전트 실행의 DB·가짜 PG·프록시를 내린다(판정 단계와 자원 경합 방지)
-            row.update(judging.judge(case, structure, rd / "work", rd / "judge", name))
+            pre_left = remove_run(name)  # 판정 전에 에이전트 실행의 DB·가짜 PG·프록시를 내린다(판정 단계와 자원 경합 방지)
+            if pre_left:  # 에이전트 자원이 남은 채 판정하면 부하가 섞인다 — 판정하지 않고 보관해 나중에 판정
+                row.update(judged=False, judge_error=f"판정 전 정리 잔여 {pre_left}", success=None)
+            else:
+                row.update(judging.judge(case, structure, rd / "work", rd / "judge", name))
             if needs_rejudge(row):  # 판정 불가 — 사본을 보관하고 에이전트 없이 다시 판정한다(ADR §4.1-3 '다시 판정')
                 hold_for_rejudge(results, run_id, rd / "work", row)
                 row.update(valid=False, invalid_reason="judge_infra", held=True)
@@ -577,6 +581,8 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             secrets = sorted(set(secrets) | set(creds.secrets(creds.ORIGIN)))
         masked = mask_file(out, secrets) + mask_file(err, secrets) + \
             mask_file(results / "diffs" / f"{run_id}.diff", secrets)  # 사본에 복사된 로그인 파일도 diff 에 나온다
+        if row.get("held"):  # 보관 사본도 같은 값으로 가린다(실행 중 회전된 새 값까지 — 그래서 여기서)
+            masked += mask_tree(results / "held" / run_id / "work", secrets)
         if masked:
             row["masked_credentials"] = masked
         if not row.get("valid", True) or row.get("end_reason") not in (None, "normal") or argv_override:
@@ -591,6 +597,15 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             (rd / "attempt.json").unlink(missing_ok=True)
             alive.close()
         rm_tree(rd)  # 작업 사본·격리 HOME(로그인 사본 포함)은 남기지 않는다 — 보관은 diff·이벤트만(spec §2)
+
+
+def mask_tree(d: Path, secrets: list) -> int:
+    """보관 사본의 일반 파일 전부에 mask_file(링크는 따라가지 않는다)."""
+    n = 0
+    for f in d.rglob("*") if d.is_dir() else []:
+        if f.is_file() and not f.is_symlink():
+            n += mask_file(f, secrets)
+    return n
 
 
 def needs_rejudge(row: dict) -> bool:
@@ -624,32 +639,51 @@ def held_keys(results: Path) -> set:
     return keys
 
 
+REJUDGE_MAX = 2  # 보관본 재판정 상한 — 넘으면 judge_unresolved 종단 행(결측을 무음으로 두지 않는다)
+
+
 def rejudge_held(results: Path) -> int:
-    """보관된 판정 불가 사본을 에이전트 없이 다시 판정한다. 판정이 정해지면 새 행(rejudged=True, valid)을 쓰고 보관본을
-    지운다. 또 판정 불가면 보관을 유지하고 행을 남기지 않는다(같은 시도를 두 번 세지 않게 — 시도 행은 이미 있다)."""
+    """보관된 판정 불가 사본을 에이전트 없이 다시 판정한다(다른 시점 — 기동 지연이 또 2회면 확정 실패).
+    판정이 정해지면 새 행(rejudged=True, valid)을 쓰고 보관본을 지운다. 또 판정 불가면 시도 수를 올려 보관을
+    유지하고(같은 시도를 두 번 세지 않게 — 시도 행은 이미 있다), 상한에 닿으면 judge_unresolved 행을 쓰고 지운다."""
     n = 0
     base = results / "held"
     for h in sorted(base.iterdir()) if base.is_dir() else []:
-        if not (h / "row.json").is_file():
+        try:
+            orig = json.loads((h / "row.json").read_text())
+            orig["case"], orig["structure"]
+        except (OSError, ValueError, KeyError) as e:
+            print(f"[rejudge] {h.name}: 보관 행을 읽지 못함 — 건너뜀 ({e!r:.200})", flush=True)
             continue
-        orig = json.loads((h / "row.json").read_text())
         name = f"ccle-rejudge-{h.name}".lower()
         jd = RUNS / f"rejudge-{h.name}"
         rm_tree(jd)
+        jd.mkdir(parents=True)
+        alive = open(jd / "attempt.lock", "w")  # cleanup 이 진행 중인 재판정 자원을 지우지 않게(live_names 접두 일치)
+        fcntl.flock(alive, fcntl.LOCK_EX)
         try:
-            res = judging.judge(orig["case"], orig["structure"], h / "work", jd, name)
+            res = judging.judge(orig["case"], orig["structure"], h / "work", jd / "j", name, final_timeout=True)
         finally:
+            alive.close()
             rm_tree(jd)
-        row = {**{k: v for k, v in orig.items() if k not in ("stages", "judge_error", "success", "held")}, **res,
-               "rejudged": True, "rejudged_at": now_iso()}
+        tries = int(orig.get("rejudge_tries") or 0) + 1
+        # 판정 필드는 전부 새 판정으로 교체 — 첫 판정의 낡은 값(build_failure·build_tail 등)이 남지 않게
+        row = {**{k: v for k, v in orig.items() if k not in judging.JUDGE_FIELDS}, **res,
+               "rejudged": True, "rejudged_at": now_iso(), "rejudge_tries": tries, "finished_at": now_iso()}
         if needs_rejudge(row):
-            print(f"[rejudge] {h.name}: 여전히 판정 불가 — 보관 유지 ({res.get('judge_error')})", flush=True)
-            continue
-        row.update(valid=True, invalid_reason=None)
+            if tries < REJUDGE_MAX:
+                orig["rejudge_tries"] = tries
+                (h / "row.json").write_text(json.dumps(orig, ensure_ascii=False))
+                print(f"[rejudge] {h.name}: 여전히 판정 불가({tries}/{REJUDGE_MAX}) — 보관 유지 ({res.get('judge_error')})",
+                      flush=True)
+                continue
+            row.update(valid=False, invalid_reason="judge_unresolved")  # 결측(censored)으로 보고한다
+        else:
+            row.update(valid=True, invalid_reason=None)
         append_row(results, row)
         rm_tree(h)
         n += 1
-        print(f"[rejudge] {h.name}: success={row.get('success')}", flush=True)
+        print(f"[rejudge] {h.name}: success={row.get('success')} invalid={row.get('invalid_reason')}", flush=True)
     return n
 
 
@@ -857,13 +891,20 @@ def cmd_check(a) -> int:
             alive.close()
             rm_tree(rd)
         row = {"case": a.case, "structure": a.structure, "patch": a.patch, "rep": i, "at": now_iso(),
-               "wall_s": round(time.time() - t0, 1), **res}
+               "wall_s": round(time.time() - t0, 1), **code_version(), **res}
         append_row_to(results / "checks.jsonl", row)
         oc = {k: v.get("outcome") for k, v in (res.get("stages") or {}).items()}
         print(f"{a.case} {a.structure} {a.patch} #{i}: success={res.get('success')} build={res.get('build_ok')} "
               f"{oc} tampered={res.get('tampered')} err={res.get('judge_error')} {row['wall_s']}s", flush=True)
         bad += res.get("success") is not True
     return 0 if bad == 0 else 1
+
+
+def code_version() -> dict:
+    """check 행이 어느 코드로 잰 것인지: HEAD + experiment/ 미커밋 변경 여부."""
+    head = sh(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, check=False).stdout.strip()
+    dirty = sh(["git", "status", "--porcelain", "--", "experiment"], cwd=ROOT, check=False).stdout.strip()
+    return {"code_sha": head, "code_dirty": bool(dirty)}
 
 
 def append_row_to(path: Path, row: dict) -> None:

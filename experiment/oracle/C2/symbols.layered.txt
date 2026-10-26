@@ -1,8 +1,9 @@
-# C2 symbols — edit = 정답 패치가 고치는 기존 파일 전체(첫 편집 적중 전용, 두 구조 같은 기준). fix = 넣을 자리 줄 범위(겨냥 판정용). read = 읽어야 할 곳. 새 파일은 기준 사본에 없어 제외
-app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:19-64 fix  # 새 엔드포인트(생성자 주입 + /me/settlements 옆 메서드)
-app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:176-210 fix  # 응답 DTO를 넣을 곳(SettlementView·SettlementItemView 옆 — 파일 끝에 삽입)
-app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:94-102 fix  # 포트 SellerPenaltyRepository에 조회 메서드 추가
-app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt:22-37 fix  # 어댑터 JpaSellerPenaltyRepository 구현
+# C2 symbols — edit = 정답 패치가 고치는 기존 파일 전체(첫 편집 적중 전용, 두 구조 같은 기준). fix = 정답 패치 hunk 의 원래 쪽 줄 범위(문맥 3줄 포함, 두 구조 같은 규칙 — import·주석만 바꾸는 hunk 는 제외). read = 읽어야 할 곳. 새 파일은 기준 사본에 없어 제외
+app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:22-27 fix  # 생성자 주입 hunk
+app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:61-64 fix  # 엔드포인트 삽입 hunk(클래스 끝)
+app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:208-210 fix  # 응답 DTO 삽입 hunk(파일 끝)
+app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:99-102 fix  # 포트에 조회 메서드 추가 hunk
+app/src/main/kotlin/com/ccle/layered/infra/JpaDisputeRepositories.kt:34-37 fix  # 어댑터 구현 hunk
 app/src/main/kotlin/com/ccle/layered/api/Dtos.kt:1-210 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
 app/src/main/kotlin/com/ccle/layered/api/OrderController.kt:1-64 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
 app/src/main/kotlin/com/ccle/layered/domain/Dispute.kt:1-102 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)

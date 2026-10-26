@@ -15,6 +15,11 @@ STAGES = ("public", "hidden", "contract", "contract2")
 PROTECTED = ("TASK.md", "test.sh")          # + checks/ 전체(지원 코드·공개 테스트)
 VERIFY_FAILED = re.compile(r"verify: 불변식 위반 \d+ 건 — (.+)")
 VERIFY_OK = re.compile(r"verify: \d+ 개 검사 모두 통과")
+# 판정이 정하는 행 필드 — 재판정 때 첫 판정 값을 남기지 않고 전부 새로 쓴다
+JUDGE_FIELDS = ("judged", "judge_skip", "stages", "judge_error", "success", "success_without_regression",
+                "regression_pass", "build_ok", "build_failure", "build_tail", "test_build_tail", "tampered",
+                "hidden_present", "build_files_changed", "escaping_links_removed", "expected_tests", "partial_stages",
+                "held", "valid", "invalid_reason")
 
 
 def sha(p: Path) -> str:
@@ -241,8 +246,19 @@ def restore_build_files(pristine: Path, work: Path) -> list:
     return changed
 
 
+# 테스트 작업 공간의 루트 빌드(앱 모듈 없음) — 플러그인 버전은 사본 템플릿과 같다
+JUDGE_ROOT_BUILD = """plugins {
+    kotlin("jvm") version "2.2.20" apply false
+}
+"""
+JUDGE_SETTINGS = 'rootProject.name = "judge"\ninclude("checks", "behavior-tests")\n'
+
+
 def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
-    """판정 작업 디렉터리: 사본 복제 + 원본 보호 파일 복원 + 숨은 테스트 + behavior-tests + verify.sql + 제외 목록."""
+    """판정 디렉터리 두 개.
+    - jd/work: 에이전트 사본 복제(보호 파일·루트 빌드 파일 복원) — 앱 jar 빌드에만 쓴다.
+    - jd/tests: 판정 전용 테스트 작업 공간 — 원본 checks/ + 숨은 테스트 + behavior-tests + 판정 자산. 에이전트가 만든
+      파일이 하나도 없다(에이전트 코드는 jar 빌드와 별도 앱 컨테이너에서만 돈다 → 테스트·빌드 설정·결과를 못 바꾼다)."""
     import runner as R
     pristine = jd / "pristine"
     R.build_work(case, structure, pristine)
@@ -252,13 +268,20 @@ def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
     tam = tampered(pristine, jw)
     restore(pristine, jw)
     changed_build = restore_build_files(pristine, jw) + remove_extra_build_scripts(pristine, jw)
+    tw = jd / "tests"
+    tw.mkdir()
+    for rel in BUILD_FILES + ("gradle.properties",):
+        if (pristine / rel).is_file() and rel not in ("build.gradle.kts", "settings.gradle.kts"):
+            (tw / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pristine / rel, tw / rel)
+    (tw / "build.gradle.kts").write_text(JUDGE_ROOT_BUILD)
+    (tw / "settings.gradle.kts").write_text(JUDGE_SETTINGS)
+    shutil.copytree(pristine / "checks", tw / "checks", ignore=shutil.ignore_patterns("build", ".gradle"))
     hidden = R.ORACLE / case / "hidden"
     if hidden.is_dir():
-        shutil.copytree(hidden, jw / "checks" / "src" / "test" / "kotlin" / "hidden", dirs_exist_ok=True)
-    shutil.copytree(R.ROOT / "behavior-tests", jw / "behavior-tests", ignore=shutil.ignore_patterns("build", ".gradle"))
-    s = (jw / "settings.gradle.kts").read_text()
-    (jw / "settings.gradle.kts").write_text(s.rstrip("\n") + '\ninclude("behavior-tests")\n')
-    j = jw / ".judge"
+        shutil.copytree(hidden, tw / "checks" / "src" / "test" / "kotlin" / "hidden")
+    shutil.copytree(R.ROOT / "behavior-tests", tw / "behavior-tests", ignore=shutil.ignore_patterns("build", ".gradle"))
+    j = tw / ".judge"
     j.mkdir()
     shutil.copy2(R.HERE / "templates" / "judge-stage.sh", j / "stage.sh")
     shutil.copy2(R.ROOT / "tools" / "seedgen" / "verify.sql", j / "verify.sql")
@@ -273,18 +296,24 @@ def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
             "expected_tests": expected}
 
 
-def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print, stages_to_run=STAGES) -> dict:
+def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print, stages_to_run=STAGES,
+          final_timeout: bool = False) -> dict:
     """한 실행의 판정. work = 에이전트가 끝낸 사본(읽기만), jd = 판정 전용 디렉터리(호출자가 지운다).
-    결과 success: True | False(확정 실패) | None(판정 불가 — 호출자는 무효로 다룬다)."""
+    결과 success: True | False(확정 실패) | None(판정 불가 — 호출자는 무효로 다룬다).
+    final_timeout: 기동 지연·시간 초과가 2회 연속이면 확정 실패로 본다(재판정 — 에이전트 부하가 없는 다른 시점).
+    아니면 판정 불가로 남겨 보관·재판정한다(병렬 실행 부하를 에이전트 탓으로 세지 않게)."""
     import runner as R
     out = {"judged": True, "stages": {}}
     try:
         out.update(prepare(case, structure, work, jd))
         home = jd / "home"
         R.make_home(home, 0, with_creds=False)
-        jw = jd / "work"
-        mounts = ["-v", f"{jw}:{R.AGENT_WORK}", "-v", f"{home}:{R.AGENT_HOME}",
-                  "-v", f"{R.GRADLE_RO}:{R.AGENT_GRADLE_RO}:ro"]
+        jw, tw = jd / "work", jd / "tests"
+        thome = jd / "thome"  # 테스트 작업 공간 전용 HOME — 에이전트 코드가 돈 빌드와 Gradle 사용자 홈을 나누지 않는다
+        R.make_home(thome, 0, with_creds=False)
+        gro = ["-v", f"{R.GRADLE_RO}:{R.AGENT_GRADLE_RO}:ro"]
+        mounts = ["-v", f"{jw}:{R.AGENT_WORK}", "-v", f"{home}:{R.AGENT_HOME}", *gro]
+        tmounts = ["-v", f"{tw}:{R.AGENT_WORK}", "-v", f"{thome}:{R.AGENT_HOME}", *gro]
         env = [x for k in ("HOME", "TZ", "GRADLE_USER_HOME", "GRADLE_RO_DEP_CACHE", "DB_URL", "DB_USER", "DB_PASSWORD",
                            "PG_URL", "PG_TIMEOUT_MS") for x in ("-e", f"{k}={R.AGENT_ENV[k]}")]
         user = ["--user", f"{R.os.getuid()}:{R.os.getgid()}"]
@@ -292,7 +321,7 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
         try:
             b = subprocess.run(["docker", "run", "--rm", "--name", bname, "--label", f"{R.LABEL}={name}",
                                 "--network", "none", *user, *mounts, *env, "-w", R.AGENT_WORK, R.IMAGE,
-                                "./gradlew", "--console=plain", "-q", ":app:bootJar", ":checks:testClasses"],
+                                "./gradlew", "--console=plain", "-q", ":app:bootJar"],
                                capture_output=True, text=True, timeout=1800)
             brc, bout = b.returncode, b.stdout + b.stderr
         except subprocess.TimeoutExpired:
@@ -308,14 +337,34 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
             else:
                 out.update(success=False, success_without_regression=False, regression_pass=None)
             return out
+        jars = sorted(x for x in (jw / "app" / "build" / "libs").glob("*.jar") if not x.name.endswith("-plain.jar")) \
+            if (jw / "app" / "build" / "libs").is_dir() else []
+        if not jars:
+            out.update(judge_error="bootJar 성공인데 jar 없음", success=None, success_without_regression=None)
+            return out
+        appd = jd / "app"
+        appd.mkdir()
+        shutil.copyfile(jars[0], appd / "app.jar")  # 앱 컨테이너엔 이 jar 하나만(읽기 전용) — 사본·HOME 은 마운트하지 않는다
+        tname = f"{name}-tbuild"
+        try:  # 테스트 코드 컴파일(판정 재료만 — 실패는 판정 인프라 탓)
+            t = subprocess.run(["docker", "run", "--rm", "--name", tname, "--label", f"{R.LABEL}={name}",
+                                "--network", "none", *user, *tmounts, *env, "-w", R.AGENT_WORK, R.IMAGE,
+                                "./gradlew", "--console=plain", "-q", ":checks:testClasses",
+                                ":behavior-tests:testClasses"], capture_output=True, text=True, timeout=1800)
+            trc, tout = t.returncode, t.stdout + t.stderr
+        except subprocess.TimeoutExpired:
+            trc, tout = 124, "테스트 컴파일 시간 초과(1800초)"
+        finally:
+            subprocess.run(["docker", "rm", "-f", tname], capture_output=True)
+        if trc != 0:
+            out.update(judge_error=f"테스트 컴파일 실패 rc={trc}(판정 재료)", test_build_tail=tout[-1500:],
+                       success=None, success_without_regression=None)
+            return out
         excl_verify = set(read_list(R.ORACLE / case / "verify-exclude.txt"))
         for st in stages_to_run:
-            out["stages"][st] = run_stage(R, case, st, jw, name, mounts, env, user, excl_verify, out["hidden_present"])
-            sr = out["stages"][st]
-            exp = out["expected_tests"].get(st)
-            if exp is not None and sr.get("tests") is not None and sr["outcome"] == "pass" and sr["tests"] != exp:
-                # 예정된 테스트가 그대로 돌지 않았다(빌드 조작·결과 위조 의심) — 통과로 세지 않는다
-                sr.update(outcome="fail", count_mismatch={"expected": exp, "ran": sr["tests"]})
+            out["stages"][st] = run_stage(R, case, st, tw, appd, name, tmounts, env, user, excl_verify,
+                                          out["hidden_present"], final_timeout)
+            sr = check_count(out["stages"][st], out["expected_tests"].get(st))
             log(f"[judge] {name} {st}: {sr['outcome']} tests={sr.get('tests')} failed={len(sr.get('failed', []))}", flush=True)
         oc = {k: v["outcome"] for k, v in out["stages"].items()}
         infra = [k for k, v in oc.items() if v in ("infra", "no_results")]
@@ -335,44 +384,61 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
         return out
 
 
+def check_count(sr: dict, exp) -> dict:
+    """예정된 테스트가 그대로 돌지 않은 통과(빌드 조작·결과 위조 의심)는 통과로 세지 않는다."""
+    if exp is not None and sr.get("tests") is not None and sr.get("outcome") == "pass" and sr["tests"] != exp:
+        sr.update(outcome="fail", count_mismatch={"expected": exp, "ran": sr["tests"]})
+    return sr
+
+
 RETRY_STATUSES = ("app_start_timeout", "stage_timeout")
 
 
-def run_stage(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present) -> dict:
-    """판정 단계 하나. 앱 기동 지연·단계 시간 초과는 같은 사본으로 1회 다시 시도하고, 다시 같으면 에이전트 코드 탓
-    확정 실패(timeout_fail)로 센다 — 인프라로 흡수하면 에이전트가 만든 멈춤이 표본에서 빠진다(생존 편향)."""
-    first = run_stage_once(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present, attempt=1)
+def run_stage(R, case, st, tw, appd, name, mounts, env, user, excl_verify, hidden_present,
+              final_timeout=False) -> dict:
+    """판정 단계 하나. 앱 기동 지연·단계 시간 초과는 같은 사본으로 1회 다시 시도한다. 다시 같으면
+    final_timeout(재판정 — 다른 시점)일 때만 에이전트 코드 탓 확정 실패(timeout_fail), 아니면 판정 불가(보관·재판정).
+    확정을 다른 시점으로 미루는 이유: 직후 재시도는 같은 부하 창이라 독립 표본이 아니다."""
+    args = (R, case, st, tw, appd, name, mounts, env, user, excl_verify, hidden_present)
+    first = run_stage_once(*args, attempt=1)
     if first.get("status") not in RETRY_STATUSES:
         return first
-    second = run_stage_once(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present, attempt=2)
+    second = run_stage_once(*args, attempt=2)
     second["first_attempt"] = {k: first.get(k) for k in ("status", "outcome", "infra_problems")}
     if second.get("status") in RETRY_STATUSES:
-        second.update(outcome="fail", reason="timeout_fail(2회 연속 기동 지연·시간 초과)")
+        if final_timeout:
+            second.update(outcome="fail", reason="timeout_fail(다른 시점 재판정에서도 2회 연속 기동 지연·시간 초과)")
+        else:
+            second.update(outcome="infra", reason="timeout_suspect(2회 연속 — 다른 시점에 재판정)")
     return second
 
 
-def run_stage_once(R, case, st, jw, name, mounts, env, user, excl_verify, hidden_present, attempt=1) -> dict:
-    """판정 단계 한 번 — 예외·정리 실패는 그 단계만 infra 로 남기고 다음 단계로 간다."""
+APP_ENV = ("TZ", "DB_URL", "DB_USER", "DB_PASSWORD", "PG_URL", "PG_TIMEOUT_MS")
+
+
+def run_stage_once(R, case, st, tw, appd, name, mounts, env, user, excl_verify, hidden_present, attempt=1) -> dict:
+    """판정 단계 한 번 — 예외·정리 실패는 그 단계만 infra 로 남기고 다음 단계로 간다.
+    앱(에이전트 코드)은 별도 컨테이너: jar 하나만 읽기 전용, 사본·HOME·테스트 작업 공간 없음. 같은 네트워크 이름
+    공간(가짜 PG 컨테이너)을 함께 써서 테스트 컨테이너가 127.0.0.1:8099 로 붙는다."""
     if st == "hidden" and not hidden_present:
         return {"outcome": "infra", "reason": "숨은 테스트 없음"}
     sn = f"{name}-j{st}{'' if attempt == 1 else attempt}"
-    for p in (jw / "checks" / "build" / "test-results", jw / "behavior-tests" / "build" / "test-results",
-              jw / ".judge" / "out"):
+    for p in (tw / "checks" / "build" / "test-results", tw / "behavior-tests" / "build" / "test-results",
+              tw / ".judge" / "out"):
         shutil.rmtree(p, ignore_errors=True)
-    o = jw / ".judge" / "out"
+    o = tw / ".judge" / "out"
     (o).mkdir(parents=True, exist_ok=True)
-    rcode, rtext, err, timed_out = 0, "", None, False
+    rcode, rtext, err, timed_out, app_running = 0, "", None, False, None
     try:
         R.start_services(sn, proxy=False)
-        # 판정 자산은 읽기 전용으로 겹쳐 마운트 — 앞 단계에서 돈 에이전트 앱 코드가 숨은 테스트·단계 스크립트·
-        # 제외 목록·회귀 소스를 바꾸지 못하게(결과 폴더 .judge/out 만 쓰기 가능)
-        ro = []
-        for sub in (".judge/stage.sh", ".judge/verify.sql", ".judge/exclude.gradle", ".judge/regression-exclude.txt",
-                    "checks/src/test/kotlin/hidden", "behavior-tests/src"):
-            if (jw / sub).exists():
-                ro += ["-v", f"{jw / sub}:{R.AGENT_WORK}/{sub}:ro"]
+        aenv = [x for k in APP_ENV for x in ("-e", f"{k}={R.AGENT_ENV[k]}")] + ["-e", "SERVER_PORT=8099", "-e", "HOME=/tmp"]
+        a = subprocess.run(["docker", "run", "-d", "--name", f"{sn}-app", "--label", f"{R.LABEL}={sn}",
+                            "--network", f"container:{sn}-pg", *user, "-v", f"{appd}:/app:ro", *aenv, "-w", "/tmp",
+                            R.IMAGE, "java", "-jar", "/app/app.jar"], capture_output=True, text=True, timeout=120)
+        if a.returncode:
+            raise RuntimeError(f"앱 컨테이너 시작 실패: {(a.stdout + a.stderr)[-300:]}")
         r = subprocess.run(["docker", "run", "--rm", "--name", f"{sn}-judge", "--label", f"{R.LABEL}={sn}",
-                            "--network", f"container:{sn}-pg", *user, *mounts, *ro, *env, "-w", R.AGENT_WORK,
+                            "--network", f"container:{sn}-pg", *user, *mounts, *env, "-w", R.AGENT_WORK,
                             R.IMAGE, "bash", "/work/.judge/stage.sh", st],
                            capture_output=True, text=True, timeout=3600)
         rcode, rtext = r.returncode, r.stdout + r.stderr
@@ -382,13 +448,24 @@ def run_stage_once(R, case, st, jw, name, mounts, env, user, excl_verify, hidden
     except Exception as e:
         err = repr(e)[:500]
     finally:
+        try:
+            ins = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", f"{sn}-app"],
+                                 capture_output=True, text=True, timeout=60)
+            app_running = ins.stdout.strip() == "true" if ins.returncode == 0 else None
+            lg = subprocess.run(["docker", "logs", f"{sn}-app"], capture_output=True, text=True, timeout=60)
+            if lg.returncode == 0:
+                (o / f"{st}.app.log").write_text((lg.stdout + lg.stderr)[-200000:])
+        except Exception:
+            pass
         left = R.remove_run(sn)
     rf = lambda n: (o / n).read_text(errors="replace") if (o / n).is_file() else None  # noqa: E731
     status = "stage_timeout" if timed_out else (rf(f"{st}.status") or "missing").strip()
+    if status == "app_start_timeout" and app_running is False:  # 기동 대기 중 앱 프로세스가 끝났다 = 앱 탓
+        status = "app_died"
     rc_txt = rf(f"{st}.rc")
     rc = int(rc_txt.strip()) if rc_txt and rc_txt.strip().lstrip("-").isdigit() else None
-    rdirs = [jw / "checks" / "build" / "test-results" / "test"] if st in ("public", "hidden") else \
-        [jw / "behavior-tests" / "build" / "test-results" / ("contractTest" if st == "contract" else "contract2Test")]
+    rdirs = [tw / "checks" / "build" / "test-results" / "test"] if st in ("public", "hidden") else \
+        [tw / "behavior-tests" / "build" / "test-results" / ("contractTest" if st == "contract" else "contract2Test")]
     res = junit_results(rdirs)
     sr = {"status": status, "rc": rc, **res, "outcome": stage_outcome(status, rc, res)}
     if res["failed"]:

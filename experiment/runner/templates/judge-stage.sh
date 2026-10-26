@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# 판정 단계 하나(판정 컨테이너 안 — 에이전트 실행이 끝난 뒤에만 뜬다).
-# 앱 기동 → 테스트 → (회귀 단계면) verify.sql. 결과는 /work/.judge/out/<stage>.{status,rc,log,verify,verify.rc}
+# 판정 단계 하나(판정 테스트 컨테이너 안 — 에이전트 실행이 끝난 뒤에만 뜬다). /work = 판정 전용 테스트 작업 공간.
+# 앱은 별도 컨테이너(같은 네트워크 이름 공간)에서 이미 기동 중 → 준비 대기 → 테스트 → (회귀 단계면) verify.sql.
+# 결과는 /work/.judge/out/<stage>.{status,rc,log,verify,verify.rc}
 # 사용: judge-stage.sh <public|hidden|contract|contract2>
 set -uo pipefail
 stage=$1
@@ -10,21 +11,14 @@ mkdir -p "$out"
 port=8099
 export PGPASSWORD="$DB_PASSWORD"
 
-jar=$(ls app/build/libs/*.jar 2>/dev/null | grep -v plain | head -1)
-[ -n "$jar" ] || { echo no_jar > "$out/$stage.status"; exit 0; }
-
-SERVER_PORT=$port java -jar "$jar" > "$out/$stage.app.log" 2>&1 &
-app=$!
 ready=
 for _ in $(seq 360); do
-  kill -0 $app 2>/dev/null || break
   curl -sf "http://127.0.0.1:$port/actuator/health" > /dev/null && { ready=1; break; }
   sleep 0.5
 done
 if [ -z "$ready" ]; then
-  # 프로세스가 죽었으면 앱 탓(확정 실패), 살아 있는데 180초 안에 안 뜨면 부하·인프라 탓(판정 불가)
-  if kill -0 $app 2>/dev/null; then echo app_start_timeout > "$out/$stage.status"; else echo app_died > "$out/$stage.status"; fi
-  kill $app 2>/dev/null; exit 0
+  # 앱 프로세스가 죽었는지(확정 실패)·살아 있는데 안 뜨는지(재시도 대상)는 판정기가 앱 컨테이너 상태로 가른다
+  echo app_start_timeout > "$out/$stage.status"; exit 0
 fi
 
 export BASE_URL="http://127.0.0.1:$port"
@@ -45,6 +39,4 @@ if [ "$stage" = contract ] || [ "$stage" = contract2 ]; then
   psql -h db -U "$DB_USER" -d ccle_seed -v ON_ERROR_STOP=1 -q < /work/.judge/verify.sql > "$out/$stage.verify" 2>&1
   echo $? > "$out/$stage.verify.rc"
 fi
-kill $app 2>/dev/null
-wait $app 2>/dev/null
 exit 0
