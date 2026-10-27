@@ -30,6 +30,9 @@
 | 2026-10-27 20:37(date) | post-fix 재점검(codex high, 루프 3 수정분): 회귀 2(산술 경로·case 안 서브셸) → 수정·테스트(424 OK) 커밋. 루프 상한 3 도달 — 종료식 미충족(루프 3 신규 채택 7, open R3-6 위임 중) → review.md 규칙상 'review unresolved' 보고 대상: 남은 위험 = Bash 해석 휴리스틱의 긴 꼬리(missed_edit_paths·edit_unknown_turns 로 가시화), 과제 쪽은 루프 3 에서 신규 결함 0(R3-6 제외) | 사용자 보고 |
 | 2026-10-27 22:20(date) | 사용자 결정(리뷰 상한): "잔여 위험 수용, 진행" → 리뷰 종료 상태 = review unresolved 를 사용자가 잔여 위험 수용으로 종결(Bash 해석 휴리스틱의 긴 꼬리 — missed_edit_paths·edit_unknown_turns 로 가시화). T1 워커 회수(R3-6 fixed) → 커밋 `ae6deda`. 최종 채택 실측 착수: SHA `ae6deda` 고정(실측 끝까지 커밋 금지), 큐 2개 병렬(T1: none·fix 1 전 단계 + 4 공개·숨은·alt-1·naive-1~7 × 2구조 = 28, C2: none·fix 5·naive-1~10 × 2구조 = 32) | 실측 중 |
 | 2026-10-28 00:50(date) | **최종 채택 재실측 완료(code_sha ae6deda, dirty 0 — 60행, 22:24~00:49)**: T1 두 구조 none 숨은 2/2 실패 · fix 5/5(전 단계 1: contract 122·contract2 89·verify 0) · alt-1 통과 · naive-1~7 전부 숨은 실패. C2 두 구조 none 숨은 4/6 실패 · fix 5/5(contract2 88) · naive-1~10 전부 숨은 실패. 변조 0·build 실패 0·잔여 컨테이너 0, naive마다 두 구조 숨은 실패 수 동일 → **T1·C2 채택 확정**(R1-9·R2-10 재채택 부분 닫힘). design.md 표 추가 | 파일럿 |
+| 2026-10-28 00:50(date) | task 06 파일럿 착수: `run --model sonnet --cases T1,C2 --reps 1 --parallel 2 --results-dir experiment/results-pilot2`(본 표본과 분리, 승인 4회, 코드 b511652) | 실행 중 |
+| 2026-10-28 01:27(date) | **2회차 파일럿 완료(4/4, results-pilot2, 00:50~01:25)**: 전부 valid·success·회귀 통과(contract 122·contract2 89/88)·위반 0·변조 0·censored 0·end normal. 턴(message.id) T1 god 6·layered 5, C2 god 5·layered 6 → **구조별 턴 중앙값 god 5.5·layered 5.5 < 10 → ADR §7 게이트 재미달**(나머지 3조건 충족). 토큰 T1 102,288/94,534(god/layered), C2 98,924/165,724. 명목 비용 합 $0.416(T1 0.053·0.110, C2 0.103·0.151), 실행당 벽시계 11~12분(판정 포함, 에이전트 135~155초). 도구 호출 4~5회, 전부 Bash. 편집 지표: first_edit_turn 4~5 · via Bash · first_edit_hit True 4/4 · first_edit_hit_fix None(Edit 도구 0) · 모름 0 · **누락(missed_edit_paths) 0** · C2 layered 6파일(새 파일 1 created). 첫 겨냥 턴 4/4 = 2. 관찰: 4실행 모두 TASK.md·test.sh → 키워드 grep 1회(`confirm`·`restrict`) → sed -n/cat 로 지점 읽기 → python heredoc 한 번에 편집 → 종료(test.sh 미실행). '분리'·'오진 유도'가 키워드 grep 한 번에 무력화(T1 두 확정 지점이 같은 grep 결과에 나옴). T1 god 은 도구 이름 `bash` 오기 1회(오류 → 재호출). `--max-budget-usd` 미도달($5) — 중단 동작 계속 미확인 | 결론 분기 |
+| 2026-10-28 01:27(date) | 사이클 마감: ADR §7.3 개정 2 결과 1줄 · NEXT N0 → '1차 결론 작성 + 규모 확장 여부 결정' · measurement-log 1행. study-note 이슈 아카이브는 명세 금지영역(study-note 쓰기 안 함)이라 보류(후보: Bash 명령 정적 해석의 한계 — 휴리스틱 긴 꼬리를 실행 뒤 diff 대조로 가시화) | 완료 요약 워커 |
 
 ## 리뷰 ledger
 
@@ -100,3 +103,53 @@
 - 리뷰 루프 종료 조건 미충족(루프 3 신규 채택 7) — 상한 3 도달, 사용자가 잔여 위험 수용으로 종결(2026-10-27). 남은 위험: Bash 편집 해석은 휴리스틱이라 새 경계 사례가 남아 있을 수 있다 → 실행마다 `missed_edit_paths`(diff 대조)·`edit_unknown_turns` 로 드러남, 파일럿 게이트(턴)와 무관.
 
 ## 완료 요약
+
+T1(bug)·C2(change)를 새로 만들었다. T1은 확정 시각 상한 제거, C2는 제한 시 활성 입찰 취소다. 네 난이도 수단(분리·여러 지점·오진 유도·본보기 없음)을 두 구조에 넣었다. `events.py`는 이제 Bash 쓰기도 편집으로 센다. `cd`로 바뀐 작업 위치를 따라가고, 실행 뒤 diff와 대조해 놓친 파일을 `missed_edit_paths`로 남긴다. ADR-0005 개정 2에 기록했다. 고정 SHA `ae6deda`에서 채택 실측 60행을 돌려 T1·C2 채택을 확정했다. 2회차 파일럿 4회는 모두 valid·성공이었지만 턴 중앙값이 god 5.5·layered 5.5(< 10)라 **ADR §7 게이트를 다시 넘지 못했다**. 사전 결정대로 다음 작업은 1차 결론 작성이다. 브랜치 `feat/tasks-redesign`(`5131584..`).
+
+**핵심 diff**
+
+`experiment/runner/events.py:1049` — metrics 시그니처(before: 5131584 `:569`)
+```diff
+-def metrics(cs: list, spans: list) -> dict:
++def metrics(cs: list, spans: list, existing=None, changed=None) -> dict:
+```
+`experiment/runner/events.py:1137-1138` — 실행 뒤 diff 대조(신규)
+```python
+    if changed is not None:
+        out["missed_edit_paths"] = sorted(set(changed) - set(out["edited_paths"]))
+```
+`experiment/runner/runner.py:561-562` — metrics 호출(before: `:542`)
+```diff
+-                   **events.metrics(cs, symbols(case, structure)), audit_violations=violations,
++                   **events.metrics(cs, symbols(case, structure), existing=base_files(rd / "base"),
++                                   changed=changed_files(rd / "base", rd / "work")), audit_violations=violations,
+```
+`experiment/oracle/T1/inject.god.patch` — 주입 지점 1(`Marketplace.kt:877` 부근)
+```diff
+-            val lastDay = item.deliveredAt!!.plus(Duration.ofDays(7))
+-            confirmItem(item, confirmedAt = if (now.isBefore(lastDay)) now else lastDay, now = now)
++            confirmItem(item, confirmedAt = now, now = now)
+```
+
+**검증 결과**
+
+- 단위 테스트 `python3 -m unittest discover -s tests` → 424 OK(시작 296). blind 테스트 93(실결함 1 `patch -i` 수정). 1회차 파일럿 실데이터 대조를 테스트로 고정(`tests/fixtures/pilot-bash-commands.json`).
+- 채택 실측(code_sha `ae6deda`, dirty 0, 60행): T1 none 숨은 2/2 실패 · fix 5/5(contract 122·contract2 89·verify 0) · alt-1 통과 · naive-1~7 숨은 실패. C2 none 숨은 4/6 실패 · fix 5/5(contract2 88) · naive-1~10 숨은 실패. naive마다 두 구조 숨은 실패 수 같음, 변조 0·build 실패 0.
+- 리뷰: 설계 선검증 1패스 · 듀얼 리뷰 루프 3(상한) · post-fix 재점검 1.
+- 2회차 파일럿(`experiment/results-pilot2/runs.jsonl`, Sonnet, 4/4 valid·success·censored 0·위반 0):
+
+| 과제·구조 | 턴 | 토큰 | 비용($) | first_edit_turn | via | hit | hit_fix | missed |
+|---|---|---|---|---|---|---|---|---|
+| T1 god | 6 | 102,288 | 0.053 | 5 | Bash | True | None | 0 |
+| T1 layered | 5 | 94,534 | 0.110 | 4 | Bash | True | None | 0 |
+| C2 god | 5 | 98,924 | 0.103 | 4 | Bash | True | None | 0 |
+| C2 layered | 6 | 165,724 | 0.151 | 5 | Bash | True | None | 0 |
+
+- 네 실행 모두 first_targeted_turn 2, edit_unknown_turns 비어 있음. C2 layered 6파일(새 파일 1). 비용 합 $0.416. 네 실행 모두 키워드 grep 한 번으로 고칠 곳에 닿고 python heredoc으로 한 번에 고쳤다 — '분리'·'오진 유도'가 효과를 내지 못했다.
+
+**남은 것 / 빚**
+
+- 리뷰 종료 조건 미충족(상한 3) → 사용자 잔여 위험 수용(2026-10-27). Bash 해석 경계 사례는 `missed_edit_paths`·`edit_unknown_turns`로 드러남.
+- 기록만 한 비대칭: T1 지점 거리·합류점 함정(ADR §9-12). 판별 불가: C2 잠금 순서 교착(§9-13).
+- `--max-budget-usd` 중단 동작 미확인($5 미도달). study-note 이슈 아카이브 보류(금지영역).
+- 다음: 1차 결론 문서화 + 규모 확장 여부 결정(NEXT N0).
