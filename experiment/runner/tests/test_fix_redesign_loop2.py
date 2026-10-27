@@ -32,7 +32,8 @@ class Variables(unittest.TestCase):
         self.assertEqual(writes('cd "$D" && sed -i "s/a/b/" A.kt'), ([], ["cwd"]))
         self.assertEqual(writes("cd app && cd - && sed -i 's/a/b/' A.kt"), ([], ["cwd"]))
         self.assertEqual(writes('cd "$D" && sed -i "s/a/b/" /work/app/A.kt'), (["app/A.kt"], []))
-        self.assertEqual(events.segments('cd "$D"')[1], "/work")
+        # 계약 갱신(리뷰 루프 3): 모르는 위치는 다음 호출까지 유지(절대 경로 cd 로만 복구)
+        self.assertEqual(events.segments('cd "$D"')[1], events.UNKNOWN_CWD)
 
     def test_var_is_unsure_for_first_edit_turn(self):
         m = events.metrics([bash(1, "./gradlew test > $LOG")], [])
