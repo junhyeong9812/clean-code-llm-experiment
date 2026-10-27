@@ -48,6 +48,53 @@ FETCH_VALUE_LONG = {"--output", "--header", "--request", "--data", "--data-raw",
 FETCH_VALUE_SHORT = set("oOXHduwTFAemcbxKrEeiYy")  # 묶은 짧은 옵션(-sX)의 마지막 글자가 이 중이면 다음 토큰이 값
 
 
+def _quoted(line: str) -> list:
+    """글자마다 따옴표 안인가(작은·큰따옴표, 따옴표 밖 역슬래시 이스케이프)."""
+    out, q, esc = [], None, False
+    for ch in line:
+        if esc:
+            out.append(q is not None or True)
+            esc = False
+            continue
+        if q is None:
+            if ch == "\\":
+                esc = True
+                out.append(False)
+            elif ch in "'\"":
+                q = ch
+                out.append(True)
+            else:
+                out.append(False)
+        else:
+            out.append(True)
+            if ch == q:
+                q = None
+            elif ch == "\\" and q == '"':
+                esc = True
+    return out
+
+
+def _shell_clean(line: str) -> str:
+    """따옴표 밖의 `#` 주석을 자르고, 따옴표 밖 fd 번호(2>&1·2>/dev/null)를 지운다."""
+    qm = _quoted(line)
+    for i, ch in enumerate(line):
+        if ch == "#" and not qm[i] and (i == 0 or line[i - 1].isspace()):
+            line, qm = line[:i], qm[:i]
+            break
+    return "".join(ch for i, ch in enumerate(line)
+                   if not (ch.isdigit() and not qm[i] and _fd_digit(line, i)))
+
+
+def _fd_digit(line: str, i: int) -> bool:
+    j = i
+    while j < len(line) and line[j].isdigit():
+        j += 1
+    k = i
+    while k > 0 and line[k - 1].isdigit():
+        k -= 1
+    return j < len(line) and line[j] in "<>" and (k == 0 or not (line[k - 1].isalnum() or line[k - 1] in "_$"))
+
+
 JOIN = "\x00"  # 여러 줄에 걸친 따옴표를 한 줄로 합칠 때 줄바꿈 대신(split_heredocs) — 토큰에서 다시 줄바꿈으로
 
 
@@ -55,7 +102,7 @@ def shell_tokens(cmd: str) -> list:
     """셸 명령을 토큰으로(연산자·리다이렉트 분리, 줄바꿈은 명령 경계). 따옴표가 깨졌으면 공백 분리로 대체."""
     out = []
     for line in cmd.splitlines():
-        line = re.sub(r"(?<![\w$])\d+(?=[<>])", "", line)  # fd 번호(2>&1·2>/dev/null)는 인자가 아니다
+        line = _shell_clean(line)  # 주석·fd 번호(2>&1·2>/dev/null)는 인자가 아니다
         try:
             lx = shlex.shlex(line, posix=True, punctuation_chars=";&|()<>")
             lx.whitespace_split = True
@@ -87,12 +134,19 @@ def commands(cmd: str, marks: bool = False) -> list:
             if nxt not in SHELL_OPS:
                 redir.append((t, nxt))
                 i += 1
+        elif not cur and t in SHELL_WORDS:  # 복합 명령의 낱말(do·then·{ …) 다음이 실제 명령이다
+            pass
+        elif t in ("}", "done", "fi", "esac") and not cur:
+            pass
         else:
             cur.append(t)
         i += 1
     if cur or redir:
         out.append((cur[0] if cur else "", cur[1:], redir))
     return [(os_base(n), args, r) for n, args, r in out]
+
+
+SHELL_WORDS = {"do", "then", "else", "elif", "{", "!", "while", "until", "if"}
 
 
 def os_base(name: str) -> str:
@@ -481,7 +535,8 @@ def split_heredocs(cmd: str) -> list:
                 if not _open_quote(joined):
                     line, i = joined, j + 1
                     break
-        for m in HEREDOC.finditer(line):
+        qm = _quoted(line)
+        for m in [m for m in HEREDOC.finditer(line) if not qm[m.start()]]:  # 따옴표 안 `<<`(1 << bits)는 heredoc 이 아니다
             body = []
             while i < len(lines) and (lines[i].lstrip("\t") if m[1] else lines[i]) != m[3]:
                 body.append(lines[i])
@@ -489,7 +544,7 @@ def split_heredocs(cmd: str) -> list:
             i += 1
             bodies.append("\n".join(body))
         k = iter(range(len(bodies)))
-        out.append((HEREDOC.sub(lambda _: f" <<__HD{next(k)}__ ", line), bodies))
+        out.append((HEREDOC.sub(lambda m: f" <<__HD{next(k)}__ " if not qm[m.start()] else m[0], line), bodies))
     return out
 
 
@@ -528,16 +583,26 @@ def segments(cmd: str, cwd: str = WORK) -> tuple:
                 if name == ")":
                     cwd = stack.pop() if stack else cwd
                     continue
-                if name in ("cd", "pushd"):
+                if name in ("cd", "pushd", "popd"):
                     d = next((a for a in args if not a.startswith("-")), None)
-                    if d is None:
-                        cwd = "~" if not args else cwd
-                    elif not d.startswith(("$", "~")):
-                        cwd = posixpath.normpath(posixpath.join(cwd, d))
+                    if name == "popd" or args[:1] == ["-"]:
+                        cwd = UNKNOWN_CWD
+                    elif d is None:
+                        cwd = "~"
+                    elif "$" in d or "`" in d:
+                        cwd = UNKNOWN_CWD  # 변수 경로 — 뒤의 상대 경로 쓰기는 '모름'(bash_writes)
+                    elif d.startswith("~"):
+                        cwd = "~"
+                    else:
+                        cwd = posixpath.normpath(posixpath.join(cwd, d)) if cwd != UNKNOWN_CWD or d.startswith("/") \
+                            else UNKNOWN_CWD
                     continue
                 body = "\n".join(bodies[int(m[1])] for op, t in redir if op == "<<" for m in [HD_MARK.fullmatch(t)] if m)
                 out.append(Seg(name, args, [(op, t) for op, t in redir if op != "<<"], body, cwd, subst))
     return out, (cwd if in_work(cwd) else WORK)
+
+
+UNKNOWN_CWD = "?"  # 풀 수 없는 cd(변수·cd -·popd) 뒤의 작업 위치
 
 
 def _pos(args: list) -> list:
@@ -674,6 +739,12 @@ def _sed_inplace(args: list) -> bool:
                for a in args)
 
 
+def _perl_inplace(args: list) -> bool:
+    """perl·ruby 의 제자리 편집(-i·-pi·-i.bak). -M모듈·-I경로 같은 값 옵션 안의 'i' 는 아니다."""
+    return any(a.startswith("-") and not a.startswith("--") and a[1:2] not in ("M", "m", "I", "e", "E", "x")
+               and "i" in a[1:].split(".", 1)[0] for a in args)
+
+
 def _files_after_script(args: list, value_opts: set) -> list:
     """sed·perl 의 대상 파일: -e/-f 로 스크립트를 주면 위치 인자 전부, 아니면 첫 위치 인자(스크립트) 뒤."""
     files, given, skip = [], False, False
@@ -805,15 +876,20 @@ def bash_writes(segs: list) -> tuple:
         if any(ch in p for ch in "*?["):  # 글롭은 펼친 대상을 이벤트에서 알 수 없다
             unknown.append("glob")
             return
+        if "$" in p:  # 변수 경로("$F"·$OUT) — 사본 파일인지 버리는 출력인지 모른다
+            unknown.append("var")
+            return
+        if cwd == UNKNOWN_CWD and not p.strip("'\"").startswith("/"):
+            unknown.append("cwd")
+            return
         r = resolve(cwd, p)
         if _work_target(r) and r not in out:
             out.append(r)
 
     def inplace_tool(args):  # xargs·find -exec 뒤의 sed -i·perl -i
         for i, a in enumerate(args):
-            if os_base(a) in ("sed", "perl") and (_sed_inplace(args[i + 1:]) if os_base(a) == "sed" else
-                                                  any(x.startswith("-") and not x.startswith("--") and "i" in x
-                                                      for x in args[i + 1:])):
+            if os_base(a) in ("sed", "perl", "ruby") and (_sed_inplace(args[i + 1:]) if os_base(a) == "sed" else
+                                                          _perl_inplace(args[i + 1:])):
                 return True
         return False
 
@@ -838,13 +914,13 @@ def bash_writes(segs: list) -> tuple:
                 add(s.cwd, f)
             if not files:
                 unknown.append("sed")
-        elif s.name == "perl" and any(a.startswith("-") and not a.startswith("--") and "i" in a for a in s.args):
+        elif s.name in ("perl", "ruby") and _perl_inplace(s.args):
             writer = True
             files = _files_after_script(s.args, {"-e", "-E"})
             for f in files:
                 add(s.cwd, f)
             if not files:
-                unknown.append("perl")
+                unknown.append(s.name)
         elif s.name in ("cp", "mv", "install") and len(pos) >= 2:
             writer = True
             dst = pos[-1]
@@ -853,6 +929,14 @@ def bash_writes(segs: list) -> tuple:
                     add(s.cwd, posixpath.join(dst, posixpath.basename(src.rstrip("/"))))
             else:
                 add(s.cwd, dst)
+        elif s.name == "git" and s.args[:1] == ["-C"] and len(s.args) > 2:  # git -C 디렉터리 … → 그 위치의 git
+            segs_c = [Seg("git", s.args[2:], s.redir, s.body, posixpath.normpath(posixpath.join(s.cwd, s.args[1]))
+                          if s.cwd != UNKNOWN_CWD and "$" not in s.args[1] else UNKNOWN_CWD, s.subst)]
+            tg, unk = bash_writes(segs_c)
+            for f in tg:
+                if f not in out:
+                    out.append(f)
+            unknown += unk
         elif (s.name == "patch" and "--dry-run" not in s.args) or \
                 (s.name == "git" and s.args[:1] == ["apply"] and not {"--check", "--stat", "--numstat"} & set(s.args)):
             tg = _patch_targets(s, None if s.name == "patch" else 1)
@@ -872,10 +956,13 @@ def bash_writes(segs: list) -> tuple:
                 add(s.cwd, f)
         elif s.name.startswith("python"):
             src = None
+            here = [t for op, t in s.redir if op == "<<<"]
             if "-c" in s.args and s.args.index("-c") + 1 < len(s.args):
                 src = s.args[s.args.index("-c") + 1]
             elif s.body:
                 src = s.body
+            elif here:
+                src = here[0]
             elif pos and pos[0].endswith(".py"):
                 unknown.append("python-script")  # 스크립트 파일 내용은 이벤트에 없다
             if src is not None:
@@ -892,7 +979,7 @@ def bash_writes(segs: list) -> tuple:
     return out, unknown
 
 
-UNSURE_WRITERS = ("python-script",)  # 이것과 '-hint' 는 쓰기였는지도 모른다 — 첫 편집 턴에 넣지 않는다
+UNSURE_WRITERS = ("python-script", "var")  # 이것과 '-hint' 는 쓰기였는지도 모른다 — 첫 편집 턴에 넣지 않는다
 
 
 def bash_edit(cmd: str) -> bool:
@@ -900,14 +987,16 @@ def bash_edit(cmd: str) -> bool:
     return bool(bash_writes(segments(cmd)[0])[0])
 
 
-def metrics(cs: list, spans: list, existing=None) -> dict:
+def metrics(cs: list, spans: list, existing=None, changed=None) -> dict:
     """existing = 실행 전 사본의 파일 목록(사본 기준 상대 경로). Bash 쓰기가 새 파일을 만든 것인지 가르는 데만 쓴다 —
-    None 이면 Bash 쓰기 대상을 모두 기존 파일 수정으로 본다."""
+    None 이면 Bash 쓰기 대상을 모두 기존 파일 수정으로 본다. changed = 실행 뒤 사본에서 실제로 바뀐 파일(diff) —
+    주면 편집으로 인식하지 못한 파일을 missed_edit_paths 로 남긴다(Bash 해석은 휴리스틱이라 누락을 드러내는 안전망)."""
     out = {"tool_calls": len(cs), "tools": {}, "subagent_calls": 0,
            "lines_read": {"read": 0, "grep": 0, "bash": 0, "other": 0, "sub": 0},
            "first_targeted_turn": None, "first_targeted_turn_by_span": {}, "full_read_turns": {}, "chunk_read_turns": {},
            "first_edit_turn": None, "first_edit_tool_turn": None, "first_edit_path": None, "first_edit_hit": None,
-           "first_edit_via": None, "edited_paths": [], "created_paths": [], "edit_unknown_turns": []}
+           "first_edit_via": None, "edited_paths": [], "created_paths": [], "edit_unknown_turns": [],
+           "missed_edit_paths": None}
     keys = {f"{sp.path}:{sp.start}-{sp.end}": sp for sp in spans}
     paths = {sp.path for sp in spans}
     fixes = [sp for sp in spans if sp.kind in ("fix", "edit")]
@@ -937,6 +1026,13 @@ def metrics(cs: list, spans: list, existing=None) -> dict:
             out["first_targeted_turn_by_span"].setdefault(key, c.turn)
         cwd = after
         if c.is_error:
+            if c.name == "Bash":  # 오류로 끝난 호출도 앞 조각의 쓰기는 됐을 수 있다(sed -i … && 빌드 실패) — 대상은 남기고
+                tg, unk = bash_writes(segs)  # 실행 여부를 모르니 첫 편집으로 확정하지 않고 '모름' 턴으로
+                for p in tg:
+                    if p not in out["edited_paths"]:
+                        out["edited_paths"].append(p)
+                if (tg or unk) and c.turn not in out["edit_unknown_turns"]:
+                    out["edit_unknown_turns"].append(c.turn)
             continue
         wrote = False
         if c.name in EDIT_TOOLS:
@@ -969,6 +1065,8 @@ def metrics(cs: list, spans: list, existing=None) -> dict:
             out["first_edit_turn"] = c.turn  # 편집 수단과 무관한 첫 편집(새 파일 생성 포함)
     if out["first_targeted_turn_by_span"]:
         out["first_targeted_turn"] = min(out["first_targeted_turn_by_span"].values())
+    if changed is not None:
+        out["missed_edit_paths"] = sorted(set(changed) - set(out["edited_paths"]))
     return out
 
 

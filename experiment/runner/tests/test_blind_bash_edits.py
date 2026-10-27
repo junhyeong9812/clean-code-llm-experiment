@@ -293,8 +293,9 @@ class TestOtherInterpreters(unittest.TestCase):
 # ---------------- rule 4: not edits ----------------
 class TestNotEdits(unittest.TestCase):
     def test_outside_work(self):
+        # 계약 갱신(리뷰 루프 2): "echo x > $OUT" 은 변수 경로 — '모름'(var)으로 옮김(test_bash_edits)
         for cmd in ("echo x > /tmp/a.txt", "echo x > /dev/null", "echo x > ~/a.txt",
-                    "echo x > $OUT", "echo x > ../../etc/a.txt", "echo x | tee -",
+                    "echo x > ../../etc/a.txt", "echo x | tee -",
                     "make > build.log", "make > run.out", "ls 2>&1", "ls >&2"):
             with self.subTest(cmd=cmd):
                 self.assertEqual(bw(cmd), ([], []))
@@ -385,7 +386,8 @@ class TestMetricsEdits(unittest.TestCase):
         m = M([B(1, "sed -i s/a/b/ app/src/A.kt", is_error=True)])
         self.assertIsNone(m["first_edit_turn"])
         self.assertIsNone(m["first_edit_tool_turn"])
-        self.assertEqual(m["edited_paths"], [])
+        # 계약 갱신(리뷰 루프 2): 오류 끝난 호출의 대상은 남기고 턴은 '모름'(실행 여부를 모른다)
+        self.assertEqual((m["edited_paths"], m["edit_unknown_turns"]), (["app/src/A.kt"], [1]))
 
     def test_python_unknown_not_first_edit_turn(self):
         m = M([B(1, "python3 fix.py"), B(2, "sed -i s/a/b/ app/src/A.kt")])
@@ -400,7 +402,7 @@ class TestMetricsEdits(unittest.TestCase):
 
     def test_unknown_turns_skip_errors(self):
         m = M([B(1, "python3 fix.py", is_error=True), B(2, "python3 fix.py")])
-        self.assertEqual(m["edit_unknown_turns"], [2])
+        self.assertEqual(m["edit_unknown_turns"], [1, 2])  # 계약 갱신(리뷰 루프 2): 오류 호출도 '모름' 턴
 
     def test_outside_work_bash_not_edit(self):
         m = M([B(1, "echo x > /tmp/a.txt; make > b.log")])

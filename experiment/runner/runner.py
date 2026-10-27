@@ -154,6 +154,20 @@ def base_files(base: Path) -> set:
     return {str(p.relative_to(base)) for p in base.rglob("*") if p.is_file()}
 
 
+def changed_files(base: Path, work: Path) -> set:
+    """실행 뒤 바뀐(생성·삭제 포함) 파일 — write_diff 와 같은 트리 비교(링크·특수 파일은 열지 않는다)."""
+    a, b = _tree(base), _tree(work)
+    out = set()
+    for rel in set(a) | set(b):
+        ea, eb = a.get(rel), b.get(rel)
+        if ea and eb and ea[0] == eb[0] == "file" and filecmp.cmp(ea[1], eb[1], shallow=False):
+            continue
+        if ea == eb and ea and ea[0] != "file":
+            continue
+        out.add(rel)
+    return out
+
+
 def make_home(home: Path, timeout_s: int, with_creds: bool = True):
     """격리 HOME: settings.json(금지 도구) + Gradle 사용자 홈(오프라인 init·데몬 끔) + 로그인 파일 사본(셸 모드는 없음)."""
     (home / ".claude").mkdir(parents=True)
@@ -544,7 +558,8 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         row.update(bad_event_lines=bad, init=events.init_info(evs), turns=turns, result_turns=res.get("num_turns"),
                    result_subtype=res.get("subtype"), is_error=res.get("is_error"),
                    duration_ms=res.get("duration_ms"), **tok,
-                   **events.metrics(cs, symbols(case, structure), existing=base_files(rd / "base")), audit_violations=violations,
+                   **events.metrics(cs, symbols(case, structure), existing=base_files(rd / "base"),
+                                   changed=changed_files(rd / "base", rd / "work")), audit_violations=violations,
                    **classify(evs, rc, timed_out, violations, tail(err, 4000) + limit_evidence(evs), tok, n_asst))
         row["result_count"] = events.result_count(evs)  # 2 이상이면 큐에 쌓인 턴 — 토큰은 마지막 result 기준(표시)
         harness = events.harness_problems(row["init"]) if any(e.get("subtype") == "init" for e in evs) \

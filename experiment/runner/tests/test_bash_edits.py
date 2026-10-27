@@ -65,9 +65,12 @@ class Targets(unittest.TestCase):
         for cmd in ("sed -n 1,5p app/A.kt", "grep -q x app/A.kt > /dev/null", "./gradlew test 2>&1 | tail -50",
                     "./gradlew test > /tmp/out.txt 2>&1", "./gradlew build | tee build.log", "echo x > out.log",
                     "git diff | patch --dry-run -p1", "git apply --check x.diff", "cat <<'EOF'\nhello > world\nEOF",
-                    "cd /tmp && echo x > a.kt", "echo x > ~/note", "echo x > $OUT", "echo x > ../outside.kt"):
+                    "cd /tmp && echo x > a.kt", "echo x > ~/note", "echo x > ../outside.kt"):
             with self.subTest(cmd=cmd):
                 self.assertEqual(writes(cmd), ([], []))
+
+    def test_variable_target_is_unknown(self):  # 계약 갱신(리뷰 루프 2): 변수 경로는 사본 파일일 수 있다
+        self.assertEqual(writes("echo x > $OUT"), ([], ["var"]))
 
     def test_herestring_is_not_heredoc(self):
         self.assertEqual(writes("grep -c x <<< \"$s\"; echo y > app/a.txt"), (["app/a.txt"], []))
@@ -112,7 +115,8 @@ class FirstEdit(unittest.TestCase):
     def test_failed_bash_and_unknown_do_not_set_first_edit(self):
         cs = [bash(1, "sed -i 's/a/b/' app/A.kt", "no such file", err=True), bash(2, "python3 fix.py")]
         m = events.metrics(cs, self.SP)
-        self.assertEqual((m["first_edit_turn"], m["first_edit_tool_turn"], m["edit_unknown_turns"]), (None, None, [2]))
+        # 계약 갱신(리뷰 루프 2): 오류 끝난 sed 는 첫 편집이 아니지만 '모름' 턴으로 남는다
+        self.assertEqual((m["first_edit_turn"], m["first_edit_tool_turn"], m["edit_unknown_turns"]), (None, None, [1, 2]))
 
     def test_edit_tool_values_unchanged(self):
         meta = {"structuredPatch": [{"oldStart": 11, "oldLines": 1, "lines": ["-a", "+b"]}]}

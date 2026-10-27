@@ -78,7 +78,9 @@
 - `fix.{god,layered}.patch`: 두 지점의 코드를 원본으로 되돌린다. god는 `lastDay` 줄을 복원하고 `confirmedAt = due`로 바꾼다. layered는 `lastDay` 계산을 복원하고 `null else due`로 바꾼다. 주석은 되돌리지 않는다(중립 문장 그대로). 코드만 고치면 정답이다.
 - **대안 정답(합류점):** 두 경로가 모이는 확정 반영에서 `min(confirmedAt, delivered_at + 7일)`로 자르는 1곳 수정도 정답이다. 두 구조가 같은 조건이다.
   - god `confirmItem`(:881-888): `item.confirmedAt = minOf(confirmedAt, item.deliveredAt!!.plus(Duration.ofDays(7)))`. 포인트 확정에도 그 값을 넘긴다.
-  - layered `ItemConfirmer.confirm`(`service/BuyerItemService.kt:28-33`) 또는 `Order.markConfirmed`(`Order.kt:330`)에서 같은 자르기를 한다.
+  - layered `ItemConfirmer.confirm`(`service/BuyerItemService.kt:28-33`)에서 같은 자르기를 하고, 자른 값을 포인트 확정에도 넘긴다(alt-1). `Order.markConfirmed`(`Order.kt:330`) 안에서만 자르면 포인트 확정(`BuyerItemService.kt:32`)은 자르지 않은 값을 받아 적립 만료가 틀린다 — 그것은 naive-6이다.
+  - 자동 확정 지점은 `service/BatchService.kt` `AutoConfirmBatch`(:258-262)에서 `due`(배송+7일)를 넘기는 수정도 정답이다(symbols `edit`에 BatchService.kt 포함 — god는 같은 위치가 `Marketplace.kt` 안이라 파일 전체 `edit`에 이미 든다).
+  - **함정 비대칭(기록만 — 사용자 결정 2026-10-27):** 합류점에서 '확정 시각만' 자르는 오답(naive-6)은 god에서는 저장(`:886`)과 포인트 확정(`:888`)이 4줄 함수 안에 붙어 있어 빠지기 어렵고, layered에서는 두 고칠 곳 사이의 도메인 setter `markConfirmed`(`Order.kt:330`) 하나만 고치면 될 것처럼 보이며 포인트 확정은 다른 파일(`BuyerItemService.kt:32`)이다. 캡슐화가 파일을 나눈 구조 결과로 보고 ADR §9-12에 함께 적는다.
   - `alt-1.{god,layered}.patch`: confirmItem / ItemConfirmer 판. 포인트 확정에도 자른 값을 넘긴다.
   - symbols에서 합류점은 `fix`가 아니라 `edit`(첫 편집 적중 인정)와 `read`로 넣었다. god는 합류점이 고칠 파일과 같은 파일이라 `edit`가 이미 덮는다.
   - 저장 확정 시각만 자르고 포인트 확정에 자르지 않은 값을 넘기는 변형은 오답이다(naive-6). 적립 만료가 어긋나고, 숨은 테스트 A·B의 적립 `expires_at` 단언이 잡는다.
