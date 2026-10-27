@@ -1,0 +1,20 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
+@@ -323,7 +323,7 @@
+      */
+     fun confirmationTime(now: Instant): Instant {
+         requireStatus("DELIVERED")
+-        return now
++        return deliveredAt!!.plus(CONFIRM_WITHIN)
+     }
+ 
+     /** 확정 반영(§4.1·auto-confirm): CONFIRMED, confirmed_at. */
+@@ -343,7 +343,7 @@
+     fun autoConfirmationTime(now: Instant): Instant? {
+         if (status != "DELIVERED") return null
+         val due = deliveredAt!!.plus(CONFIRM_WITHIN)
+-        return if (due.isAfter(now)) null else now
++        return if (due.isAfter(now)) null else due
+     }
+ 
+     /** 구매자 취소(§4.2)의 확인: PAID만(발송 기한이 지나도 배치 전이면 PAID라 취소된다). 바꾸지 않는다. */

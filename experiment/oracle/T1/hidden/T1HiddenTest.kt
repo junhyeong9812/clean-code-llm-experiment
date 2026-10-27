@@ -19,9 +19,10 @@ import kotlin.test.assertTrue
 
 /**
  * T1 숨은 테스트 — 확정 시각 상한. 단언은 결과만 본다(HTTP 응답 상태·본문, DB 값).
- *  - A(구매자 늦은 확정): 배송 완료 D → D+10일에 구매자 확정 → 확정 시각 = D+7일(응답·DB).
+ *  - A(구매자 확정): 같은 시각 D에 배송 완료한 항목 셋. 항목 3은 D+3일에 확정 → 확정 시각 = 그 시각(응답·DB, 7일 안의 확정).
+ *    항목 1·2는 D+10일에 확정 → 확정 시각 = D+7일(응답·DB).
  *    분쟁 기한 = D+7일+14일: 기한 1시간 전 접수는 201(항목 1), 기한 1시간 뒤 접수는 409 DEADLINE_PASSED(항목 2).
- *    시계는 뒤로 못 가므로 항목 두 개를 미리 만들어 기한 전 → 기한 뒤 순으로 접수한다.
+ *    시계는 뒤로 못 가므로 항목을 미리 만들어 D+3일 확정 → D+10일 확정 → 기한 전 → 기한 뒤 순으로 진행한다.
  *  - B(자동 확정): 화요일 정오(KST)에 배송 완료 D′, 아무도 확정하지 않음 → D′+7일이 속한 주의 마감(다음 월요일 00:00 KST)
  *    1시간 뒤에 weekly-settlement → 그 항목이 D′+7일이 속한 주의 정산에 INCLUDED, 확정 시각 = D′+7일(DB).
  *  - A·B 모두 그 항목의 적립(EARN) expires_at = 기대 확정 시각 + 365일(확정 시각이 포인트 확정에도 같은 값으로 쓰이는가).
@@ -36,12 +37,25 @@ class T1HiddenTest {
         val buyer = newUser()
         val early = purchase(buyer, 50_000)
         val late = purchase(buyer, 50_000)
+        val inTime = purchase(buyer, 50_000)
         deliver(early)
         deliver(late)
+        deliver(inTime)
         val d1 = deliveredAt(early.item)
         val d2 = deliveredAt(late.item)
         assertEquals(d1, d2, "준비: 두 항목이 같은 시각에 배송 완료")
+        assertEquals(d1, deliveredAt(inTime.item), "준비: 세 항목이 같은 시각에 배송 완료")
         val due = d1.plus(Duration.ofDays(7))
+
+        // 7일 안의 구매 확정(D+3일)은 확정한 그 시각으로 기록된다
+        val confirmAt = d1.plus(Duration.ofDays(3))
+        moveTo(confirmAt)
+        val ri = Api.post("/order-items/${inTime.item}/confirm", null, buyer)
+        assertEquals(200, ri.status, "7일 안의 구매 확정: $ri")
+        assertEquals(confirmAt, OffsetDateTime.parse(ri.json["confirmedAt"].asText()).toInstant(),
+            "7일 안의 구매 확정 — 응답 confirmedAt = 확정한 시각(항목 ${inTime.item})")
+        assertEquals(confirmAt, confirmedAt(inTime.item), "7일 안의 구매 확정 — DB confirmed_at = 확정한 시각")
+        assertEquals(confirmAt.plus(Duration.ofDays(365)), earnExpiresAt(inTime.item), "7일 안의 확정 적립 유효기간 = 확정한 시각 + 365일")
 
         moveTo(d1.plus(Duration.ofDays(10)))
         for (b in listOf(early, late)) {

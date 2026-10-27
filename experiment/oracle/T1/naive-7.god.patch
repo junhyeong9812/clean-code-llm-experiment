@@ -1,0 +1,20 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -873,7 +873,7 @@
+             val item = lockOrderOf(itemId)
+             requireBuyer(item, userId)
+             requireItemStatus(item, "DELIVERED")
+-            confirmItem(item, confirmedAt = now, now = now)
++            confirmItem(item, confirmedAt = item.deliveredAt!!.plus(Duration.ofDays(7)), now = now)
+             itemView(item)
+         }!!
+     }
+@@ -1504,7 +1504,7 @@
+                 if (item.status != "DELIVERED" || due!!.isAfter(now)) {
+                     false
+                 } else {
+-                    confirmItem(item, confirmedAt = now, now = now)
++                    confirmItem(item, confirmedAt = due, now = now)
+                     true
+                 }
+             }!!

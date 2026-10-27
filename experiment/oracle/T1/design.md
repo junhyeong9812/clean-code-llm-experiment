@@ -100,6 +100,7 @@
 | 3 | 오진: 정산 cutoff `confirmed_at < :cutoff` → `<=`(god `:1600`, layered `JpaSettlementRepository.kt:21`) | A — confirmedAt. B — 정산 주(확정 시각 = 마감 + 1시간이라 `<=`로도 안 들어감) |
 | 4 | 오진: 정산이 `LEAST(confirmed_at, delivered_at + 7일) < :cutoff`로 주를 고름(같은 두 곳). 공개 테스트는 통과 | A — confirmedAt. B — 정산은 맞고 DB `confirmed_at` 단언에서 실패 |
 | 6 | 부분(합류점): 저장 확정 시각만 `min(…, delivered_at + 7일)`로 자르고 포인트 확정에는 자르지 않은 값을 넘김(god `confirmItem` :886만, `confirmEarn(…, confirmedAt, …)` 그대로 / layered `Order.markConfirmed` :333 안에서만) | A — 적립 expires_at(확정 시각 단언은 통과). B — 적립 expires_at(정산·확정 시각 단언은 통과) |
+| 7 | 과잉 수정: 구매자 확정을 늘 `delivered_at + 7일`로 기록(god `:876` `confirmedAt = item.deliveredAt!!.plus(Duration.ofDays(7))`, layered `Order.kt:326` `return deliveredAt!!.plus(CONFIRM_WITHIN)`) + 자동 확정은 바르게 고침 | A — 7일 안 확정 항목의 응답 confirmedAt(확정한 시각이어야 함). B는 통과. 회귀에서는 `BuyerActionTest`도 잡는다 |
 | 5 | 오진: 정산 주 루프 시작 `lastPeriodStart + 14` → `+ 7`(god `:1615`, layered `Settlement.kt:34`) | A — confirmedAt. B — 정산 주(지난 주를 한 번 더 정산할 뿐, 항목은 여전히 다음 주로 밀림) |
 
 - 실측 실패 메시지는 §10 표에 있다.
@@ -107,13 +108,14 @@
 
 ## 6. 숨은 테스트(`hidden/T1HiddenTest.kt`) — 결과만 단언, 결정적
 
-- **A(구매자 늦은 확정):**
-  - 같은 구매자의 항목 두 개를 같은 시각 D에 배송 완료한다(D = 시드 시계).
+- **A(구매자 확정):**
+  - 같은 시각 D에 항목 셋을 배송 완료한다. 항목 3은 D+3일에 구매자 확정한다. 단언: 응답 `confirmedAt` = DB `confirmed_at` = D+3일(확정한 그 시각), EARN `expires_at` = D+3일+365일. 7일 안의 확정을 보는 단언이고, naive-7("늘 배송 완료 + 7일")을 잡는다.
+  - 항목 1·2(같은 구매자, 같은 시각 D — D = 시드 시계):
   - 시계를 D+10일로 옮겨 둘 다 구매자 확정한다.
   - 단언: 응답 `confirmedAt` = DB `confirmed_at` = D+7일. 그 항목 EARN 행 `expires_at` = D+7일+365일.
   - 시계를 기한(D+7일+14일) 1시간 전으로 옮겨 항목 1에 분쟁을 접수한다. 201이어야 한다.
   - 시계를 기한 1시간 뒤로 옮겨 항목 2에 분쟁을 접수한다. 409 `DEADLINE_PASSED`이고 항목은 CONFIRMED 그대로여야 한다.
-  - 시계는 뒤로 못 가므로 항목을 미리 두 개 만들어 기한 전 → 기한 뒤 순으로 실행한다.
+  - 시계는 뒤로 못 가므로 항목을 미리 셋 만들어 D+3일 확정 → D+10일 확정 → 기한 전 접수 → 기한 뒤 접수 순으로 실행한다.
 - **B(자동 확정):**
   - 다음 화요일 정오(KST)에 배송 완료(D′)한다. 아무도 확정하지 않는다.
   - W = D′+7일이 속한 주다. W 마감(다음 월요일 00:00 KST) 1시간 뒤에 `weekly-settlement`를 돌린다.
