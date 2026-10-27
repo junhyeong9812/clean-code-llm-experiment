@@ -1,3 +1,14 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/BatchTargets.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/BatchTargets.kt
+@@ -19,7 +19,7 @@
+     /** shipment-deadline(ADR-0004 §5): PAID이고 paid_at + 3일 ≤ 현재인 항목. */
+     UNSHIPPED_ITEMS,
+ 
+-    /** auto-confirm(ADR-0004 §5): DELIVERED이고 delivered_at + 7일 ≤ 현재인 항목. */
++    /** auto-confirm(ADR-0004 §5): 기한이 지난 DELIVERED 항목. */
+     UNCONFIRMED_ITEMS,
+ 
+     /** point-expiry(ADR-0004 §8.3): EARN AVAILABLE, remaining > 0, expires_at ≤ 현재인 묶음. */
 --- a/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
 +++ b/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
 @@ -318,13 +318,12 @@
@@ -22,7 +33,7 @@
  
      /**
 -     * 자동 확정(ADR-0004 §5 auto-confirm)의 확정 시각: DELIVERED이고 delivered_at + 7일 ≤ 현재면 delivered_at + 7일(소급), 아니면 null.
-+     * auto-confirm(ADR-0004 §5) 대상 확인: DELIVERED이고 delivered_at + 7일 ≤ 현재일 때만, 아니면 null.
++     * auto-confirm(ADR-0004 §5) 대상 확인: 기한이 지난 DELIVERED일 때만, 아니면 null.
       * 바꾸지 않는다 — 구매자 행을 잠근 뒤 markConfirmed.
       */
      fun autoConfirmationTime(now: Instant): Instant? {
@@ -49,7 +60,7 @@
  
  /**
 - * auto-confirm(ADR-0004 §5): 배송 완료 7일이 지난 DELIVERED 항목을 id 순으로 CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2.
-+ * auto-confirm(ADR-0004 §5): 배송 완료 7일이 지난 DELIVERED 항목을 id 순으로 CONFIRMED → §8.2.
++ * auto-confirm(ADR-0004 §5): 기한이 지난 DELIVERED 항목을 id 순으로 CONFIRMED → §8.2.
   * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
   * 단독 배치(run)는 격리하고, weekly-settlement 안(runStoppingOnFailure)에서는 격리하지 않는다(ADR-0004 §15의 1 — 실패하면 정산하지 않는다).
   */

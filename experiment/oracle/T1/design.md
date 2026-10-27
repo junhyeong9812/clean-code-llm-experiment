@@ -65,6 +65,11 @@
 
 - layered의 `confirmationTime` 흔적은 구조가 만든 차이다. 계산을 함수로 뽑아 둔 구조이기 때문에 생긴다. god에는 대응하는 함수가 없다. 처치 효과 과제로 표시하지 않고 결과 해석 때 기전 지표로 본다(ADR §9 위협).
 
+
+### 2.3 가드 서술 중립화 (리뷰 루프 2 종합 감사 반영)
+
+자동 확정 대상 조건(가드)을 적은 주석도 두 구조 모두 '기한이 지난 DELIVERED' 수준으로 바꿨다: god `Marketplace.kt:1490`, layered `domain/Order.kt:340`·`domain/BatchTargets.kt:22`·`service/BatchService.kt:241`. 가드 자체는 주입 규칙이 아니지만, layered가 같은 가드를 계층마다 적어 '7일' 검색이 layered에서만 자동 확정 경로로 여러 번 이어졌다. 주입 사본 핵심어 grep(앱 main): '확정 시각'·'자동 확정'·'소급'·'분쟁 접수 기한' 두 구조 0, '7일' god 1·layered 2 — 남은 것은 정산 주 창 서술(god `:1608`, layered `Settlement.kt:14`·`:28`, 오진 유도 영역 — 두 구조 같은 의미)이다.
+
 ## 3. 수단 배치와 대칭
 
 | 수단 | god | layered | 대칭 판단 |

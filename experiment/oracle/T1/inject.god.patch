@@ -23,7 +23,7 @@
  
      /**
 -     * auto-confirm(ADR-0004 §5): DELIVERED이고 delivered_at + 7일 ≤ 현재인 항목을 id 순으로 CONFIRMED, confirmed_at = delivered_at + 7일(소급) → §8.2.
-+     * auto-confirm(ADR-0004 §5): DELIVERED이고 delivered_at + 7일 ≤ 현재인 항목을 id 순으로 CONFIRMED → §8.2.
++     * auto-confirm(ADR-0004 §5): 기한이 지난 DELIVERED 항목을 id 순으로 CONFIRMED → §8.2.
       * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
       * 단독 배치는 격리하고(isolatedAs), weekly-settlement 안에서는 격리하지 않는다(ADR-0004 §15의 1 — 실패하면 정산하지 않는다).
       */
