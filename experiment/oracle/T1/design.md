@@ -201,3 +201,17 @@
 | layered | naive-4 | False | 〃 | 〃 |
 
 - §10 표의 행은 이 반영 전의 주입·숨은 테스트로 잰 것이다. naive-1·2·3·5의 실패 단언은 확정 시각·정산 단언에서 나고, 새 단언(적립 만료)은 그 뒤에 있으므로 결과가 바뀌지 않을 것으로 본다. 다시 돌리지는 않았다.
+
+### 10.2 최종 재채택(고정 SHA, 2026-10-27 22:24 ~ 10-28 00:31)
+
+모든 행: `code_sha` ae6deda, `code_dirty` False — 28행, 순차 실행, 결과 행 = `checks.jsonl`. 숨은 테스트는 R3-6 사례(7일 안 구매 확정) 추가본.
+
+| 구조 | 패치 | 결과 |
+|---|---|---|
+| god·layered | none | public fail · hidden 2/2 fail |
+| god·layered | fix ×5 | True 5/5(1회 전 단계: contract 122, contract2 89, verify 위반 0 — 두 회귀 단계) |
+| god·layered | alt-1 | True |
+| god·layered | naive-1·2·7 | hidden 1/2 fail(naive-2·7은 **public pass**) |
+| god·layered | naive-3·4·5·6 | hidden 2/2 fail(naive-4·6은 **public pass**) |
+
+- 변조 0, build 실패 0, 잔여 컨테이너 0. 두 구조의 숨은 실패 개수가 naive마다 같다. **T1 채택 확정.** 위 §10·§10.1의 dirty 기록은 이 표로 대체된다.

@@ -141,3 +141,15 @@
 | god·layered | naive-10 | 1 | hidden | False | S1·R(검수 불합격 경로에서 SELL ACTIVE) |
 
 naive마다 두 구조가 같은 테스트·같은 단언에서 실패한다(지점을 지나는 경로가 대칭임을 확인).
+
+### 최종 재채택(고정 SHA, 2026-10-27 22:24 ~ 10-28 00:49)
+
+모든 행: `code_sha` ae6deda, `code_dirty` False — 32행, 순차 실행.
+
+| 구조 | 패치 | 결과 |
+|---|---|---|
+| god·layered | none | public fail · hidden 4/6 fail |
+| god·layered | fix ×5 | True 5/5(1회 전 단계: contract 122, contract2 88, verify 위반 0 — 두 회귀 단계) |
+| god·layered | naive-1~10 | 전부 hidden fail — 숨은 실패 개수 2·3·3·1·4·5·2·1·2·2(위 표와 같은 테스트 수), naive-3·4·7~10은 **public pass** |
+
+- 변조 0, build 실패 0. 두 구조가 naive마다 같은 개수로 실패한다. **C2 채택 확정.** 위 표(dirty)는 이 표로 대체된다.
