@@ -86,7 +86,7 @@ def _prep(line: str) -> str:
     """명령 줄 전처리(split_heredocs): 따옴표 밖 주석을 떼고(주석 안 `'`·`<<`·끝 `\\` 가 다음 줄을 삼키지 않게),
     산술 `$((…))`·`((…))`·조건 `[[…]]` 안의 `>`·`<` 가 리다이렉트로 읽히지 않게 지운다."""
     line = _strip_comment(line)
-    line = re.sub(r"\$\(\(.*?\)\)", "0", line)
+    line = re.sub(r"\$\(\(.*?\)\)", "$ARITH", line)  # 값은 모른다 — 경로에 들면 변수 경로('모름')
     line = re.sub(r"\(\(.*?\)\)", "true", line)
     return re.sub(r"\[\[.*?\]\]", "true", line)
 
@@ -135,7 +135,7 @@ def shell_tokens(cmd: str) -> list:
 def commands(cmd: str, marks: bool = False) -> list:
     """[(명령 이름, 인자 목록)] — 연산자에서 끊고, 리다이렉트와 그 대상은 인자에서 뺀다(대상은 ('>', 대상) 항목으로).
     marks=True 면 서브셸 괄호를 ('(', [], [])·(')', [], []) 항목으로 남긴다(작업 위치 복원 — segments)."""
-    out, cur, redir, in_case = [], [], [], 0
+    out, cur, redir, in_case, case_pat = [], [], [], 0, False
     toks = shell_tokens(cmd)
     i = 0
     while i < len(toks):
@@ -144,18 +144,26 @@ def commands(cmd: str, marks: bool = False) -> list:
             if cur or redir:
                 out.append((cur[0] if cur else "", cur[1:], redir))
             cur, redir = [], []
-            if marks and not in_case:
-                out += [(ch, [], []) for ch in t if ch in "()"]
+            for ch in t:
+                if ch == ")" and case_pat:  # case 패턴을 닫는 괄호 — 서브셸이 아니다
+                    case_pat = False
+                elif marks and ch in "()":
+                    out.append((ch, [], []))
+            if ";;" in t or ";&" in t:
+                case_pat = in_case > 0  # 다음 갈래의 패턴이 온다
         elif t in REDIRECTS or re.fullmatch(r"[<>&]+", t):
             nxt = toks[i + 1] if i + 1 < len(toks) else ""
             if nxt not in SHELL_OPS:
                 redir.append((t, nxt))
                 i += 1
+        elif case_pat and not cur and t != "esac":  # case 패턴 낱말(a|b) — 명령이 아니다
+            pass
         elif not cur and t in SHELL_WORDS:  # 복합 명령의 낱말(do·then·{ …) 다음이 실제 명령이다
             if marks and t in ("if", "then", "else", "elif"):
                 out.append(("?" + t, [], []))
         elif not cur and t == "case":  # case … in 패턴) 명령 ;; … esac — 패턴의 ')' 는 서브셸이 아니다
             in_case += 1
+            case_pat = True
             if marks:
                 out.append(("?case", [], []))
             while i + 1 < len(toks) and toks[i + 1] != "in":
@@ -166,6 +174,7 @@ def commands(cmd: str, marks: bool = False) -> list:
                 out.append(("?" + t, [], []))
             if t == "esac":
                 in_case = max(in_case - 1, 0)
+                case_pat = False
         else:
             cur.append(t)
         i += 1

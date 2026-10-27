@@ -58,6 +58,13 @@ class FalsePositives(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(writes(cmd), want)
 
+    def test_postfix_regressions(self):  # post-fix 재점검(루프 3) 지적
+        self.assertEqual(writes('echo x > "app/$((1+2)).kt"'), ([], ["var"]))
+        segs, after = events.segments("case x in x) (cd app);; esac; sed -i s/a/b/ X.kt")
+        self.assertEqual((events.bash_writes([s for s in segs if not s.cond]), after), ((["X.kt"], []), "/work"))
+        segs, after = events.segments("case $y in a|b) echo 1 ;; c) echo 2 ;; esac; cd app")
+        self.assertEqual(after, "/work/app")
+
     def test_cp_recursive_unknown(self):
         self.assertEqual(writes("cp -r app/dir app/dir2"), ([], ["cp"]))
 
