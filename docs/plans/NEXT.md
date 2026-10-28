@@ -4,7 +4,7 @@
 
 ## 기준
 
-- 마지막 갱신: 2026-10-29 · 직전 완료 작업: `docs/plans/2026-10-29/contract3-tests/`(contract3 행동 테스트 162개 red — 리뷰 3루프 종료 조건 미충족, 사용자 결정 대기) · 기준 커밋: `f431877`(브랜치 `test/contract3`) + docs · 병합 상태: **대기(사용자 결정)**
+- 마지막 갱신: 2026-10-29 · 직전 완료 작업: `docs/plans/2026-10-29/contract3-tests/`(contract3 행동 테스트 162개 red + SlowTrigger 자체 검증 2 — 리뷰 3루프 뒤 사용자 결정으로 보강·병합) · 기준 커밋: `f431877`(브랜치 `test/contract3`) + docs · 병합 상태: 병합·push(2026-10-29 사용자 결정)
 
 ## 다음 작업 후보 (우선순위순)
 
@@ -14,7 +14,6 @@
 - 진행: 계약 ADR-0007 **채택**(2026-10-29, §16 [제안] 값 그대로 — 사용자 합의). 12개 한 번에, 기존 오류 code만, ADR-0006 §3의 1 개정 1(layered BatchTarget·KeysetBatchTargets.spec·forEachIsolated internal).
 - 진행: `contract3` 행동 테스트 162개 작성(red — 두 앱 모두 라우트·테이블·배치 없음 사유로만 실패, 기존 239 통과). ADR-0007 개정 1 §19(입력 규칙·응답 보완 14항목 [제안]).
 - 다음 착수: 스키마·verify·seedgen 후처리(1k-s42-v2) — 새 작업 폴더 spec부터. DDL이 생기면 contract3의 '테이블 없음' 35개가 다음 사유(404·400)로 바뀌는지 먼저 확인한다(Db3 열 이름 = ADR §3 표 대조).
-- 남은 리뷰 결정(L3-3): SlowTrigger 경합 테스트가 두 번째 요청의 잠금 대기를 관측하지 않음 — 보강(pg_stat_activity wait_event 관측)할지 사용자 결정.
 - 구현 때 확인할 [구현 검증]: 새 FK 27(verify 34 → 61) 재계수 · 시드 행 수(§14 표) · verify '시드 빌드에서만' 검사를 켜는 psql 변수 이름 · god 증가 실측(ADR-0007 추정 ≈ 3,390).
 - 발생 가능 문제: contract3 162개는 실행으로 한 번도 green이 된 적 없다 — 구현 때 실패가 나오면 ADR과 대조해 테스트 결함인지 먼저 판정(리뷰 3루프에서 정답 구현도 실패할 결함이 루프마다 1~2개씩 나왔다: 예약 수 산수·'없음' 단언 범위·PUT 기본값 덮어쓰기) · contract3 픽스처가 T1·C2 회귀에 묶일 위험(ADR-0007 §18 지침) · 세금계산서 정정의 UPDATE→INSERT 순서(ORM flush, §10.3) · 줄 수 추정(≈3,230)이 외삽이라 5,500 미만이면 묶음 추가 개정 · 판정기 결과 경로가 contract2Test 고정(judge.py 결과 수집부) · Marketplace.kt 4천 줄 전후의 Read·출력 절단(ADR-0006 위협 7) · seedgen 후처리의 CSV 재독 비용(1k는 작음).
 - 이월(1차 결론에서): `--max-budget-usd` 중단 미확인 · Bash 해석 휴리스틱 긴 꼬리 · Q3-2·Q3-3 · 앱·테스트 컨테이너 loopback 공유 · app_died 감지 지연.
@@ -51,7 +50,7 @@
 
 ## 완료 이력
 
-- 완료(병합 대기) → `docs/plans/2026-10-29/contract3-tests/` (contract3 행동 테스트 162개 red · contract3Test · Db3·SlowTrigger · ADR-0007 개정 1 §19 · 리뷰 3루프 채택 21 + open 1)
+- 완료 → `docs/plans/2026-10-29/contract3-tests/` (contract3 행동 테스트 162개 red · contract3Test · Db3·SlowTrigger · ADR-0007 개정 1 §19 · 리뷰 3루프 채택 21 + 사용자 결정 보강 1 — SlowTrigger 경합 관측)
 - 완료 → `docs/plans/2026-10-28/contract-a/` (ADR-0007 단계 A 동작 계약 채택 — 새 테이블 19·FK 27·배치 11·기존 오류 code만, ADR-0006 개정 1, 리뷰 반영 23)
 - 완료 → `docs/plans/2026-10-28/scale-up-design/` (ADR-0006 규모 확장 — 기능 12개·불변식 7·T1·C2 이식·사전 등록 다음 단계 규칙, 리뷰 반영 20)
 - 완료 → `docs/plans/2026-10-28/first-conclusion/` (1차 결론 — 사전 결정 문장, 파일럿 8회 관찰, 다음 결정 후보 3)
