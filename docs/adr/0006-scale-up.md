@@ -1,6 +1,6 @@
 # ADR-0006: 코드 규모 확장 — 기능 추가와 중간 게이트
 
-- 상태: **채택**(2026-10-28, 사용자 합의 — 듀얼 리뷰·감사 반영 20건)
+- 상태: **채택**(2026-10-28, 사용자 합의 — 듀얼 리뷰·감사 반영 20건) · 개정 1(2026-10-29, ADR-0007 §17 — §3의 1 layered 허용 변경 3개 추가, §4.1 새 테이블 수 20)
 - 앞 결정: [ADR-0001](0001-base-setup.md)(규모 목표 "구현당 1만 줄 이상") · [ADR-0002](0002-domain-and-database.md)~[ADR-0004](0004-http-api-stage2.md)(도메인·동작 계약) · [ADR-0005](0005-tasks-judging-runner.md)(과제·판정·러너·게이트, 개정 2) · [1차 결론](../results/first-conclusion.md)
 - 근거 기록: `docs/plans/2026-10-28/scale-up-design/`(인터뷰·현행 인벤토리·사용자 결정·리뷰 ledger)
 
@@ -37,6 +37,7 @@
    - god: 절차 전체가 `Marketplace.kt` 한 파일이다. 지금처럼 컨트롤러·엔티티·DTO는 `web/`·`entity/`에 둔다. 새 기능의 god 로직도 `Marketplace.kt`에 넣는다.
    - layered: `api·service·domain·infra`로 나눈다. **새 기능 코드는 새 파일에 둔다**(새 서비스·도메인·저장소 클래스).
    - layered의 기존 파일은 다음 세 가지만 바꿀 수 있다: 배치 디스패치 분기 추가(`BatchService.run`의 `when`과 생성자 주입), 컨트롤러 등록, 새 저장소 포트의 import.
+   - **개정 1(2026-10-29, 사용자 결정 — ADR-0007 §17의 1):** 새 배치가 기존 키셋 순회·격리를 재사용하도록 셋을 더한다: `BatchTarget` enum 값 추가, `KeysetBatchTargets.spec`의 `when` 분기 추가, `BatchService.kt` `forEachIsolated`의 공개 범위 private → internal. 기존 분기·동작은 바꾸지 않는다. 오류 code는 새로 만들지 않으므로 `Failure` enum·`statusOf`는 바꾸지 않는다(ADR-0007 §2.2).
    - 묶음마다 두 구조의 과제 파일(§3의 3 대상 파일) 줄 수 변화를 기록한다. god는 `Marketplace.kt`가 커지는 것 자체가 처치이고, layered는 과제 파일이 거의 그대로다. 이 차이가 처치다(§8의 7).
 2. **기존 동작 무변경.**
    - 기존 테이블 22개의 스키마·CHECK·FK는 바꾸지 않는다. **새 기능은 기존 테이블을 읽기만 하고 새 테이블에만 쓴다.**
@@ -85,7 +86,7 @@
 | A10 | 판매자 프로필 | 상점명·소개·휴가 표시. 휴가는 표시만 하고 입찰·매칭에는 영향이 없다 | `seller_profiles` · 조회·수정 | 150 |
 | A11 | 배송 추적 이벤트 | 택배 추적 이벤트를 기록한다(웹훅 모양의 admin 요청). **발송 기한**·배송 지연을 감지해 표시만 하고 항목 상태는 바꾸지 않는다 | `shipment_tracking_events` · 기록·조회 · `delivery-delay-scan` | 250 |
 | A12 | 입고 예약 | 판매자가 센터 입고 슬롯을 예약한다. 예약 **기한**·**취소**·노쇼를 새 테이블에 기록한다. 판매자 **패널티**와는 별개다 | `inbound_reservations`, `inbound_slots` · 예약·취소·조회 · `inbound-no-show` | 300 |
-| | 합계 | | 새 테이블 약 18 · API 약 40 · 배치 11 | ≈ 3,230 |
+| | 합계 | | 새 테이블 약 18(개정 1: 20 — ADR-0007 §3) · API 약 40 · 배치 11 | ≈ 3,230 |
 
 **뺀 후보와 사유**(조사 packet §3):
 
