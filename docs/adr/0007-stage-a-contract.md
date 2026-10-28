@@ -1,6 +1,6 @@
 # ADR-0007: 규모 확장 단계 A 동작 계약 — 기능 A1~A12
 
-- 상태: **채택** (2026-10-29, 사용자 합의 — §16 [제안] 값 그대로, 듀얼 리뷰·감사·재점검 반영 23건)
+- 상태: **채택** (2026-10-29, 사용자 합의 — §16 [제안] 값 그대로, 듀얼 리뷰·감사·재점검 반영 23건) · 개정 1(2026-10-29, §19 — 테스트 작성에서 나온 입력 규칙·응답 보완 14항목, 새 테이블 수 19로 정정)
 - 앞 결정: [ADR-0002 도메인·DB](0002-domain-and-database.md) · [ADR-0003 계약 1단계](0003-http-api-stage1.md) · [ADR-0004 계약 2단계](0004-http-api-stage2.md) · [ADR-0006 규모 확장](0006-scale-up.md)(§3 불변식·§4.1 목록)
 - 표기: **[제안]** = 인터뷰에서 Claude가 정하도록 맡긴 수치·세부(2026-10-28 사용자 결정). 합의 때 목록(§16)으로 검토한다. **[불변식 N]** = ADR-0006 §3의 N 때문에 이렇게 정했다는 뜻.
 - 정본 순서: 새 테이블의 행 규칙은 이 문서와 그 DDL(§3), 실행 판정은 `verify.sql`의 새 검사(§15), HTTP 표면은 이 문서. 기존 테이블·엔드포인트·배치의 계약은 ADR-0002~0004 그대로다.
@@ -96,7 +96,7 @@
 
 - **새 FK 27개**(전부 `ADD FOREIGN KEY`): reviews 3(order_item·buyer·seller) · seller_ratings 1 · seller_grades 1 · fee_rebates 1 · payout_account_requests 1 · monthly_statements 1 · notifications 1 · wishlists 2 · price_alerts 3(user·product_size·triggered_bid → bids) · inquiries 2(user·order_item) · inquiry_messages 1 · tax_invoices 3(settlement·seller·ref_invoice → tax_invoices) · price_stats_daily 1 · seller_profiles 1 · shipment_tracking_events 1 · shipment_delays 1 · inbound_reservations 3(slot·seller·order_item) · `admin_audit_logs`·`inbound_slots`는 0. → verify `schema_constraints_present`의 FK 수 34 → **61** **[구현 검증 — DDL 작성 때 다시 센다]**.
 - 인덱스: 각 FK 열(조회·배치 대상) + 배치 대상 조건 열(예: `price_alerts(status)`, `inquiries(status, answered_at)`, `inbound_reservations(status)`). 이름 `<table>_<목적>_idx`.
-- 새 테이블 20개 = ADR-0006 §4.1 추정 18 + `seller_ratings`(이미 목록에 있음)·`shipment_delays`(A11 "표시만"을 행으로 남기는 자리) — §17의 2.
+- 새 테이블 **19개** = ADR-0006 §4.1 목록 18(`seller_ratings` 포함) + `shipment_delays`(A11 "표시만"을 행으로 남기는 자리) — §17의 2. (개정 1: 처음 적은 20은 계수 오류였다 — §19)
 
 ## 4. A1 리뷰·평점
 
@@ -438,10 +438,34 @@
 ## 17. ADR-0006 보완
 
 1. **[ADR-0006 §3의 1 개정 — 사용자 결정 2026-10-29]** layered 기존 파일 허용 변경에 셋을 더한다: `domain/BatchTarget`(enum) 값 추가 · `infra/KeysetBatchTargets.spec`의 `when` 분기 추가 · `service/BatchService.kt` `forEachIsolated`의 공개 범위 private → internal. 모두 수정 과제 고칠 곳·읽을 곳 범위 밖이고 기존 분기·동작을 바꾸지 않는다. layered C2 고칠 곳이 `BatchService.kt:143-148`·`:161-167`(PaymentDueBatch)에 있으므로 이 범위의 줄은 의미 변경 없이 밀리는 것만 허용한다(§3의 3 그대로).
-2. **[ADR-0006 §4.1 갱신]** 새 테이블 18 → 20(`seller_ratings` 포함 재계수 + A11 `shipment_delays`). API·배치 수는 그대로(배치 11).
+2. **[ADR-0006 §4.1 갱신]** 새 테이블 18 → 19(A11 `shipment_delays` 추가 — 개정 1에서 20을 19로 바로잡음). API·배치 수는 그대로(배치 11).
 3. **[오류 code]** 새 code를 만들지 않는다(§2.2) — 사용자 결정 2026-10-29. ADR-0006은 이를 정하지 않았으므로 개정이 아니라 보완이다.
 
 ## 18. 결과
 
 - contract3 행동 테스트는 이 문서(+ ADR-0002~0004)만 보고 쓴다. **T1 회귀에 묶이지 않게**, `confirmed_at`에 기대는 테스트(A1 리뷰 기간·A4 분쟁 기간 알림·A2 기준 금액)는 확정을 `delivered_at + 7일` 안에 구매자 확정으로 만들거나 `confirmed_at`을 픽스처로 직접 둔다(T1 정답은 늦은 확정·자동 확정의 시각만 바꾼다). C2 회귀는 ADR-0006 §5의 픽스처 규칙(제한 + ACTIVE 입찰 조합 피하기)을 그대로 따른다. 기존처럼 직렬 실행, 자기 행만 단언, 픽스처는 테스트가 만든다(새 테이블 픽스처 도우미 `Db3` — 구현 때), 끝에 verify 1회(시드 빌드 전용 검사는 끈 채).
 - 기능별 god 증가 추정(이 상세도 기준): A1 280 · A2 300 · A3 320 · A4 330 · A5 280 · A6 320 · A7 260 · A8 180 · A9 380 · A10 140 · A11 260 · A12 340 = **≈ 3,390줄**(ADR-0006 §4.1의 ≈ 3,230보다 조금 많다 — 실측은 구현 때).
+
+## 19. 개정 1 — contract3 작성에서 나온 보완 (2026-10-29)
+
+행동 테스트(`docs/plans/2026-10-29/contract3-tests/`)를 쓰며 이 문서가 정하지 않은 곳이 나왔다. 아래는 기존 공통 규칙에서 끌어내거나 Claude가 정한 값이다 **[제안]**(§16과 같은 지위 — 완료 보고에서 사용자 확인). 계수 오류 정정(§3·§17의 2 새 테이블 20 → 19)도 이 개정이다.
+
+**공통 입력 규칙(§2.1 보완)**
+
+1. 본문의 키가 **없는 것은 null과 같다**. 필수 값이면 400, null을 허용하는 값(예: `vacationFrom`)이면 null로 본다.
+2. 문자열 자리는 JSON 문자열만, 정수 자리는 정수 JSON 숫자만 받는다(`5.0`·`"5"` → 400 — 기존 두 구현의 본문 파싱 관례와 같다). `accountNo`는 JSON 문자열이고 앞뒤 공백을 포함해 숫자 10~14자리여야 한다(공백이 있으면 400).
+3. 쿼리와 본문의 enum·boolean 값은 문서에 적은 글자 그대로만 받는다(대소문자 구분 — 본문 `"cj"` → 400, 쿼리 빈 값 `?unread=` → 400).
+4. 문서에 쿼리로 적은 날짜·필터 중 **필수**는 `GET /inbound-slots`의 `date`, 시세 조회의 `from`·`to`, `GET /admin/users/restricted`의 `type`이다(누락 400). 그 밖의 필터는 선택이다.
+5. 시각 입력(`occurredAt`·`slotStart`)은 오프셋 포함 ISO-8601만 받는다(오프셋 없으면 400).
+6. "앞뒤 공백"은 ADR-0004 §15의 4와 같은 공백 집합(Kotlin `isWhitespace` — NBSP·전각 공백 포함)이다. 길이(§2.1)도 그 공백을 앞뒤에서 뺀 값으로 센다.
+7. 이 문서의 헤더가 필요 없는 새 엔드포인트(`GET /sellers/{id}/reviews`·`/profile`, `/product-sizes/{id}/price-stats`·`/recent-trades`, `/inbound-slots`)는 `X-User-Id`를 **읽지 않는다**(잘못된 값이 와도 401이 아니다).
+8. 경로 변수가 정수가 아닌 경우는 계약 밖이다(프레임워크 라우팅 — 기존 엔드포인트와 같다).
+
+**기능별 보완**
+
+9. **§6.2** 반려 요청의 `reason` 키 누락은 null과 같아 400(1). 형식 검사는 `approve` 값과 무관하게 먼저 한다 — 승인 요청이어도 `reason`이 문자열도 null도 아니면(예: `5`) 400(2). 승인 시 "무시"는 형식이 맞는 문자열 값을 저장하지 않는다는 뜻이다.
+10. **§8.1** `activeAlert` = 그 사용자의 그 사이즈 `ACTIVE` 가격 알림(최대 1건 — 부분 UNIQUE).
+11. **§9.1** `ANSWERED` 문의에 추가 메시지가 와서 `OPEN`이 될 때 `answered_at`·`first_answered_at`은 그대로 둔다(자동 종결 대상에서는 상태가 `ANSWERED`가 아니므로 빠진다).
+12. **§10.3** 정정 응답의 `cancelled`는 **새 `CANCEL` 행**이다. 원본은 `status`만 `CANCELLED`로 바뀌고 `issued_at`을 포함한 다른 열은 그대로다("시각은 모두 현재"는 새로 쓰는 두 행의 `issued_at`).
+13. **§11.3** `summary.sellerGrade` = `effective_from`이 가장 늦은 판매자 등급 행(§5.4 `current`와 같다). `GET /admin/settlements?sellerId=`의 사용자가 없으면 빈 목록이다(필터이므로 404가 아니다).
+14. **§12.1** `intro`는 필수 문자열(빈 문자열 허용, null·누락 400). `vacationFrom`·`vacationTo` 키 누락은 null(1).
