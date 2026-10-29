@@ -201,6 +201,26 @@ class JudgeCombination(unittest.TestCase):
         self.assertIs(res["success_stage12"], False)
         self.assertIn("success_stage12", judge.JUDGE_FIELDS)
 
+    def test_stage12_set_on_build_failure(self):
+        """빌드 실패로 조기 반환해도 success_stage12 를 success_without_regression 과 같이 채운다(행에서 빠지지 않게)."""
+        def run_build(rc, tail):
+            def fake(cmd, *a, **k):
+                rcode = rc if ":app:bootJar" in cmd else 0
+                return subprocess.CompletedProcess(cmd, rcode, tail if rcode else "", "")
+            with tempfile.TemporaryDirectory() as d:
+                jd = Path(d)
+                prep = {"tampered": [], "hidden_present": True, "build_files_changed": [],
+                        "escaping_links_removed": [], "expected_tests": dict(judge.REGRESSION_BASELINE)}
+                with mock.patch.object(judge, "prepare", return_value=prep), \
+                        mock.patch.object(runner, "make_home", lambda *a, **k: None), \
+                        mock.patch.object(judge.subprocess, "run", side_effect=fake):
+                    return judge.judge("_smoke", "god", jd / "agent", jd, "n", log=lambda *a, **k: None)
+        res = run_build(1, "e: file:///work/app/src/A.kt:3:1 Unresolved reference")
+        self.assertEqual(res["build_failure"], "compile")
+        self.assertEqual((res["success"], res["success_without_regression"], res["success_stage12"]), (False, False, False))
+        res = run_build(125, "docker: Error response")
+        self.assertEqual((res["success"], res["success_without_regression"], res["success_stage12"]), (None, None, None))
+
     def test_contract3_infra_is_undecided(self):
         res, _ = self._judge({**self.ALL_PASS, "contract3": "infra"})
         self.assertIsNone(res["regression_pass"])

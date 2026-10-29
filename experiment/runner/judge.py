@@ -345,14 +345,14 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
             out["build_failure"] = "infra" if brc == 124 else build_failure_kind(brc, bout)
             out["build_tail"] = bout[-1500:]
             if out["build_failure"] == "infra":
-                out.update(judge_error=f"빌드 인프라 오류 rc={brc}", success=None, success_without_regression=None)
+                out.update(judge_error=f"빌드 인프라 오류 rc={brc}", success=None, success_without_regression=None, success_stage12=None)
             else:
-                out.update(success=False, success_without_regression=False, regression_pass=None)
+                out.update(success=False, success_without_regression=False, success_stage12=False, regression_pass=None)
             return out
         jars = sorted(x for x in (jw / "app" / "build" / "libs").glob("*.jar") if not x.name.endswith("-plain.jar")) \
             if (jw / "app" / "build" / "libs").is_dir() else []
         if not jars:
-            out.update(judge_error="bootJar 성공인데 jar 없음", success=None, success_without_regression=None)
+            out.update(judge_error="bootJar 성공인데 jar 없음", success=None, success_without_regression=None, success_stage12=None)
             return out
         appd = jd / "app"
         appd.mkdir()
@@ -370,7 +370,7 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
             subprocess.run(["docker", "rm", "-f", tname], capture_output=True)
         if trc != 0:
             out.update(judge_error=f"테스트 컴파일 실패 rc={trc}(판정 재료)", test_build_tail=tout[-1500:],
-                       success=None, success_without_regression=None)
+                       success=None, success_without_regression=None, success_stage12=None)
             return out
         excl_verify = set(read_list(R.ORACLE / case / "verify-exclude.txt"))
         for st in stages_to_run:
