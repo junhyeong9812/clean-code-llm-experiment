@@ -1865,10 +1865,14 @@ class Marketplace(
             if (now.isAfter(deadline)) {
                 throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "리뷰 작성 기간($deadline)이 지났다: $itemId")
             }
+            val sellerId = em.find(Trade::class.java, item.tradeId).sellerId
+            // §19의 9-2: INSERT의 FK 검사(구매자 → 판매자 순)보다 먼저 두 사용자를 id 오름차순 KEY SHARE — 판매자 귀책의 id 순 FOR UPDATE와 교착 방지
+            em.createNativeQuery("SELECT id FROM users WHERE id IN (:a, :b) ORDER BY id FOR KEY SHARE")
+                .setParameter("a", userId).setParameter("b", sellerId).resultList
             val review = Review(
                 orderItemId = itemId,
                 buyerId = userId,
-                sellerId = em.find(Trade::class.java, item.tradeId).sellerId,
+                sellerId = sellerId,
                 rating = rating.toShort(),
                 content = content,
                 status = "VISIBLE",
@@ -2711,6 +2715,9 @@ class Marketplace(
         val now = clock.now()
         return tx.execute {
             if (orderItemId != null) {
+                // §19의 9-1: 항목 KEY SHARE를 INSERT(사용자 FK가 먼저 발동)보다 먼저 — 주문 → 항목 → 사용자 순서의 기존 항목 절차와 교착 방지
+                em.createNativeQuery("SELECT id FROM order_items WHERE id = :id FOR KEY SHARE").setParameter("id", orderItemId)
+                    .resultList.ifEmpty { notFound("없는 주문 항목: $orderItemId") }
                 val item = em.find(OrderItem::class.java, orderItemId) ?: notFound("없는 주문 항목: $orderItemId")
                 val trade = em.find(Trade::class.java, item.tradeId)
                 if (userId != trade.buyerId && userId != trade.sellerId) {
