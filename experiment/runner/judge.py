@@ -19,7 +19,7 @@ PROTECTED = ("TASK.md", "test.sh")          # + checks/ 전체(지원 코드·�
 VERIFY_FAILED = re.compile(r"verify: 불변식 위반 \d+ 건 — (.+)")
 VERIFY_OK = re.compile(r"verify: \d+ 개 검사 모두 통과")
 # 판정이 정하는 행 필드 — 재판정 때 첫 판정 값을 남기지 않고 전부 새로 쓴다
-JUDGE_FIELDS = ("judged", "judge_skip", "stages", "judge_error", "success", "success_without_regression",
+JUDGE_FIELDS = ("judged", "judge_skip", "stages", "judge_error", "success", "success_without_regression", "success_stage12",
                 "regression_pass", "build_ok", "build_failure", "build_tail", "test_build_tail", "tampered",
                 "hidden_present", "build_files_changed", "escaping_links_removed", "expected_tests", "partial_stages",
                 "held", "valid", "invalid_reason")
@@ -384,6 +384,8 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
             out["judge_error"] = f"판정 불가 단계: {infra}"
         out["success_without_regression"] = conjunction(oc, ("public", "hidden"), out["tampered"])
         out["regression_pass"] = conjunction(oc, REGRESSION_STAGES, [])
+        # 보조(ADR-0006 §6.1-5): 1·2회차와 비교용 — 회귀를 contract·contract2 로만 본 성공
+        out["success_stage12"] = conjunction(oc, ("public", "hidden", "contract", "contract2"), out["tampered"])
         out["success"] = conjunction(oc, STAGES, out["tampered"])
         if tuple(stages_to_run) != STAGES:  # 과제 검증(check)용 부분 판정 — success 는 돌린 단계만의 AND
             out["partial_stages"] = list(stages_to_run)

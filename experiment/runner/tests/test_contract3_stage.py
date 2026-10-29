@@ -1,7 +1,7 @@
 """판정 회귀 contract3 단계(ADR-0005 §4.1 개정 3 — 단계 A 계약 contract3Test, 기준 168).
 
 계약: 회귀 = contract ∧ contract2 ∧ contract3(각 단계 새 DB·앱·가짜 PG, 결과 XML 은 그 단계 태스크 디렉터리만,
-verify.sql 도 단계마다), regression-exclude 가 있으면 기준 수 검사 없음, 부분 판정은 돌린 단계만의 AND.
+verify.sql 도 단계마다), regression-exclude 패턴이 닿는 단계만 기준 수 검사를 끔, 부분 판정은 돌린 단계만의 AND.
 docker·gradle 없이 판정기 경계(subprocess·runner 자원)를 가짜로 바꿔 확인한다.
 """
 import os
@@ -42,7 +42,7 @@ class Constants(unittest.TestCase):
 
 
 class Expected(unittest.TestCase):
-    """prepare 의 expected_tests: regression-exclude 가 비면 contract3 168 포함, 있으면 회귀 기준 수 전부 없음."""
+    """prepare 의 expected_tests: regression-exclude 가 비면 contract3 168 포함, 있으면 제외 패턴이 닿는 단계만 기준 수 없음(ADR-0005 §4.1-4)."""
 
     def _expected(self, excl_lines):
         with tempfile.TemporaryDirectory() as d:
@@ -190,6 +190,16 @@ class JudgeCombination(unittest.TestCase):
         self.assertIs(res["regression_pass"], False)
         self.assertIs(res["success"], False)
         self.assertIs(res["success_without_regression"], True)
+        self.assertIs(res["success_stage12"], True)   # 보조(ADR-0006 §6.1-5): contract·contract2 로만 본 성공
+
+    def test_stage12_aux_success(self):
+        res, _ = self._judge(self.ALL_PASS)
+        self.assertIs(res["success_stage12"], True)
+        res, _ = self._judge({**self.ALL_PASS, "contract2": "fail"})
+        self.assertIs(res["success_stage12"], False)
+        res, _ = self._judge(self.ALL_PASS, tampered=["TASK.md"])
+        self.assertIs(res["success_stage12"], False)
+        self.assertIn("success_stage12", judge.JUDGE_FIELDS)
 
     def test_contract3_infra_is_undecided(self):
         res, _ = self._judge({**self.ALL_PASS, "contract3": "infra"})
