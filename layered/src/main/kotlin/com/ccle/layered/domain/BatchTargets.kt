@@ -69,6 +69,15 @@ enum class BatchTarget {
 
     /** delivery-delay-scan DELIVERY_LATE(§12.2): DELIVERING이고 inspected_at + 5일 ≤ 현재, 같은 (항목, kind) 행 없음. */
     DELIVERY_LATE_ITEMS,
+
+    /** inquiry-auto-close(ADR-0007 §9.3): ANSWERED이고 answered_at + 7일 ≤ 현재인 문의. */
+    AUTO_CLOSABLE_INQUIRIES,
+
+    /** price-stats(ADR-0007 §11.1): 어제(KST) PAID 체결이 있고 (사이즈, 어제) 시세 행이 없는 사이즈. */
+    PRICE_STATS_SIZES,
+
+    /** inbound-no-show(ADR-0007 §12.3): RESERVED이고 slot_start + 1시간 ≤ 현재인 입고 예약. */
+    NO_SHOW_RESERVATIONS,
 }
 
 interface BatchTargets {

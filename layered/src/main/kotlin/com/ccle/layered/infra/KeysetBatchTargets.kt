@@ -4,7 +4,10 @@ import com.ccle.layered.domain.BatchTarget
 import com.ccle.layered.domain.BatchTargets
 import com.ccle.layered.domain.ClosedMonth
 import com.ccle.layered.domain.GradePeriod
+import com.ccle.layered.domain.InboundReservation
+import com.ccle.layered.domain.Inquiry
 import com.ccle.layered.domain.OrderItem
+import com.ccle.layered.domain.PriceStatsDay
 import com.ccle.layered.domain.SellerGradeMonth
 import jakarta.persistence.EntityManager
 import org.springframework.stereotype.Component
@@ -72,6 +75,19 @@ class KeysetBatchTargets(private val em: EntityManager) : BatchTargets {
         BatchTarget.ACTIVE_PRICE_ALERTS -> Spec("price_alerts", "t.status = 'ACTIVE'") { emptyMap() }
         BatchTarget.SHIPMENT_OVERDUE_ITEMS, BatchTarget.DELIVERY_LATE_ITEMS ->
             DelaySql.of(target).let { Spec("order_items", it.targetCondition, it.params) }
+        BatchTarget.AUTO_CLOSABLE_INQUIRIES -> Spec("inquiries", "t.status = 'ANSWERED' AND t.answered_at <= :due") {
+            mapOf("due" to Inquiry.autoCloseCutoff(it))
+        }
+        BatchTarget.PRICE_STATS_SIZES -> Spec(
+            "product_sizes",
+            "EXISTS (SELECT 1 FROM trades tr WHERE tr.product_size_id = t.id AND tr.status = 'PAID'" +
+                " AND tr.matched_at >= :from AND tr.matched_at < :to)" +
+                " AND NOT EXISTS (SELECT 1 FROM price_stats_daily p WHERE p.product_size_id = t.id AND p.stat_date = :d)",
+        ) { PriceStatsDay.of(it).let { day -> mapOf("from" to day.from, "to" to day.to, "d" to day.date) } }
+        BatchTarget.NO_SHOW_RESERVATIONS -> Spec(
+            "inbound_reservations",
+            "t.status = 'RESERVED' AND EXISTS (SELECT 1 FROM inbound_slots s WHERE s.id = t.slot_id AND s.slot_start <= :due)",
+        ) { mapOf("due" to InboundReservation.noShowCutoff(it)) }
     }
 
     private fun nowParam(now: Instant): Map<String, Any> = mapOf("now" to now)

@@ -10,12 +10,6 @@ import java.time.Instant
 
 // A1 리뷰·평점(ADR-0007 §4). 오류 code는 기존 Failure만 쓴다(§2.2 — 새 테이블 행의 상태 충돌도 ITEM_STATE_CONFLICT).
 
-/** 글자 수(§2.1·§19의 6): 앞뒤 공백(isWhitespace)을 뺀 값의 유니코드 코드 포인트 수. 중간 공백은 센다. */
-private fun textLength(value: String): Int {
-    val trimmed = value.trim()
-    return trimmed.codePointCount(0, trimmed.length)
-}
-
 /** 리뷰 작성 요청의 값(§4.1): rating 1~5 정수, content는 앞뒤 공백을 뺀 값이 1~1,000자. 저장은 받은 그대로. */
 class ReviewInput private constructor(val rating: Short, val content: String) {
     companion object {

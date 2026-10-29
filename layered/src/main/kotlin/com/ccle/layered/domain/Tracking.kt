@@ -10,12 +10,6 @@ import java.time.Instant
 
 // A11 배송 추적(ADR-0007 §12.2). 항목 상태는 바꾸지 않는다(입고·배송 완료는 기존 /admin 엔드포인트). 오류 code는 기존 Failure만 쓴다(§2.2).
 
-/** 글자 수(§2.1·§19의 6): 앞뒤 공백(isWhitespace)을 뺀 값의 유니코드 코드 포인트 수. 중간 공백은 센다. */
-private fun textLength(value: String): Int {
-    val trimmed = value.trim()
-    return trimmed.codePointCount(0, trimmed.length)
-}
-
 /** 추적 이벤트 기록 요청의 값(§12.2): enum은 문서 글자 그대로, trackingNo 1~30자(받은 그대로 저장), occurredAt ≤ 현재. */
 class TrackingEventInput private constructor(
     val carrier: String,

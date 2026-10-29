@@ -84,6 +84,9 @@ class BatchService(
     private val deadlineReminder: DeadlineReminderBatch,
     private val priceAlertScan: PriceAlertScanBatch,
     private val deliveryDelayScan: DeliveryDelayScanBatch,
+    private val inquiryAutoClose: InquiryAutoCloseBatch,
+    private val priceStats: PriceStatsBatch,
+    private val inboundNoShow: InboundNoShowBatch,
 ) {
     private val log = LoggerFactory.getLogger(BatchService::class.java)
 
@@ -107,6 +110,9 @@ class BatchService(
             "deadline-reminder" -> deadlineReminder.run(now)
             "price-alert-scan" -> priceAlertScan.run(now)
             "delivery-delay-scan" -> deliveryDelayScan.run(now)
+            "inquiry-auto-close" -> inquiryAutoClose.run(now)
+            "price-stats" -> priceStats.run(now)
+            "inbound-no-show" -> inboundNoShow.run(now)
             else -> invalidRequest("알 수 없는 배치: $name")
         }
         log.info(
