@@ -1,6 +1,6 @@
 # ADR-0007: 규모 확장 단계 A 동작 계약 — 기능 A1~A12
 
-- 상태: **채택** (2026-10-29, 사용자 합의 — §16 [제안] 값 그대로, 듀얼 리뷰·감사·재점검 반영 23건) · 개정 1(2026-10-29, §19 — 테스트 작성에서 나온 입력 규칙·응답 보완 14항목, 새 테이블 수 19로 정정)
+- 상태: **채택** (2026-10-29, 사용자 합의 — §16 [제안] 값 그대로, 듀얼 리뷰·감사·재점검 반영 23건) · 개정 1(2026-10-29, §19 — 테스트 작성에서 나온 입력 규칙·응답 보완 14항목, 새 테이블 수 19로 정정) · 개정 2(2026-10-30, §20 — 크기 확인(ADR-0006 §6.1-7) 뒤 보충 묶음 A13~A17, 스키마 무변경. **초안 — 합의 전**)
 - 앞 결정: [ADR-0002 도메인·DB](0002-domain-and-database.md) · [ADR-0003 계약 1단계](0003-http-api-stage1.md) · [ADR-0004 계약 2단계](0004-http-api-stage2.md) · [ADR-0006 규모 확장](0006-scale-up.md)(§3 불변식·§4.1 목록)
 - 표기: **[제안]** = 인터뷰에서 Claude가 정하도록 맡긴 수치·세부(2026-10-28 사용자 결정). 합의 때 목록(§16)으로 검토한다. **[불변식 N]** = ADR-0006 §3의 N 때문에 이렇게 정했다는 뜻.
 - 정본 순서: 새 테이블의 행 규칙은 이 문서와 그 DDL(§3), 실행 판정은 `verify.sql`의 새 검사(§15), HTTP 표면은 이 문서. 기존 테이블·엔드포인트·배치의 계약은 ADR-0002~0004 그대로다.
@@ -474,3 +474,280 @@
 12. **§10.3** 정정 응답의 `cancelled`는 **새 `CANCEL` 행**이다. 원본은 `status`만 `CANCELLED`로 바뀌고 `issued_at`을 포함한 다른 열은 그대로다("시각은 모두 현재"는 새로 쓰는 두 행의 `issued_at`).
 13. **§11.3** `summary.sellerGrade` = `effective_from`이 가장 늦은 판매자 등급 행(§5.4 `current`와 같다). `GET /admin/settlements?sellerId=`의 사용자가 없으면 빈 목록이다(필터이므로 404가 아니다).
 14. **§12.1** `intro`는 필수 문자열(빈 문자열 허용, null·누락 400). `vacationFrom`·`vacationTo` 키 누락은 null(1).
+
+## 20. 개정 2 — 단계 A 보충 A13~A17 (2026-10-30, 초안 — 합의 전)
+
+ADR-0006 §6.1-7 크기 확인(2026-10-30)에서 god가 5,228줄로 5,500줄에 못 미쳤다. 사전 등록 규칙대로 묶음을 더한다(ADR-0006 개정 2). 기능 다섯 개는 사용자가 골랐다(2026-10-30, 후보 조사 `docs/plans/2026-10-30/contract-b/`). 번호는 A13 = F1 … A17 = F6이다(F5는 고르지 않았다). 아래 **[제안]**은 §16과 지위가 같다 — 합의 때 §20.13 목록으로 검토한다.
+
+### 20.1 공통
+
+- **스키마 무변경.** 테이블·열·CHECK·UNIQUE·부분 UNIQUE·FK(61)·인덱스를 바꾸지 않는다. 시드(§14)와 `verify.sql`도 바꾸지 않는다(§20.9·§20.11). 그래서 새 알림 `kind`·새 감사 `action`·새 상태 값은 없다(셋 다 `CHECK IN`이 닫혀 있다).
+- **새 `/admin` 쓰기 없음.** A15의 두 `/admin` 요청은 조회다. 감사 로그(§2.7) 대상은 7개 그대로다.
+- **기존 22개 테이블에 쓰지 않는다**(§2.3 그대로) **[불변식 2]**. 새 쓰기는 모두 단계 A 테이블(`reviews`·`price_alerts`·`inquiries`·`inquiry_messages`·`inbound_reservations`·`notifications`)에 한다.
+- 오류 code·판정 순서·입력 규칙은 §2·§19 그대로다(401 → 400 → 404 → 403 → 409, 상태 위반이 기한 위반보다 먼저). 각 절의 409는 **적은 번호 순서**로 판정한다.
+- 기존 응답 모양(리뷰·가격 알림·문의·예약·슬롯·알림 모양)은 **바꾸지 않는다**. 단계 A 테스트(168)가 그 모양을 단언하기 때문이다. 새 필드는 새 엔드포인트의 새 모양에만 둔다.
+- 새 배치 2개(`price-alert-rearm`·`notification-purge`). 배치 공통(§2.6)을 그대로 따른다: 격리, id 순, 대상 1건 = 트랜잭션 하나, 기간 경계는 앱이 계산한 `:due`를 바인드(두 구조의 대상 SQL이 같게 — §13 끝), 잠금이 있으면 잠근 뒤 같은 조건을 다시 확인하고 바뀌었으면 건너뛴다(실패 아님). 모든 배치에서 같은 시각에 다시 돌리면 `processed` = 0이다.
+
+### 20.2 A13 리뷰 수정 · 쓸 수 있는 항목 · 내 리뷰
+
+#### 20.2.1 수정 `PATCH /reviews/{id}` `{"rating": 1~5 정수, "content": 문자열}`
+
+- `rating`·`content` **둘 다 필수** **[제안]**(부분 갱신 없음 — §19의 1 "키 없음 = null"과 겹쳐 null 뜻이 둘이 되지 않게). 값 규칙은 작성(§4.1)과 같다: `rating` 1~5, `content` 1~1,000자(아니면 400).
+- 순서: 401 → 400 → 404(리뷰) → 403(작성자 `buyer_id`가 아님) → **주문 행 `FOR UPDATE`**(리뷰 항목의 주문) → **리뷰 행 `FOR UPDATE`** → 409:
+  1. 리뷰가 `VISIBLE`이 아니면 409 `ITEM_STATE_CONFLICT`(`HIDDEN`·`DELETED`).
+  2. 항목 상태가 `CONFIRMED`가 아니면 409 `ITEM_STATE_CONFLICT`. 분쟁이 제기됐지만 `rating-recalc` 전이라 아직 `VISIBLE`인 리뷰(항목 `DISPUTED`·`REFUNDED_AFTER_CONFIRM`)가 여기서 막힌다.
+  3. `현재 > confirmed_at + 30일`이면 409 `DEADLINE_PASSED`. 작성과 같은 창이다(30일 정각은 고칠 수 있다).
+- 결과: `rating`·`content` = 받은 값, `updated_at` = 현재. `created_at`·`status`·`hidden_reason`·당사자 열은 그대로다. 값이 지금과 같아도 쓴다(멱등 처리 없음 **[제안]**). 응답 `200` 리뷰 모양(§4.1 — 모양 그대로).
+- 평점(`seller_ratings`)은 바로 고치지 않는다. 다음 `rating-recalc`가 VISIBLE 합을 다시 세어 반영한다(§4.5의 3 — 값이 다르면 UPDATE). 판매자 리뷰 조회(§4.4)는 그사이 평점과 리뷰 목록의 시점이 다를 수 있다(§4.4에 이미 적은 성질).
+- 잠금 이유:
+  - 주문 행은 분쟁 제기(ADR-0004 §4.3 — 주문 → 항목 `FOR UPDATE`)와 줄을 세운다. 그래서 2의 판정과 분쟁 제기가 엇갈리지 않는다(작성 §4.1과 같은 이유).
+  - 리뷰 행은 삭제·숨김·`rating-recalc`·다른 수정과 줄을 세운다.
+  - 순서는 주문 → 리뷰다. 리뷰 행을 쥔 채 주문 행을 기다리는 경로는 없다(§20.8).
+  - UPDATE는 FK 열을 바꾸지 않으므로 FK 검사(KEY SHARE)를 걸지 않는다.
+
+#### 20.2.2 쓸 수 있는 항목 `GET /me/reviewable-items`
+
+- 대상: 내가 구매자(`orders.buyer_id`)인 주문 항목 중 상태 `CONFIRMED`이고, 그 항목의 리뷰 행이 없고(상태 무관 — 지운 리뷰도 있음으로 친다, §4.1), `현재 ≤ confirmed_at + 30일`인 것. 작성(§4.1)이 409 없이 받는 항목과 같은 집합이다.
+- 응답 `[{"orderItemId", "sellerId", "confirmedAt", "reviewDeadline"}]`, `orderItemId` 오름차순. `sellerId` = 체결 판매자. `reviewDeadline = confirmed_at + 30일`은 **계산해 보여 주기만** 하고 저장하지 않는다.
+
+#### 20.2.3 내 리뷰 `GET /me/reviews`
+
+- 내가 쓴(`buyer_id` = 나) 리뷰 전부(세 상태), `reviewId` 오름차순.
+- 항목 모양(내 리뷰 모양) = 리뷰 모양 + `"hiddenReason"`·`"updatedAt"`·`"reviewDeadline"`(그 항목의 `confirmed_at + 30일` — 수정 기한, 계산 값). 리뷰가 있는 항목은 `confirmed_at`이 NULL이 아니다(verify `a0_time_order`가 상시 확인).
+
+### 20.3 A14 가격 알림 목표가 변경 · 재등록 · 재무장
+
+#### 20.3.1 목표가 변경 `PATCH /me/price-alerts/{id}` `{"targetPrice": 양의 정수}`
+
+- 순서: 401 → 400(`targetPrice` 누락·정수 아님·0 이하) → 404 → 403 → 알림 행 `FOR UPDATE` → `ACTIVE`가 아니면 409 `ITEM_STATE_CONFLICT`.
+- 결과: `target_price`만 바꾼다. `expires_at`·`created_at`·`status`는 그대로다(유효 기간을 늘리지 않는다). 값이 같아도 200. 응답 `200` 가격 알림 모양.
+- 저장 상태만 본다. `expires_at ≤ 현재`인데 `price-alert-scan` 전이라 아직 `ACTIVE`인 알림도 바꿀 수 있다(취소 §8.2와 같다) **[제안]**.
+- 다음 `price-alert-scan`은 새 목표가로 판정한다. 발동 뒤에는 바꿀 수 없으므로(`ACTIVE`만) verify `a5_alert_trigger_bid`(발동 입찰 `price ≤ target_price`)가 계속 성립한다.
+
+#### 20.3.2 재등록 `POST /me/price-alerts/{id}/renew` (본문 없음)
+
+- 순서: 401 → 404 → 403 → **그 알림 사이즈 KEY SHARE**(§19의 10-2 `keyShareSize`) → **사용자 행 `FOR UPDATE`** → 409:
+  1. 알림이 `EXPIRED`·`TRIGGERED`가 아니면 409 `ITEM_STATE_CONFLICT`(`ACTIVE`·`CANCELLED`. 취소는 사용자가 끈 것이라 되살리지 않는다).
+  2. 같은 (사용자, 사이즈)에 **이 알림보다 id가 큰 알림**(상태 무관)이나 **`ACTIVE` 알림**이 있으면 409 `ITEM_STATE_CONFLICT`. 재등록은 그 쌍의 마지막 알림에서만 한다. 계약 안에서는 같은 쌍의 `ACTIVE` 알림이 늘 더 큰 id다. 그래도 둘째 항을 두어 부분 UNIQUE `price_alerts_live_user_size_key` 위반(400 `UNEXPECTED_ERROR`)이 생길 길을 막는다.
+  3. `현재 > closed_at + 7일`이면 409 `DEADLINE_PASSED`(7일 정각은 된다) **[제안]**.
+- 결과: 새 알림 1행 — `ACTIVE`, 같은 `target_price`, `expires_at = 현재 + 60일`(등록 §8.2와 같은 모양 — `closed_at`에 기간을 더하거나 `min`으로 자르지 않는다 **[불변식 7 — T1]**), `created_at` = 현재. 옛 알림은 그대로다. 응답 `201` 새 알림의 가격 알림 모양.
+- 등록(§8.2)처럼 구매 제한 중에도 할 수 있고 위시리스트가 없어도 된다.
+- 잠금 이유:
+  - 사용자 행으로 같은 사용자의 등록·재등록·재무장(모두 사용자 행을 잠근 뒤 2를 판정)이 줄을 서서 2와 INSERT 사이에 새 알림이 끼지 않는다.
+  - 사이즈 KEY SHARE를 먼저 잡는 이유는 등록과 같다(§19의 10-2). INSERT의 FK 검사가 사이즈에 KEY SHARE를 걸기 때문에 "사이즈 → 사용자" 순서를 지켜야 한다.
+  - 옛 알림 행은 잠그지 않는다. `EXPIRED`·`TRIGGERED`·`CANCELLED`는 다시 바뀌지 않는다(바뀌는 것은 `ACTIVE` → 종결뿐). 1에서 `ACTIVE`를 읽었다면 그 순간의 상태로 409다.
+
+#### 20.3.3 배치 `price-alert-rearm`
+
+- 대상 SQL(별칭 `t` = `price_alerts`, 앱이 `:now`·`:due = 현재 − 7일`을 바인드):
+  ```sql
+  t.status = 'TRIGGERED' AND t.closed_at >= :due
+  AND EXISTS (SELECT 1 FROM bids b WHERE b.id = t.triggered_bid_id AND b.status <> 'ACTIVE')
+  AND EXISTS (SELECT 1 FROM wishlists w WHERE w.user_id = t.user_id AND w.product_size_id = t.product_size_id)
+  AND NOT EXISTS (SELECT 1 FROM price_alerts n WHERE n.user_id = t.user_id AND n.product_size_id = t.product_size_id
+                  AND (n.id > t.id OR n.status = 'ACTIVE'))
+  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.purchase_restricted_until > :now)
+  ```
+  - 종결 7일 창은 재등록 기한과 같다(정각 포함).
+  - "발동 입찰이 더 이상 `ACTIVE`가 아님"은 **저장된 `bids.status`**만 본다. `expires_at`이 지났지만 `bid-expiry` 전인 입찰은 아직 `ACTIVE`이므로 다음 실행의 대상이다 **[제안]**.
+  - 구매 제한 중인 사용자의 알림은 대상이 아니다(건너뜀). 저장된 `purchase_restricted_until`만 읽는다 **[불변식 7 — C2]**. 제한이 끝난 뒤에도 7일 창 안이면 그때 재무장한다.
+- 알림 1건(`price_alerts` id 순): 알림의 (사용자, 사이즈)를 읽고 → **사이즈 KEY SHARE → 사용자 행 `FOR UPDATE`**(재등록·§19의 10-2와 같다) → 같은 조건을 `t.id = :id`로 다시 확인한다. 성립하면 새 알림 1행(재등록과 같은 값: `ACTIVE`, 같은 `target_price`, `expires_at = 현재 + 60일`, `created_at` = 현재)을 쓰고, 아니면 건너뛴다. 알림 행(`notifications`)은 만들지 않는다.
+- 재확인이 믿을 만한 이유: 재확인의 각 조건은 잡은 잠금으로 고정된다.
+  - 입찰 상태: 입찰 상태를 바꾸는 처리는 모두 사이즈 행 `FOR UPDATE` 뒤에 한다(ADR-0003 §3.3). 결제 기한 만료가 `MATCHED` 판매 입찰을 `ACTIVE`로 되돌리는 경우도 포함한다. 사이즈 KEY SHARE를 쥔 동안에는 그 입찰의 상태가 바뀌지 않는다.
+  - 위시리스트·더 새 알림·구매 제한: 사용자 행 잠금 아래에서 바뀐다(위시 등록·삭제, 등록·재등록, 결제 기한 경고). 예외는 다른 알림의 `ACTIVE` → 종결(scan·취소)인데, 이것은 대상을 줄이는 쪽이라 놓쳐도 다음 실행이 다시 본다.
+- `processed` = 만든 새 알림 수. 재실행 0: 새 알림이 생기면 `n.id > t.id`가 그 옛 알림을 대상에서 뺀다.
+- 입찰에는 아무것도 쓰지 않는다(읽기). 재무장한 알림이 다른 SELL 입찰로 다시 발동하는 것은 다음 `price-alert-scan`이 한다.
+
+### 20.4 A15 문의 재개 · 관리자 문의함
+
+#### 20.4.1 재개 `POST /me/inquiries/{id}/reopen` `{"body"}`
+
+- 순서: 401 → 400(`body` 1~2,000자, §9.1) → 404 → 403(작성자 아님) → 문의 행 `FOR UPDATE` → 409:
+  1. `CLOSED`가 아니면 409 `ITEM_STATE_CONFLICT`.
+  2. `현재 > closed_at + 7일`이면 409 `DEADLINE_PASSED`(종결 사유 `USER`·`AUTO` 모두 같다. 7일 정각은 된다) **[제안]**.
+- 결과: `status = OPEN`, `close_reason` NULL, `closed_at` NULL, USER 메시지 1행(`created_at` = 현재). `answered_at`·`first_answered_at`·`sla_due_at`은 그대로다. 그래서 `slaBreached`(§9.1)는 첫 답변 기준 그대로 계산된다. 응답 `200` 문의 모양.
+- 재개 횟수에는 제한이 없다 **[제안]**. 다시 닫히면 그 새 `closed_at`부터 7일이다.
+- 재개된 문의는 `OPEN`이라 `inquiry-auto-close` 대상이 아니다. 다시 답변을 받아 `ANSWERED`가 되면 그 새 `answered_at`부터 7일 뒤 대상이 된다(§9.3 그대로).
+- 잠금: 문의 행 하나. 추가 메시지·답변·종결·`inquiry-auto-close`와 같은 행 잠금이라 줄을 선다. 메시지 INSERT의 FK 검사는 이미 `FOR UPDATE`로 쥔 문의 행에 KEY SHARE를 건다.
+
+#### 20.4.2 관리자 문의함 `GET /admin/inquiries` · `GET /admin/inquiries/{id}`
+
+- `GET /admin/inquiries` — §2.5 키셋 페이지를 이 목록에도 쓴다(§2.5 "A9에만"을 A15까지 넓힌다). 정렬은 `inquiryId` 오름차순이다.
+  - 필터(둘 다 선택): `status`(`OPEN`·`ANSWERED`·`CLOSED`)와 `slaBreached`(`true`·`false`). 글자 그대로만 받고, 아니면 400이다(§19의 3).
+  - 항목 = 문의 모양 + `"userId"`.
+  - `slaBreached` 필터는 응답 값(§9.1)과 같은 식이다: `coalesce(t.first_answered_at > t.sla_due_at, t.sla_due_at < :now)`가 참이면 `true`, 거짓이면 `false`. NULL이 생기지 않게 `coalesce`로 쓴다 — `(a IS NULL AND …) OR a > b` 꼴은 미답변 행에서 NULL이 되어 `false` 필터에서 빠진다.
+- `GET /admin/inquiries/{id}` — 없는 문의 404. 응답은 상세 모양(§9.2: 문의 모양 + `messages` + `orderItem`)에 `"userId"`를 더한 것이다. 한 스냅샷에서 읽는다.
+- 둘 다 조회라 감사 로그를 쓰지 않는다(§2.7은 쓰기만).
+
+### 20.5 A16 입고 예약 변경 · 슬롯·예약 상세
+
+#### 20.5.1 예약 변경 `POST /me/inbound-reservations/{id}/reschedule` `{"slotId"}`
+
+- 순서: 401 → 400(`slotId` 누락·정수 아님) → 404(예약) → 404(새 슬롯) → 403(예약의 `seller_id`가 아님) → 잠금·409. 잠금과 판정은 이 순서로 섞인다:
+  1. **주문 행 `FOR UPDATE`**(예약 항목의 주문) → 항목이 `PAID`가 아니면 409 `ITEM_STATE_CONFLICT`. 다른 잠금보다 **먼저** 판정한다(§12.3의 1 괄호와 같은 이유 — god 구현 리뷰 GF-7: PAID 아닌 항목의 요청이 슬롯을 기다리며 교착 고리에 끼지 않게).
+  2. **예약 행 `FOR UPDATE`** → 예약이 `RESERVED`가 아니면 409 `ITEM_STATE_CONFLICT`.
+  3. 새 슬롯이 지금 슬롯과 같으면 409 `ITEM_STATE_CONFLICT`.
+  4. **새 슬롯 행 `FOR UPDATE`** → 새 슬롯의 살아 있는 예약(`RESERVED`·`CHECKED_IN`) 수 ≥ `capacity`면 409 `ITEM_STATE_CONFLICT`(정원 — 상태 위반으로 보아 기한보다 먼저, §12.3의 2).
+  5. `현재 > 옛 slot_start − 2시간`이면 409 `DEADLINE_PASSED`(취소 기한, §12.3).
+  6. `현재 > 새 slot_start − 24시간`이면 409 `DEADLINE_PASSED`(예약 기한, §12.3).
+- 쓰기는 한 트랜잭션에서 **이 순서로** 한다. 부분 UNIQUE `inbound_reservations_live_item_key` 때문에 옛 예약 UPDATE를 INSERT보다 먼저 DB에 보내야 한다 — ORM이면 옛 예약을 바꾼 뒤 명시적 flush(§10.3 정정과 같은 함정).
+  1. 옛 예약 → `CANCELLED`, `closed_at` = 현재.
+  2. (flush)
+  3. 새 예약 1행 INSERT: `RESERVED`, `slot_id` = 새 슬롯, 같은 `seller_id`·`order_item_id`, `created_at` = 현재.
+- 응답 `200 {"cancelled": 옛 예약의 예약 모양, "reserved": 새 예약의 예약 모양}` **[제안]**(정정 §10.3과 같은 꼴).
+- 그 항목의 살아 있는 예약은 옛 예약 하나뿐이다(부분 UNIQUE). 그래서 §12.3의 "살아 있는 예약이 있으면 409"는 여기서 판정하지 않는다.
+- 잠금 순서(주문 → 예약 → 새 슬롯)와 기존 경로의 대조는 §20.8에 있다. 새 INSERT의 FK 검사(슬롯 KEY SHARE — 이미 쥔 행, 판매자 `users` KEY SHARE, 항목 KEY SHARE)는 예약(§12.3)과 같은 집합·같은 순서다. 그 앞에 쥐는 잠금도 예약과 같은 "주문 FU를 먼저" 꼴이다.
+
+#### 20.5.2 상세 조회
+
+- `GET /inbound-slots/{id}` (헤더 불필요 — §19의 7 목록에 더한다) → 없는 슬롯 404. 응답 슬롯 모양(`reserved` = 살아 있는 예약 수, §12.3).
+- `GET /me/inbound-reservations/{id}` → 없는 예약 404, 남의 예약 403. 응답 예약 모양.
+
+### 20.6 A17 알림 일괄 읽음 · 보존 기한 정리 · 안 읽은 수
+
+#### 20.6.1 일괄 읽음 `POST /me/notifications/read-all` (본문 없음)
+
+- 내 알림 중 `read_at` NULL인 행을 **id 오름차순으로 `FOR UPDATE`**(`SELECT id FROM notifications WHERE user_id = ? AND read_at IS NULL ORDER BY id FOR UPDATE`)한다. 잠근 뒤에도 `read_at`이 NULL인 행만 `read_at` = 현재로 바꾼다.
+- 응답 `200 {"readCount": 바꾼 수}`. 0건도 200이다 **[제안]**. 단건 읽음(§7.2)은 이미 읽은 알림에 409를 주지만, 묶음 요청에서는 "읽을 것이 없음"을 상태 충돌로 보지 않는다.
+- 같은 알림의 단건 읽음과 겹치면 먼저 잠근 쪽만 그 행을 읽음 처리한다. 다른 쪽은 409(단건)이거나 그 행을 빼고 센다(일괄).
+- id 순 잠금은 같은 사용자의 일괄 읽음 두 요청이 서로 다른 순서로 행을 잡아 교착하지 않게 하려는 것이다. 사용자 행은 잠그지 않는다.
+- 요청 중에 배치가 새로 만든 알림은 포함되지 않을 수 있다(잠금 문장 시점의 행).
+
+#### 20.6.2 안 읽은 수 `GET /me/notifications/unread-count`
+
+- `{"unreadCount": 내 알림 중 read_at NULL 수}`. `GET /me/notifications?unread=true`의 길이와 같다.
+
+#### 20.6.3 배치 `notification-purge`
+
+- 대상: `t.read_at IS NOT NULL AND t.read_at <= :due`(`:due = 현재 − 30일`, 30일 정각은 지운다) **[제안]**. 안 읽은 알림은 오래돼도 지우지 않는다.
+- 알림 1건: `DELETE FROM notifications WHERE id = :id AND read_at <= :due`. **잠금 없음** — 문장 하나가 행 잠금과 조건 재평가를 함께 한다. `read_at`은 NULL로 돌아가지 않으므로 조건이 바뀌는 경우는 이미 지워진 것뿐이다. `processed` = 지운 행 수(재실행 0).
+- 새 테이블 행이라 DELETE를 허용한다(위시리스트 §8.1 선례). `notifications`를 참조하는 FK는 없다.
+- **지운 알림이 dedupe로 다시 생기지 않는다.** 전제는 셋이다:
+  - (가) `read_at ≥ created_at`(§7.2, verify `a0_time_order`).
+  - (나) 리마인더 알림의 `created_at`은 그것을 만든 배치 시각이고, 그 시각에 대상 조건이 성립했다(§7.1).
+  - (다) 제한 기간은 고정이고 30일 이하다 — 구매 7일·판매 30일, 끝 = 건 시각 + 기간(ADR-0004).
+
+  지울 수 있으면 `created_at ≤ read_at ≤ 현재 − 30일`이다. 이때 각 종류는 지금 대상 조건을 만족할 수 없다.
+
+| kind | 지금 대상 조건 | 만든 시각 t(≤ 현재 − 30일)에서 아는 것 | 그래서 |
+|---|---|---|---|
+| `PAYMENT_DUE_SOON` | `현재 < payment_due_at` | `payment_due_at ≤ t + 10분` | `payment_due_at ≤ 현재 − 30일 + 10분 < 현재` |
+| `SHIPMENT_DUE_SOON` | `현재 < paid_at + 3일` | `paid_at ≤ t − 2일` | `paid_at + 3일 ≤ 현재 − 29일` |
+| `DISPUTE_WINDOW_CLOSING` | `현재 ≤ confirmed_at + 14일` | `confirmed_at ≤ t − 12일`(확정 뒤 `confirmed_at`은 바뀌지 않는다 — 기각도 그대로, ADR-0004 §4.4) | `confirmed_at + 14일 ≤ 현재 − 28일` |
+| `SETTLEMENT_PAID` | `현재 − 7일 < paid_at` | `paid_at ≤ t`(시드는 `created_at = paid_at`, §14) | `paid_at ≤ 현재 − 30일` |
+| `PURCHASE_/SALE_RESTRICTED` | 끝 시각 `E > 현재`(키에 `E`) | 건 시각 `s ≤ t`, `E = s + 7일 또는 30일 ≤ t + 30일` | `E ≤ 현재`. 제한이 다시 걸리면 `E`가 달라 새 키 = 새 알림(§7.1 연장과 같다 — 재생성이 아니다) |
+| `PRICE_ALERT` | 키 = 알림 id. 알림이 `ACTIVE` → `TRIGGERED`로 바뀔 때 한 번 | 알림은 `ACTIVE`로 돌아가지 않는다 | 다시 생기지 않는다. 재등록·재무장은 새 알림 id다 |
+
+  리마인더 창(10분·1일·2일·7일)과 제한 기간(≤ 30일)이 모두 보존 기한 30일보다 짧거나 같아서 성립한다. 이 값을 바꾸는 개정은 이 표를 다시 대조해야 한다. 전제를 깨는 픽스처(제한 끝을 건 시각 + 30일보다 뒤로 직접 넣기 등)는 계약 밖이다(§20.12).
+
+### 20.7 배치 일람 추가 · 구현 위치 (§13 형식)
+
+| name | 기능 | 대상(id 순) | `processed` |
+|---|---|---|---|
+| `price-alert-rearm` | A14 | `TRIGGERED` · 종결 7일 안 · 발동 입찰 `ACTIVE` 아님 · 위시리스트 있음 · 그 쌍에 더 새 알림·`ACTIVE` 없음 · 구매 제한 아님 | 만든 새 알림 수 |
+| `notification-purge` | A17 | 읽은 지 30일 지난 알림 | 지운 수 |
+
+- 배치 이름은 13개가 된다(§2.6의 11 + 2). 모두 격리한다.
+- 구현 위치 **[불변식 1]**:
+  - **god:** `Marketplace.kt`의 해당 단계 A 블록(A1·A5·A6·A12·A4 절)에 함수를 더하고, `runBatch`에 두 분기를 더한다(키셋 순회 `forEachTarget` 재사용). 컨트롤러는 `web/`의 단계 A 컨트롤러(`ReviewController`·`NotificationController`·`InquiryController`·`InboundController`)이고, 새 응답 DTO는 `web/Dtos.kt`에 둔다. 새 엔티티는 없다.
+  - **layered:** 단계 A 파일(ADR-0006 §3의 1 개정 2 해석 — 규모 확장 착수 전에 없던 파일)에 메서드·클래스를 더한다.
+    - `service/ReviewService.kt`·`service/WishlistService.kt`(`PriceAlertService` + 새 `PriceAlertRearmBatch`)·`service/InquiryService.kt`·`service/InboundService.kt`·`service/NotificationService.kt`(+ 새 `NotificationPurgeBatch`)
+    - 같은 기능의 `api/*Controller.kt`·`*Dtos.kt`·`infra/Jpa*Repositories.kt`·`domain/*.kt`
+    - 새 파일을 만들어도 된다.
+  - **layered 기존 파일 변경**은 개정 1 허용 목록 안이다: `BatchService.run` 분기 2·생성자 주입, `BatchTarget` 값 2, `KeysetBatchTargets.spec` 분기 2.
+- 두 구조의 대상 조회 SQL은 같아야 한다(§13 끝). 대상 식은 §20.3.3·§20.6.3의 식을 그대로 옮긴다.
+
+### 20.8 잠금 순서 대조 (스스로 점검)
+
+FK KEY SHARE 교착(§19의 9-1·9-2·10-1·10-2, god 구현 리뷰 GF-1·4~7)의 교훈은 하나다. **새 경로가 쥐는 잠금 + INSERT가 FK로 거는 KEY SHARE**를 기존 규약 셋과 같은 방향으로 맞춘다: "사이즈 → 사용자", "주문 → 항목 → 사용자", "사용자끼리 id 오름차순".
+
+| 새 경로 | 잠금 순서(→ = 쥔 채 다음을 기다림) | 대조한 기존 경로 | 판정 |
+|---|---|---|---|
+| A13 수정 | 주문 FU → 리뷰 FU (UPDATE — FK 검사 없음) | 분쟁 제기·판정(주문 → 항목 FU), 리뷰 작성(주문 FU → 사용자 2명 KS), 삭제·숨김(리뷰 FU만), `rating-recalc`(판매자 리뷰들 FU id 순 → `seller_ratings` 쓰기의 FK로 판매자 `users` KS) | 리뷰를 쥔 채 주문을 기다리는 경로가 없다. `rating-recalc`가 판매자 KS를 기다리는 동안 그 판매자 FU를 쥔 쪽(판매자 귀책: 주문 → 항목 → 사용자)은 주문을 먼저 잡았으므로 수정의 주문을 기다리지 않는다 → 고리 없음 |
+| A14 변경 | 알림 FU (UPDATE — FK 검사 없음) | 취소(알림 FU), `price-alert-scan`(알림 FU → `notifications` INSERT의 FK로 `users` KS) | 한 행 — 고리 없음 |
+| A14 재등록 | 사이즈 KS → 사용자 FU → INSERT(FK: 사용자·사이즈는 이미 쥠, `triggered_bid_id` NULL) | 입찰 등록(사이즈 FU → INSERT FK `users` KS), `payment-due`(사이즈 FU → 사용자 FU), 등록(§19의 10-2), `price-alert-scan`(알림 FU → 사용자 KS) | 모두 "사이즈 → 사용자" 순서다. 재등록은 알림 행을 잠그지 않으므로 scan과 고리가 없다 |
+| A14 재무장 | 사이즈 KS → 사용자 FU → INSERT(위와 같음) | 위와 같음 + 위시 등록·삭제(사이즈 KS → 사용자 FU / 사용자 FU) | 재등록과 같다 — 고리 없음 |
+| A15 재개 | 문의 FU → 메시지 INSERT(FK: 쥔 문의 행 KS) | 추가 메시지·답변·종결·`inquiry-auto-close`(문의 FU) | 한 행 — 고리 없음 |
+| A16 변경 | 주문 FU → (PAID 판정) → 예약 FU → 새 슬롯 FU → UPDATE·flush → INSERT(FK: 슬롯 KS(쥠) → 판매자 `users` KS → 항목 KS) | 예약 §12.3(주문 FU → 슬롯 FU → 같은 FK), 예약 취소·체크인·`inbound-no-show`(예약 FU만, 슬롯은 읽기), 항목 절차(주문 → 항목 → 사용자 FU), `pg-inquiry`(사용자 FU → 주문 KS) | 예약 행을 쥔 채 주문·슬롯을 기다리는 경로가 없다. 슬롯 FU를 쥐는 경로(예약·변경)는 모두 주문 FU를 먼저 쥐고, PAID 판정을 슬롯·예약 잠금 전에 한다(GF-7). FK KS는 §12.3 예약과 같은 집합·순서다 → 기존과 같은 위험만 있고 새 고리는 없다 |
+| A17 일괄 읽음 | 내 안 읽은 알림 FU id 순 → UPDATE(FK 검사 없음) | 단건 읽음(알림 FU 1행), `notification-purge`(읽은 행 DELETE), `deadline-reminder`·`price-alert-scan`(새 행 INSERT) | 안 읽은 행 집합과 정리 대상(읽은 행)은 겹치지 않는다. 단건은 한 행이라 고리가 없다 |
+| A17 정리 | DELETE 1행(그 행 잠금만) | 단건·일괄 읽음(안 읽은 행만 쓴다) | 고리 없음 |
+
+### 20.9 스키마·제약·verify 대조 (스스로 점검)
+
+verify는 상시 검사(행동 테스트 뒤에도 성립해야 함)와 시드 빌드 전용 검사(`ccle.seed_build = 1`)로 나뉜다. 시드 빌드 전용 검사는 행동 테스트 DB에서는 꺼져 있다.
+
+| 기능 | 쓰는 열 | CHECK·UNIQUE | 상시 verify 검사 | 판정 |
+|---|---|---|---|---|
+| A13 수정 | `reviews.rating`·`content`·`updated_at` | `rating BETWEEN 1 AND 5`(400으로 먼저 막음) · `(status = 'HIDDEN') = (hidden_reason IS NOT NULL)`(상태 안 바꿈) · `UNIQUE(order_item_id)`(행 안 늘림) | `a0_time_order`·`a1_review_window`·`a1_review_not_in_dispute`는 `created_at` 기준이다(안 바꿈). `a1_review_parties`(당사자 안 바꿈). `a9_audit_target` REVIEW_HIDE: 숨겨진 리뷰는 VISIBLE로 돌아오지 않아 수정 대상이 아니다 | 위반 없음. 시드 전용 `a1_rating_cache`는 수정 뒤 배치 전에 다를 수 있다(이미 시드 전용으로 둔 이유와 같다) |
+| A14 변경 | `price_alerts.target_price` | `target_price > 0`(400) | `a5_alert_trigger_bid`: ACTIVE만 바꾸므로 발동 뒤 target이 바뀌지 않는다 | 위반 없음 |
+| A14 재등록·재무장 | 새 `price_alerts` 행 | `expires_at > created_at`(60일) · `(status = 'ACTIVE') = (closed_at IS NULL)` · `(status = 'TRIGGERED') = (triggered_bid_id IS NOT NULL)`(NULL) · 부분 UNIQUE `price_alerts_live_user_size_key`(2의 `ACTIVE` 항으로 막음) · FK 3 | `a0_time_order`(closed NULL), `a5_alert_expired_after`(새 행 ACTIVE) | 위반 없음 |
+| A15 재개 | `inquiries.status`·`close_reason`·`closed_at`, 새 `inquiry_messages` 행 | `(status = 'CLOSED') = (closed_at IS NOT NULL)`·`(status = 'CLOSED') = (close_reason IS NOT NULL)`(둘 다 NULL로) · `sla_due_at` 식(안 바꿈) | `a6_inquiry_messages`: 첫 메시지 USER 그대로, ADMIN 메시지·답변 시각 그대로. `a6_auto_close_after_7d`: 다시 AUTO로 닫히려면 새 답변 + 7일. `a0_time_order` | 위반 없음 |
+| A15 관리자 조회 | — | — | `a9_audit_target`·시드 전용 `a9_audit_coverage`: 감사 행 없음(조회) | 해당 없음 |
+| A16 변경 | 옛 예약 `status`·`closed_at`, 새 예약 행 | `(status = 'RESERVED') = (closed_at IS NULL)` · 부분 UNIQUE `inbound_reservations_live_item_key`(UPDATE → flush → INSERT 순서) · FK 3 | `a12_capacity`(새 슬롯 FU 뒤 4), `a12_reservation_item_seller`(같은 seller), `a12_reservation_deadline`(6), `a12_reservation_item_paid`(1 — `created_at ≥ paid_at`, 발송은 뒤), `a12_reservation_close_window` CANCELLED(5), `a0_time_order` | 위반 없음 |
+| A17 일괄 읽음 | `notifications.read_at` | — | `a0_time_order`(`read_at` = 현재 ≥ `created_at`) | 위반 없음 |
+| A17 정리 | `notifications` 행 DELETE | — | `a4_notification_owner`·`a4_notification_dedupe_key`(남은 행만 본다) | 위반 없음. 시드 전용 `a4_reminder_complete`·`a5_trigger_notified`는 정리 뒤 깨질 수 있다. 그러나 시드에는 정리 대상이 없고(§20.11) 행동 테스트 DB에서는 꺼져 있다 |
+
+- FK 수 61·부분 UNIQUE 4개·`schema_constraints_present`는 그대로다.
+- 새 verify 검사는 두지 않는다 **[제안]**. 새 테이블·열이 없어 새로 묶을 행 간 규칙이 없다. 수정·재개·변경 이력은 행에 남지 않아(예: VISIBLE 리뷰의 `updated_at`은 `rating-recalc`의 숨김 해제로도 바뀐다) 상시 검사로 판정할 수 없다. 시드 전용 검사를 더해도 이미지를 다시 빌드할 때만 돈다(§20.11).
+
+### 20.10 본보기 배제 (ADR-0006 §3의 7 — 스스로 점검)
+
+| 본보기 | 이 묶음에서 닮을 수 있는 곳 | 판정 |
+|---|---|---|
+| C2 — 제한·제재 때 입찰 일괄 취소 | A14 재무장의 구매 제한 판정 | 저장된 `purchase_restricted_until`을 읽고 **건너뛰기만** 한다. 입찰·알림을 취소하지 않는다. 제한 때 알림·예약을 일괄 취소하는 기능은 후보에서 뺐다(log 05:45) |
+| T1 — 기준 시각 + 기간으로 저장 시각 소급·상한(`min(현재, 기준 + N일)`) | A13 `reviewDeadline`(`confirmed_at + 30일`), A14 재등록·재무장 `expires_at`, A15·A16·A17 저장 시각 | 저장 시각은 모두 **현재**다(`updated_at`·`created_at`·`closed_at`·`read_at`). `expires_at = 현재 + 60일`은 등록과 같은 모양이고 `closed_at`·`expires_at`에 기간을 더하거나 `min`으로 자르지 않는다. `reviewDeadline`은 저장하지 않는 표시 값이고 판정은 비교(`현재 > 기준 + 30일`)만 한다(§2.4가 허용한 기한 판정). 기간 경계는 앱이 `:due = 현재 − N`으로 계산해 비교에만 쓴다 |
+| T2·C1 — 패널티 계수 경계, 등급 경계·적립률 재구현 | 없음 | 패널티·경고 수를 세지 않는다. 등급·적립률을 읽지도 쓰지도 않는다. 노쇼 계수 제한은 후보에서 뺐다(log 05:45) |
+| 주석 | 새 코드 전체 | 이식 때 저장소 전체 grep 규칙(ADR-0006 §3의 7 끝)이 새 코드에도 걸린다 |
+
+- 수정 과제 고칠 곳·읽을 곳 **[불변식 3]**: 새 기능은 그 범위의 함수를 부르지 않는다. A13·A16은 `lockOrderOf`를 쓰지 않고 주문 행만 잠근다(단계 A §4.1·§12.3과 같은 꼴). A13 판정은 저장된 `confirmed_at`만 읽는다.
+
+### 20.11 시드 영향 (§14)
+
+- **시드 무변경**이다. 1k 이미지 `1k-s42-v2`를 다시 빌드하지 않는다. §14의 원칙("시드 = NOW에 배치·요청이 계약대로 돌았다면 남았을 행")과 맞는지 새 배치마다 확인했다.
+  - `price-alert-rearm`을 NOW에 돌리면 대상은 0이다. 시드의 가격 알림은 `ACTIVE`·`EXPIRED`·`CANCELLED`뿐이고 `TRIGGERED`가 없다(§14, `stage_a.py` — ACTIVE는 NOW의 bestSell보다 낮은 목표가로 만든다).
+  - `notification-purge`를 NOW에 돌려도 대상은 0이다. 시드에서 읽은 알림은 `SETTLEMENT_PAID`뿐이다. 그 `created_at`은 2026-09-01 00:00 KST 이후이고 `read_at`은 그보다 1시간 이상 뒤다. 따라서 모두 `read_at > NOW − 30일`(= 2026-09-01 00:00 KST)이다.
+- 요청 이력(수정·재등록·재개·변경·일괄 읽음)은 시드에 넣지 않는다 **[제안]**. 일어나지 않았을 수 있는 요청이므로 원칙과 모순이 아니다.
+- 기존 시드 행이 바뀌지 않으므로 시드 빌드 전용 검사도 그대로 성립한다.
+- **[구현 검증]** 구현 작업의 스모크에서 1k 시드에 두 배치를 NOW로 돌려 `processed` = 0을 확인한다.
+
+### 20.12 contract3 테스트 지침 (§18 보완)
+
+- 이 절(+ §2~§19)만 보고 쓴다. 기존 규칙도 그대로다: 직렬 실행, 자기 행만 단언, 픽스처는 테스트가 만든다(`Db3`), 끝에 verify 1회(시드 빌드 전용 검사는 끈 채).
+- **T1 회귀에 묶이지 않게:** A13(수정 기한·쓸 수 있는 항목·`reviewDeadline`)은 §18처럼 확정을 `delivered_at + 7일` 안의 구매자 확정으로 만들거나 `confirmed_at`을 픽스처로 직접 둔다. A14·A15·A16·A17의 기한은 `closed_at`·슬롯·`read_at` 기준이라 T1과 무관하다.
+- **C2 회귀에 묶이지 않게(ADR-0006 §5):**
+  - A14 재무장에서 발동 입찰을 `ACTIVE`가 아니게 만들 때 판매 제한을 쓰지 않는다(C2 정답이 그 입찰을 취소한다). 입찰 취소(`DELETE /bids/{id}`)나 체결로 만든다.
+  - 구매 제한 건너뜀 테스트는 `purchase_restricted_until`을 픽스처로 직접 두고, 그 사용자에게 `ACTIVE` 입찰을 두지 않는다.
+- **A17 재생성 없음 테스트:** 알림은 실제 배치(`deadline-reminder`)로 만든다. 읽음 → 시계 이동(≥ 30일) → `notification-purge` → `deadline-reminder` 순서로 돌려 같은 `dedupe_key`가 다시 생기지 않는지 본다. 제한 픽스처의 끝은 계약 안의 값(건 시각 + 7일·30일)으로 둔다.
+- **동시성(§19의 10-2 테스트 꼴):** 아래 세 쌍이 교착 없이 각각 계약대로 응답하는지 본다.
+  - A16 변경과 같은 슬롯의 예약(정원 1)
+  - A14 재무장·재등록과 같은 사이즈의 입찰 등록
+  - A13 수정과 같은 항목의 분쟁 제기
+- **판정 기준 수:** 168 → 168 + (보충 테스트 수)로 바뀐다. 갱신은 구현 작업에서 ADR-0005 §4.1의 4와 함께 한다(이번에는 예고만 — ADR-0006 개정 2).
+- **equiv**(ADR-0006 §6.1-6): 새 배치 2개와 잠금 경로(A14 재무장·A16 변경)의 시나리오를 구현 작업에서 더한다.
+
+### 20.13 [제안] 값 목록 (합의 때 검토)
+
+| 기능 | 값 | 근거 |
+|---|---|---|
+| A13 | 수정 본문 `rating`·`content` 둘 다 필수 | §19의 1(키 없음 = null)과 부분 갱신이 겹치지 않게 |
+| A13 | 409 순서: 리뷰 상태 → 항목 상태 → 기한 | ADR-0004 §2.1(상태가 기한보다 먼저), 리뷰 행이 요청 대상이라 먼저 |
+| A13 | 같은 값 수정도 200·`updated_at` 갱신 | 멱등 판정 코드를 두지 않는다(§2.3 단순 쓰기) |
+| A13 | 내 리뷰 = 세 상태 전부 | 지운 리뷰가 있으면 다시 쓸 수 없다는 사실(§4.1)을 사용자가 볼 수 있게 |
+| A14 | 만료 시각이 지났지만 아직 `ACTIVE`인 알림도 변경 가능 | 취소(§8.2)와 같이 저장 상태만 본다 |
+| A14 | 재등록·재무장 창 = 종결 + 7일(정각 포함) | 사용자 결정(7일). 정각 포함은 리뷰 기간(§4.1)과 같은 관례 |
+| A14 | 재등록 409에 "그 쌍의 `ACTIVE` 알림" 항 추가 | 부분 UNIQUE 위반(400 `UNEXPECTED_ERROR`)을 계약 안에서 막는 방어선 |
+| A14 | 재등록은 위시리스트 불필요·구매 제한 무관 | 등록(§8.2)과 같다. 재무장만 위시리스트·제한을 본다(사용자 결정) |
+| A14 | "발동 입찰 ACTIVE 아님" = 저장된 `bids.status` | 저장 상태만 읽는다(§2.3·§7.1과 같은 원칙) |
+| A15 | 재개 창 = 종결 + 7일(정각 포함), 횟수 제한 없음 | 사용자 결정(7일), 자동 종결 기간과 같은 길이 |
+| A15 | 관리자 문의함 항목 = 문의 모양 + `userId` | 운영자가 작성자를 알아야 한다. 기존 문의 모양은 바꾸지 않는다(§20.1) |
+| A16 | 400 → 404(예약) → 404(슬롯) → 403 | 공통 판정 순서(404가 403보다 먼저) |
+| A16 | 응답 `{"cancelled", "reserved"}` | 정정(§10.3)과 같은 꼴 — 두 행을 모두 돌려준다 |
+| A16 | `GET /inbound-slots/{id}` 헤더 불필요 | 슬롯 목록(§12.3)과 같다 |
+| A17 | 일괄 읽음 0건도 200, 응답 `{"readCount"}` | 묶음 요청에서 빈 집합은 충돌이 아니다 |
+| A17 | 정리 = `read_at ≤ 현재 − 30일`(정각 포함), 안 읽은 알림은 지우지 않음 | 사용자 결정(읽은 지 30일). 경계는 다른 배치의 `≤ :due` 관례 |
+| 공통 | 새 verify 검사 없음 · 시드 요청 이력 없음 | §20.9·§20.11 |
+
+### 20.14 god 증가 추정
+
+- 기능별(이 상세도 기준, 기존 단계 A 실측 단가에서 외삽): A13 ≈ 130 · A14 ≈ 150 · A15 ≈ 100 · A16 ≈ 110 · A17 ≈ 70 = **≈ 560줄**(범위 +510~590). 이대로면 god ≈ 5,790줄이다.
+- **외삽 오차:** 단계 A는 추정 ≈ 3,390줄(§18)이었으나 실측은 +2,536줄(2,692 → 5,228)로 추정의 약 75%였다. 같은 비율이면 +420줄, god ≈ 5,650줄이다. 이것도 5,500을 넘지만 여유는 작다. 실측이 5,500 미만이면 ADR-0006 개정 2의 반복 규칙을 따른다.
