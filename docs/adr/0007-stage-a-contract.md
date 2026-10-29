@@ -468,6 +468,8 @@
 10. **§8.1** `activeAlert` = 그 사용자의 그 사이즈 `ACTIVE` 가격 알림(최대 1건 — 부분 UNIQUE).
 10-2. **§8.1·§8.2** 위시리스트·가격 알림 등록의 "없는 사이즈 404"는 `SELECT id FROM product_sizes WHERE id = ? FOR KEY SHARE`로 판정하고 **사용자 행 잠금보다 먼저** 둔다 — 잠금 순서를 기존 입찰·결제 만료 경로와 같은 "사이즈 → 사용자"로 맞춘다(INSERT의 FK 검사가 사이즈에 KEY SHARE를 걸므로 사용자 → 사이즈면 입찰 등록과 교착 — god 누적 리뷰 2026-10-29).
 10-1. **§8.1** 위시리스트 삭제도 등록과 같이 **사용자 행 `FOR UPDATE`** 뒤 그 행을 다시 찾는다(없으면 404). 같은 행의 동시 삭제는 하나만 200, 다른 하나는 404(§2.3 — god 구현 리뷰 2026-10-29).
+9-1. **§9.1** `orderItemId`가 있는 문의 작성은 `SELECT id FROM order_items WHERE id = ? FOR KEY SHARE`(없으면 404)를 INSERT보다 먼저 둔다 — INSERT의 FK 검사가 사용자 → 항목 순으로 KEY SHARE를 걸면 주문 → 항목(FOR UPDATE) → 사용자(FOR UPDATE)인 기존 항목 절차(취소·확정·검수·배치)와 교착한다(god 누적 리뷰 2026-10-29).
+9-2. **§4.1** 리뷰 작성은 INSERT 전에 구매자·판매자 행을 `SELECT id FROM users WHERE id IN (?, ?) ORDER BY id FOR KEY SHARE`로 잡는다 — INSERT의 FK 검사는 구매자 → 판매자 순(id 순 아님)이라, id 오름차순 FOR UPDATE를 쓰는 판매자 귀책(다른 주문의 같은 두 사용자)과 교착할 수 있다(god 누적 리뷰 2026-10-29). 같은 패턴이 기존 체결 INSERT(`trades` 구매자·판매자 FK)에도 있으나 기존 경로라 바꾸지 않는다(ADR-0006 §3의 2 — 잔여 위험으로 기록).
 11. **§9.1** `ANSWERED` 문의에 추가 메시지가 와서 `OPEN`이 될 때 `answered_at`·`first_answered_at`은 그대로 둔다(자동 종결 대상에서는 상태가 `ANSWERED`가 아니므로 빠진다).
 12. **§10.3** 정정 응답의 `cancelled`는 **새 `CANCEL` 행**이다. 원본은 `status`만 `CANCELLED`로 바뀌고 `issued_at`을 포함한 다른 열은 그대로다("시각은 모두 현재"는 새로 쓰는 두 행의 `issued_at`).
 13. **§11.3** `summary.sellerGrade` = `effective_from`이 가장 늦은 판매자 등급 행(§5.4 `current`와 같다). `GET /admin/settlements?sellerId=`의 사용자가 없으면 빈 목록이다(필터이므로 404가 아니다).
