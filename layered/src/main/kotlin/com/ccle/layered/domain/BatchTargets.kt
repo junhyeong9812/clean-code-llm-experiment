@@ -27,6 +27,21 @@ enum class BatchTarget {
 
     /** grade-recalc(ADR-0004 §8.5): 기준일 이력이 없고 계산한 등급이 users.grade와 다른 사용자. */
     GRADE_CHANGES,
+
+    /** rating-recalc(ADR-0007 §4.5): 리뷰가 1행 이상 있는 판매자(users). */
+    REVIEWED_SELLERS,
+
+    /** seller-grade-recalc(ADR-0007 §5.2): 정산 행이 있고 이번 달(D) 판매자 등급 행이 없는 사용자. */
+    SELLER_GRADE_PENDING,
+
+    /** rebate-settlement(ADR-0007 §5.3): 지난달(M) 등급 행이 있고 M 리베이트가 없는 판매자. 달이 닫혔을 때만 순회한다. */
+    REBATE_PENDING,
+
+    /** monthly-statement(ADR-0007 §6.4): 지난달(M) 정산이 있고 M 정산서가 없는 판매자. 달이 닫혔을 때만 순회한다. */
+    MONTHLY_STATEMENT_PENDING,
+
+    /** tax-invoice-issue(ADR-0007 §10.2): 계산서가 없는 정산 중 (PAID이고 paid_at ≤ 현재) 또는 CARRIED. */
+    UNINVOICED_SETTLEMENTS,
 }
 
 interface BatchTargets {

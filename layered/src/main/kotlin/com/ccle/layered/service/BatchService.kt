@@ -41,7 +41,7 @@ private val isolationLog = LoggerFactory.getLogger(BatchService::class.java)
  * 커밋 여부 불명) 대상 조건이 그대로 남으므로 다음 실행의 대상이다. 카드 취소 실패(409 PG_UNAVAILABLE)는 WARN, 그 밖은 ERROR로 남긴다.
  * 격리하지 않는 순회(기동 시 전환, weekly-settlement 안의 auto-confirm)는 forEach를 그대로 쓴다(예외가 전파된다).
  */
-private fun BatchTargets.forEachIsolated(batch: String, target: BatchTarget, now: Instant, handle: (Long) -> Boolean): BatchResult {
+internal fun BatchTargets.forEachIsolated(batch: String, target: BatchTarget, now: Instant, handle: (Long) -> Boolean): BatchResult {
     var failed = 0
     val processed = forEach(target, now) { id ->
         try {
@@ -76,6 +76,11 @@ class BatchService(
     private val pointExpiry: PointExpiryBatch,
     private val gradeRecalc: GradeRecalcBatch,
     private val weeklySettlement: WeeklySettlementBatch,
+    private val ratingRecalc: RatingRecalcBatch,
+    private val sellerGradeRecalc: SellerGradeRecalcBatch,
+    private val rebateSettlement: RebateSettlementBatch,
+    private val monthlyStatement: MonthlyStatementBatch,
+    private val taxInvoiceIssue: TaxInvoiceIssueBatch,
 ) {
     private val log = LoggerFactory.getLogger(BatchService::class.java)
 
@@ -91,6 +96,11 @@ class BatchService(
             "point-expiry" -> pointExpiry.run(now)
             "grade-recalc" -> gradeRecalc.run(now)
             "weekly-settlement" -> BatchResult(weeklySettlement.run(now), failed = 0)
+            "rating-recalc" -> ratingRecalc.run(now)
+            "seller-grade-recalc" -> sellerGradeRecalc.run(now)
+            "rebate-settlement" -> rebateSettlement.run(now)
+            "monthly-statement" -> monthlyStatement.run(now)
+            "tax-invoice-issue" -> taxInvoiceIssue.run(now)
             else -> invalidRequest("알 수 없는 배치: $name")
         }
         log.info(

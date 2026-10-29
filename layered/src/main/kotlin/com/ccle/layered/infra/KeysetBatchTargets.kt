@@ -2,8 +2,10 @@ package com.ccle.layered.infra
 
 import com.ccle.layered.domain.BatchTarget
 import com.ccle.layered.domain.BatchTargets
+import com.ccle.layered.domain.ClosedMonth
 import com.ccle.layered.domain.GradePeriod
 import com.ccle.layered.domain.OrderItem
+import com.ccle.layered.domain.SellerGradeMonth
 import jakarta.persistence.EntityManager
 import org.springframework.stereotype.Component
 import java.time.Instant
@@ -42,6 +44,28 @@ class KeysetBatchTargets(private val em: EntityManager) : BatchTargets {
             ::nowParam,
         )
         BatchTarget.GRADE_CHANGES -> Spec("users", "$noGradeHistoryAtD AND t.grade <> $gradeSql") { gradeParams(GradePeriod.of(it)) }
+        BatchTarget.REVIEWED_SELLERS -> Spec("users", "EXISTS (SELECT 1 FROM reviews r WHERE r.seller_id = t.id)") { emptyMap() }
+        BatchTarget.SELLER_GRADE_PENDING -> Spec(
+            "users",
+            "EXISTS (SELECT 1 FROM settlements s WHERE s.seller_id = t.id)" +
+                " AND NOT EXISTS (SELECT 1 FROM seller_grades g WHERE g.seller_id = t.id AND g.effective_from = :d)",
+        ) { mapOf("d" to SellerGradeMonth.of(it).effectiveFrom) }
+        BatchTarget.REBATE_PENDING -> Spec(
+            "users",
+            "EXISTS (SELECT 1 FROM seller_grades g WHERE g.seller_id = t.id AND g.effective_from = :m)" +
+                " AND NOT EXISTS (SELECT 1 FROM fee_rebates f WHERE f.seller_id = t.id AND f.month = :m)",
+        ) { mapOf("m" to ClosedMonth.lastMonthOf(it)) }
+        BatchTarget.MONTHLY_STATEMENT_PENDING -> Spec(
+            "users",
+            "EXISTS (SELECT 1 FROM settlements s WHERE s.seller_id = t.id AND s.period_start >= :m AND s.period_start < :next)" +
+                " AND NOT EXISTS (SELECT 1 FROM monthly_statements ms WHERE ms.seller_id = t.id AND ms.month = :m)",
+        ) { ClosedMonth.lastMonthOf(it).let { m -> mapOf("m" to m, "next" to m.plusMonths(1)) } }
+        BatchTarget.UNINVOICED_SETTLEMENTS -> Spec(
+            "settlements",
+            "NOT EXISTS (SELECT 1 FROM tax_invoices v WHERE v.settlement_id = t.id)" +
+                " AND ((t.status = 'PAID' AND t.paid_at <= :now) OR t.status = 'CARRIED')",
+            ::nowParam,
+        )
     }
 
     private fun nowParam(now: Instant): Map<String, Any> = mapOf("now" to now)
