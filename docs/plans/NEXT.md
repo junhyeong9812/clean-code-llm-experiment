@@ -4,7 +4,7 @@
 
 ## 기준
 
-- 마지막 갱신: 2026-10-30 · 직전 완료 작업: `docs/plans/2026-10-29/judge-equiv-stage-a/`(판정기 contract3 단계·보조 성공, equiv 16종 같음) · 병합 상태: 병합·push(2026-10-30 사용자 결정)
+- 마지막 갱신: 2026-10-30 · 직전 완료 작업: `docs/plans/2026-10-30/contract-b/`(단계 A 보충 계약 ADR-0007 §20 채택) · 병합 상태: 병합·push(2026-10-30 사용자 결정)
 
 ## 다음 작업 후보 (우선순위순)
 
@@ -17,7 +17,8 @@
 - 진행: god 구현 완료 — contract3 168/168(테스트-ADR 어긋남 0, 리뷰로 동시성 테스트 +4·입력 테스트 +2), 기존 239·equiv 12/12 그대로, 고칠 곳 25/25. 리뷰가 찾은 결함 대부분은 **FK 검사의 KEY SHARE로 생기는 잠금 순서 역전**(교착)이었다 — ADR §19의 9-1·9-2·10-1·10-2.
 - 진행: layered 구현 완료 — contract3 168/168(묶음 A·B·C 모두 첫 실행 green, 테스트-ADR 어긋남 0), 기존 239·equiv 12/12 그대로, 고칠 곳 33/33, 기존 파일 변경은 허용 3파일(BatchService·BatchTargets·KeysetBatchTargets)만. 리뷰는 god와의 문장 단위 대조(SQL·잠금·엔티티 19·DTO 34·400 메시지) — 차이 1건(리뷰 작성의 count가 상태 검사보다 먼저, LA-1) 수정, 교착류 결함 0(god에서 고친 잠금 순서를 그대로 옮김).
 - 진행: 판정기 contract3 연결 + equiv 단계 A 완료 — 판정 회귀 contract3 단계(기준 168, ADR-0005 개정 3), 단계별 기준 수 검사(regression-exclude가 닿는 단계만 끔), 보조 성공 `success_stage12`(ADR-0006 §6.1-5), 실판정 스모크 두 앱 122·89·168 pass·깬 사본 contract3 fail 집계 확인. equiv 16종(새 sa-a·sa-b·sa-c·sa-lock — 배치 11·격리 3·§19 잠금 4경로·교착 상대 동시 쌍) 같음, **두 앱 차이 0**(정적 리뷰 판정이 동적으로 확인됨), 음성 대조 2종 검출.
-- 다음 착수: **크기 확인(ADR-0006 §6.1의 7)** — god 5,228줄 < 5,500. 기능 추가 개정(약 300줄+ — 두 앱·contract3·equiv까지 같은 사이클)인지, 기준 재검토인지 결정부터(새 작업 폴더 spec). 그 뒤 T1·C2 이식·재채택(이식 때 정답 패치가 contract3 회귀를 깨지 않는지 `runner.py check --patch fix` 실측 — C2는 regression-exclude가 contract2 메서드 하나라 contract3 기준 168 검사는 유지됨).
+- 진행: 크기 확인 — god 5,228 < 5,500 → 사전 등록 규칙대로 보충 묶음 계약 ADR-0007 §20(A13~A17, 스키마 무변경, 추정 +510~590) 채택(2026-10-30). `docs/plans/2026-10-30/contract-b/`.
+- 다음 착수: **단계 A 보충 구현** — 새 작업 폴더 spec부터. contract3 보충 테스트(blind) → god → layered(단계 A 파일 메서드 추가 허용, 기존 55파일은 허용 목록만) → equiv 새 시나리오(price-alert-rearm·notification-purge·A16 flush 순서) → 판정 기준 contract3 168 갱신 + ADR-0005 숫자 → god 실측(5,500 미만이면 규칙 반복). 그 뒤 T1·C2 이식·재채택.
 - 파일럿 A 전 확인(이 작업 리뷰 JR-2·JR-4·JR-23): ① `experiment/results*/held`가 비어 있음(재판정이 현재 5단계로 돈다 — 2026-10-30 기준 0) ② 무수정 사본을 `--parallel 3`으로 판정해 contract3 SlowTrigger 경합 관측(8초) 테스트의 부하 실패율 측정 — 0이 아니면 '같은 테스트 재실행 1회 뒤 둘 다 실패해야 fail' 재시도 규칙을 ADR-0005 개정으로 검토(경합 미관측을 infra로 돌리면 잠금을 없앤 진짜 회귀까지 무효가 되므로 그 방식은 기각).
 - 구현 때 확인할 [구현 검증]: 새 FK 27(verify 34 → 61) 재계수 · 시드 행 수(§14 표) · verify '시드 빌드에서만' 검사를 켜는 psql 변수 이름 · god 증가 실측(ADR-0007 추정 ≈ 3,390).
 - 발생 가능 문제: contract3 162개는 실행으로 한 번도 green이 된 적 없다 — 구현 때 실패가 나오면 ADR과 대조해 테스트 결함인지 먼저 판정(리뷰 3루프에서 정답 구현도 실패할 결함이 루프마다 1~2개씩 나왔다: 예약 수 산수·'없음' 단언 범위·PUT 기본값 덮어쓰기) · contract3 픽스처가 T1·C2 회귀에 묶일 위험(ADR-0007 §18 지침) · 세금계산서 정정의 UPDATE→INSERT 순서(ORM flush, §10.3) · 줄 수 추정(≈3,230)이 외삽이라 5,500 미만이면 묶음 추가 개정 · 판정기 결과 경로가 contract2Test 고정(judge.py 결과 수집부) · Marketplace.kt 4천 줄 전후의 Read·출력 절단(ADR-0006 위협 7) · seedgen 후처리의 CSV 재독 비용(1k는 작음).
@@ -56,6 +57,7 @@
 
 ## 완료 이력
 
+- 완료 → `docs/plans/2026-10-30/contract-b/` (단계 A 보충 계약 A13~A17·ADR-0006 개정 2 — 리뷰 반영 11)
 - 완료 → `docs/plans/2026-10-29/judge-equiv-stage-a/` (판정 회귀 contract3·success_stage12·실판정 스모크, equiv sa-a·b·c·lock — 두 앱 차이 0, 리뷰 3루프 + post-fix 채택 24·기각 3·기록 1)
 - 완료 → `docs/plans/2026-10-29/layered-stage-a/` (layered A1~A12, contract3 168, 새 파일 54·허용 3파일, 리뷰 묶음 1패스 ×3 채택 5·기각 1 + 누적 1회차 지적 0으로 종료)
 - 완료 → `docs/plans/2026-10-29/god-stage-a/` (god A1~A12, contract3 168, 리뷰 묶음 1패스 ×3 + 누적 3루프 채택 14·기각 1 — 교착 5건 수정)
