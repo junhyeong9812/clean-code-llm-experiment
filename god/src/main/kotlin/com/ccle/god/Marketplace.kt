@@ -2466,13 +2466,22 @@ class Marketplace(
         if (productSizeId == null) badRequest("productSizeId가 필요하다")
         val now = clock.now()
         return tx.execute {
-            em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+            keyShareSize(productSizeId)
             lockUser(userId)
             if (wishOf(userId, productSizeId) != null) stateConflict("이미 위시리스트에 있는 사이즈: $productSizeId")
             val wish = Wishlist(userId = userId, productSizeId = productSizeId, createdAt = now)
             em.persist(wish)
             WishlistEntryView(wish.productSizeId, wish.createdAt)
         }!!
+    }
+
+    /**
+     * 사이즈 존재 확인 + KEY SHARE(§19의 10-2). 사용자 행 잠금보다 먼저 잡아 잠금 순서를 기존 입찰·결제 만료 경로와 같은
+     * "사이즈 → 사용자"로 둔다(뒤의 INSERT가 FK 검사로 사이즈에 KEY SHARE를 걸 때 순서가 거꾸로 되면 교착). 없으면 404.
+     */
+    private fun keyShareSize(productSizeId: Long) {
+        em.createNativeQuery("SELECT id FROM product_sizes WHERE id = :id FOR KEY SHARE").setParameter("id", productSizeId)
+            .resultList.ifEmpty { notFound("없는 사이즈: $productSizeId") }
     }
 
     /** 위시리스트 삭제(§8.1·§19의 10-1). 사용자 행 FOR UPDATE 뒤 다시 찾는다 — 내 위시리스트에 없으면 404(동시 삭제는 하나만 200). 행을 지운다. */
@@ -2514,7 +2523,7 @@ class Marketplace(
         if (targetPrice <= 0) badRequest("targetPrice는 0보다 커야 한다: $targetPrice")
         val now = clock.now()
         return tx.execute {
-            em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+            keyShareSize(productSizeId)
             lockUser(userId)
             val active = em.createQuery(
                 "SELECT count(a) FROM PriceAlert a WHERE a.userId = :user AND a.productSizeId = :size AND a.status = 'ACTIVE'",
