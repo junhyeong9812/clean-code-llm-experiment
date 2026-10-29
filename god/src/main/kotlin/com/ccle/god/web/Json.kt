@@ -14,6 +14,7 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 
 // 요청 본문 파싱과 응답 시각 형식. 규칙은 없다(값이 있는지·범위 안인지는 Marketplace가 본다).
 //
@@ -76,6 +77,16 @@ fun JsonNode.booleanOrNull(field: String): Boolean? {
     if (n == null || n.isNull) return null
     if (!n.isBoolean) invalid("$field 는 true 또는 false여야 한다")
     return n.booleanValue()
+}
+
+/** 시각 필드(ADR-0007 §19의 5). 없거나 null이면 null, 오프셋 포함 ISO-8601 문자열이 아니면 400. */
+fun JsonNode.instantOrNull(field: String): Instant? {
+    val text = textOrNull(field) ?: return null
+    return try {
+        OffsetDateTime.parse(text).toInstant()
+    } catch (e: DateTimeParseException) {
+        invalid("$field 는 오프셋 포함 ISO-8601 시각이어야 한다: $text")
+    }
 }
 
 /** 정수 배열 필드. 없거나 null이면 null, 정수 배열이 아니면 400. */

@@ -371,3 +371,64 @@ class AdminAuditLog(
     var detail: String? = null,
     var createdAt: Instant,
 )
+
+@Entity
+@Table(name = "notifications")
+class Notification(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var userId: Long,
+    var kind: String,
+    var refId: Long,
+    var dedupeKey: String,
+    var createdAt: Instant,
+    var readAt: Instant? = null,
+)
+
+@Entity
+@Table(name = "wishlists")
+class Wishlist(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var userId: Long,
+    var productSizeId: Long,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "price_alerts")
+class PriceAlert(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var userId: Long,
+    var productSizeId: Long,
+    var targetPrice: Long,
+    var status: String,
+    var expiresAt: Instant,
+    var triggeredBidId: Long? = null,
+    var closedAt: Instant? = null,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "shipment_tracking_events")
+class ShipmentTrackingEvent(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var orderItemId: Long,
+    var carrier: String,
+    var trackingNo: String,
+    var eventType: String,
+    var occurredAt: Instant,
+    var receivedAt: Instant,
+)
+
+@Entity
+@Table(name = "shipment_delays")
+class ShipmentDelay(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var orderItemId: Long,
+    var kind: String,
+    var detectedAt: Instant,
+)

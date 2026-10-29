@@ -189,3 +189,40 @@ data class TaxInvoiceView(
 
 /** 정정 응답(§10.3): cancelled = 새 CANCEL 행, reissued = 새 ISSUE 행. */
 data class TaxInvoiceCorrected(val cancelled: TaxInvoiceView, val reissued: TaxInvoiceView)
+
+/** 알림 모양(§7.2). */
+data class NotificationView(val notificationId: Long, val kind: String, val refId: Long, val createdAt: Instant, val readAt: Instant?)
+
+/** 위시리스트 등록·삭제 응답(§8.1). */
+data class WishlistEntryView(val productSizeId: Long, val createdAt: Instant)
+
+/** 위시리스트 조회 1행(§8.1). bestSell = 체결 가능한 SELL 최저가(없으면 null), activeAlert = 그 사이즈의 ACTIVE 가격 알림(§19의 10). */
+data class WishlistItemView(val productSizeId: Long, val createdAt: Instant, val bestSell: Long?, val activeAlert: PriceAlertView?)
+
+/** 가격 알림 모양(§8.2). */
+data class PriceAlertView(
+    val alertId: Long,
+    val productSizeId: Long,
+    val targetPrice: Long,
+    val status: String,
+    val expiresAt: Instant,
+    val triggeredBidId: Long?,
+    val closedAt: Instant?,
+    val createdAt: Instant,
+)
+
+/** 배송 추적 이벤트 모양(§12.2). */
+data class TrackingEventView(
+    val eventId: Long,
+    val orderItemId: Long,
+    val carrier: String,
+    val trackingNo: String,
+    val eventType: String,
+    val occurredAt: Instant,
+    val receivedAt: Instant,
+)
+
+data class ShipmentDelayView(val kind: String, val detectedAt: Instant)
+
+/** 배송 추적 조회(§12.2): events는 occurredAt·id 오름차순, delays는 id 오름차순. */
+data class TrackingView(val events: List<TrackingEventView>, val delays: List<ShipmentDelayView>)

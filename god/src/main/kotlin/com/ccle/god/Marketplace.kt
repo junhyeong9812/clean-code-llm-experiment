@@ -8,12 +8,14 @@ import com.ccle.god.entity.Dispute
 import com.ccle.god.entity.FeeRebate
 import com.ccle.god.entity.Inspection
 import com.ccle.god.entity.MonthlyStatement
+import com.ccle.god.entity.Notification
 import com.ccle.god.entity.OrderItem
 import com.ccle.god.entity.PayoutAccountRequest
 import com.ccle.god.entity.PgTransaction
 import com.ccle.god.entity.PointAllocation
 import com.ccle.god.entity.PointBalance
 import com.ccle.god.entity.PointLedgerEntry
+import com.ccle.god.entity.PriceAlert
 import com.ccle.god.entity.ProductSize
 import com.ccle.god.entity.PurchaseOrder
 import com.ccle.god.entity.Refund
@@ -23,9 +25,12 @@ import com.ccle.god.entity.SellerPenalty
 import com.ccle.god.entity.SellerRating
 import com.ccle.god.entity.Settlement
 import com.ccle.god.entity.SettlementItem
+import com.ccle.god.entity.ShipmentDelay
+import com.ccle.god.entity.ShipmentTrackingEvent
 import com.ccle.god.entity.TaxInvoice
 import com.ccle.god.entity.Trade
 import com.ccle.god.entity.User
+import com.ccle.god.entity.Wishlist
 import com.ccle.god.web.ApiException
 import com.ccle.god.web.BatchResult
 import com.ccle.god.web.BidCancelled
@@ -37,12 +42,14 @@ import com.ccle.god.web.DisputeView
 import com.ccle.god.web.FeeRebateView
 import com.ccle.god.web.ItemView
 import com.ccle.god.web.MonthlyStatementView
+import com.ccle.god.web.NotificationView
 import com.ccle.god.web.OrderItemView
 import com.ccle.god.web.OrderView
 import com.ccle.god.web.PaymentResult
 import com.ccle.god.web.PayoutAccountView
 import com.ccle.god.web.PayoutRequestView
 import com.ccle.god.web.PointsView
+import com.ccle.god.web.PriceAlertView
 import com.ccle.god.web.RefundView
 import com.ccle.god.web.ReviewView
 import com.ccle.god.web.SellerGradeView
@@ -50,9 +57,14 @@ import com.ccle.god.web.SellerGradesView
 import com.ccle.god.web.SellerReviewsView
 import com.ccle.god.web.SettlementItemView
 import com.ccle.god.web.SettlementView
+import com.ccle.god.web.ShipmentDelayView
 import com.ccle.god.web.TaxInvoiceCorrected
 import com.ccle.god.web.TaxInvoiceView
+import com.ccle.god.web.TrackingEventView
+import com.ccle.god.web.TrackingView
 import com.ccle.god.web.TradeView
+import com.ccle.god.web.WishlistEntryView
+import com.ccle.god.web.WishlistItemView
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
 import jakarta.persistence.PersistenceException
@@ -1303,6 +1315,9 @@ class Marketplace(
             "rebate-settlement" -> settleRebates(now)
             "monthly-statement" -> writeMonthlyStatements(now)
             "tax-invoice-issue" -> issueTaxInvoices(now)
+            "deadline-reminder" -> remindDeadlines(now)
+            "price-alert-scan" -> scanPriceAlerts(now)
+            "delivery-delay-scan" -> scanDeliveryDelays(now)
             else -> badRequest("알 수 없는 배치: $name")
         }
         log.info(
@@ -2311,6 +2326,326 @@ class Marketplace(
 
     private fun taxInvoiceView(v: TaxInvoice) =
         TaxInvoiceView(v.id!!, v.settlementId, v.kind, v.status, v.supplyAmount, v.vatAmount, v.totalAmount, v.refInvoiceId, v.issuedAt)
+
+    // ---- A4 알림 (ADR-0007 §7) ----
+
+    /**
+     * deadline-reminder 한 종류(§7.1 표의 한 행). 별칭 t = 훑는 표. condition = 대상 조건(dedupe 제외), recipient = 받는 사람 식,
+     * dedupeKey = dedupe_key 식(대상 조건의 NOT EXISTS와 INSERT가 같은 식을 쓴다).
+     */
+    private class Reminder(
+        val kind: String,
+        val table: String,
+        val condition: String,
+        val params: Map<String, Any>,
+        val recipient: String,
+        val dedupeKey: String,
+    )
+
+    /**
+     * deadline-reminder(§7.1): 여섯 종류를 표의 행 순서대로 하나씩 끝까지 훑는다(종류마다 그 표의 id 순). 대상 1건 = 알림 1행 INSERT(잠금 없음).
+     * 기한·제한은 저장된 열을 비교만 한다. 반환 = 만든 알림 수.
+     */
+    private fun remindDeadlines(now: Instant): BatchResult {
+        val restrictionKey = { kind: String, column: String ->
+            "'$kind:' || t.id || ':' || CAST(floor(extract(epoch FROM t.$column)) AS bigint)"
+        }
+        val reminders = listOf(
+            Reminder(
+                "PAYMENT_DUE_SOON", "trades",
+                "t.status = 'AWAITING_PAYMENT' AND t.payment_due_at > :now AND t.payment_due_at <= :after10m",
+                mapOf("now" to now, "after10m" to now.plus(Duration.ofMinutes(10))),
+                "t.buyer_id", "'PAYMENT_DUE_SOON:' || t.id",
+            ),
+            Reminder(
+                "SHIPMENT_DUE_SOON", "order_items",
+                "t.status = 'PAID' AND t.paid_at <= :before2d AND t.paid_at > :before3d",
+                mapOf("before2d" to now.minus(Duration.ofDays(2)), "before3d" to now.minus(Duration.ofDays(3))),
+                "(SELECT tr.seller_id FROM trades tr WHERE tr.id = t.trade_id)", "'SHIPMENT_DUE_SOON:' || t.id",
+            ),
+            Reminder(
+                "DISPUTE_WINDOW_CLOSING", "order_items",
+                "t.status = 'CONFIRMED' AND t.confirmed_at <= :before12d AND t.confirmed_at >= :before14d",
+                mapOf("before12d" to now.minus(Duration.ofDays(12)), "before14d" to now.minus(Duration.ofDays(14))),
+                "(SELECT o.buyer_id FROM orders o WHERE o.id = t.order_id)", "'DISPUTE_WINDOW_CLOSING:' || t.id",
+            ),
+            Reminder(
+                "SETTLEMENT_PAID", "settlements",
+                "t.status = 'PAID' AND t.paid_at > :before7d AND t.paid_at <= :now",
+                mapOf("before7d" to now.minus(Duration.ofDays(7)), "now" to now),
+                "t.seller_id", "'SETTLEMENT_PAID:' || t.id",
+            ),
+            Reminder(
+                "PURCHASE_RESTRICTED", "users", "t.purchase_restricted_until > :now", mapOf("now" to now),
+                "t.id", restrictionKey("PURCHASE_RESTRICTED", "purchase_restricted_until"),
+            ),
+            Reminder(
+                "SALE_RESTRICTED", "users", "t.sale_restricted_until > :now", mapOf("now" to now),
+                "t.id", restrictionKey("SALE_RESTRICTED", "sale_restricted_until"),
+            ),
+        )
+        var processed = 0
+        var failed = 0
+        for (r in reminders) {
+            val result = forEachTarget(
+                r.table,
+                "${r.condition} AND NOT EXISTS (SELECT 1 FROM notifications n WHERE n.dedupe_key = ${r.dedupeKey})",
+                r.params,
+                isolatedAs = "deadline-reminder",
+            ) { id ->
+                tx.execute {
+                    em.createNativeQuery(
+                        "INSERT INTO notifications (user_id, kind, ref_id, dedupe_key, created_at)" +
+                            " SELECT ${r.recipient}, '${r.kind}', t.id, ${r.dedupeKey}, :now FROM ${r.table} t WHERE t.id = :id",
+                    ).setParameter("now", now).setParameter("id", id).executeUpdate() == 1
+                }!!
+            }
+            processed += result.processed
+            failed += result.failed
+        }
+        return BatchResult(processed, failed)
+    }
+
+    /** `GET /me/notifications`(§7.2): 본인 알림 notificationId 오름차순. unread는 "true"·"false"만(§19의 3), true면 read_at NULL만. */
+    fun notifications(userId: Long, unread: String?): List<NotificationView> {
+        if (unread != null && unread != "true" && unread != "false") badRequest("unread는 true 또는 false: $unread")
+        val jpql = "SELECT n FROM Notification n WHERE n.userId = :user" +
+            (if (unread == "true") " AND n.readAt IS NULL" else "") + " ORDER BY n.id"
+        return em.createQuery(jpql, Notification::class.java).setParameter("user", userId).resultList.map { notificationView(it) }
+    }
+
+    /** 알림 읽음(§7.2). 본인 것만(403), 알림 행 FOR UPDATE 뒤 이미 읽었으면 409(멱등 아님). read_at = 현재. */
+    fun readNotification(userId: Long, notificationId: Long): NotificationView {
+        val now = clock.now()
+        return tx.execute {
+            val notification = em.find(Notification::class.java, notificationId) ?: notFound("없는 알림: $notificationId")
+            if (notification.userId != userId) throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "남의 알림: $notificationId")
+            lockRow("notifications", notificationId)
+            em.refresh(notification)
+            if (notification.readAt != null) stateConflict("이미 읽은 알림: $notificationId")
+            notification.readAt = now
+            notificationView(notification)
+        }!!
+    }
+
+    private fun notificationView(n: Notification) = NotificationView(n.id!!, n.kind, n.refId, n.createdAt, n.readAt)
+
+    // ---- A5 위시리스트·가격 알림 (ADR-0007 §8) ----
+
+    /** 위시리스트 등록(§8.1). 없는 사이즈 404, 사용자 행 FOR UPDATE 뒤 이미 있으면 409. */
+    fun addWish(userId: Long, productSizeId: Long?): WishlistEntryView {
+        if (productSizeId == null) badRequest("productSizeId가 필요하다")
+        val now = clock.now()
+        return tx.execute {
+            em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+            lockUser(userId)
+            if (wishOf(userId, productSizeId) != null) stateConflict("이미 위시리스트에 있는 사이즈: $productSizeId")
+            val wish = Wishlist(userId = userId, productSizeId = productSizeId, createdAt = now)
+            em.persist(wish)
+            WishlistEntryView(wish.productSizeId, wish.createdAt)
+        }!!
+    }
+
+    /** 위시리스트 삭제(§8.1). 내 위시리스트에 없으면 404. 행을 지운다. */
+    fun removeWish(userId: Long, productSizeId: Long): WishlistEntryView =
+        tx.execute {
+            val wish = wishOf(userId, productSizeId) ?: notFound("위시리스트에 없는 사이즈: $productSizeId")
+            em.remove(wish)
+            WishlistEntryView(wish.productSizeId, wish.createdAt)
+        }!!
+
+    private fun wishOf(userId: Long, productSizeId: Long): Wishlist? =
+        em.createQuery("SELECT w FROM Wishlist w WHERE w.userId = :user AND w.productSizeId = :size", Wishlist::class.java)
+            .setParameter("user", userId).setParameter("size", productSizeId).resultList.firstOrNull()
+
+    /**
+     * `GET /me/wishlist`(§8.1): productSizeId 오름차순. bestSell = ACTIVE이고 expires_at > 현재인 SELL 입찰 최저가(호가와 같은 기준),
+     * activeAlert = 그 사이즈의 내 ACTIVE 가격 알림(§19의 10).
+     */
+    fun wishlist(userId: Long): List<WishlistItemView> = snapshotTx.execute {
+        val now = clock.now()
+        em.createQuery("SELECT w FROM Wishlist w WHERE w.userId = :user ORDER BY w.productSizeId", Wishlist::class.java)
+            .setParameter("user", userId).resultList.map { w ->
+                val bestSell = em.createNativeQuery(
+                    "SELECT min(price) FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now",
+                ).setParameter("size", w.productSizeId).setParameter("now", now).singleResult as Number?
+                val alert = em.createQuery(
+                    "SELECT a FROM PriceAlert a WHERE a.userId = :user AND a.productSizeId = :size AND a.status = 'ACTIVE'",
+                    PriceAlert::class.java,
+                ).setParameter("user", userId).setParameter("size", w.productSizeId).resultList.firstOrNull()
+                WishlistItemView(w.productSizeId, w.createdAt, bestSell?.toLong(), alert?.let { priceAlertView(it) })
+            }
+    }!!
+
+    /** 가격 알림 등록(§8.2). targetPrice > 0, 없는 사이즈 404, 사용자 행 FOR UPDATE 뒤 같은 사이즈 ACTIVE가 있으면 409. expires_at = 현재 + 60일. */
+    fun addPriceAlert(userId: Long, productSizeId: Long?, targetPrice: Long?): PriceAlertView {
+        if (productSizeId == null) badRequest("productSizeId가 필요하다")
+        if (targetPrice == null) badRequest("targetPrice가 필요하다")
+        if (targetPrice <= 0) badRequest("targetPrice는 0보다 커야 한다: $targetPrice")
+        val now = clock.now()
+        return tx.execute {
+            em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+            lockUser(userId)
+            val active = em.createQuery(
+                "SELECT count(a) FROM PriceAlert a WHERE a.userId = :user AND a.productSizeId = :size AND a.status = 'ACTIVE'",
+                Long::class.javaObjectType,
+            ).setParameter("user", userId).setParameter("size", productSizeId).singleResult
+            if (active > 0) stateConflict("같은 사이즈의 ACTIVE 가격 알림이 있다: $productSizeId")
+            val alert = PriceAlert(
+                userId = userId,
+                productSizeId = productSizeId,
+                targetPrice = targetPrice,
+                status = "ACTIVE",
+                expiresAt = now.plus(Duration.ofDays(60)),
+                createdAt = now,
+            )
+            em.persist(alert)
+            priceAlertView(alert)
+        }!!
+    }
+
+    /** 가격 알림 취소(§8.2). 본인 것만, 알림 행 FOR UPDATE 뒤 ACTIVE가 아니면 409. → CANCELLED, closed_at = 현재. */
+    fun cancelPriceAlert(userId: Long, alertId: Long): PriceAlertView {
+        val now = clock.now()
+        return tx.execute {
+            val alert = em.find(PriceAlert::class.java, alertId) ?: notFound("없는 가격 알림: $alertId")
+            if (alert.userId != userId) throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "남의 가격 알림: $alertId")
+            lockRow("price_alerts", alertId)
+            em.refresh(alert)
+            if (alert.status != "ACTIVE") stateConflict("ACTIVE가 아닌 가격 알림: $alertId (${alert.status})")
+            alert.status = "CANCELLED"
+            alert.closedAt = now
+            priceAlertView(alert)
+        }!!
+    }
+
+    /** `GET /me/price-alerts`(§8.2): alertId 오름차순. */
+    fun priceAlerts(userId: Long): List<PriceAlertView> =
+        em.createQuery("SELECT a FROM PriceAlert a WHERE a.userId = :user ORDER BY a.id", PriceAlert::class.java)
+            .setParameter("user", userId).resultList.map { priceAlertView(it) }
+
+    private fun priceAlertView(a: PriceAlert) =
+        PriceAlertView(a.id!!, a.productSizeId, a.targetPrice, a.status, a.expiresAt, a.triggeredBidId, a.closedAt, a.createdAt)
+
+    /**
+     * price-alert-scan(§8.3): ACTIVE 가격 알림(id 순). 알림 1건 = 그 행을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다.
+     * 1 expires_at ≤ 현재 → EXPIRED. 2 주인이 구매 제한 중이면 그대로(세지 않음). 3 그 사이즈의 체결 가능한 SELL 중 price ≤ target인
+     * price, created_at, id 순 첫 번째 → TRIGGERED + 알림 PRICE_ALERT. 입찰은 읽기만 한다. 반환 = 1 또는 3으로 바뀐 알림 수.
+     */
+    private fun scanPriceAlerts(now: Instant): BatchResult =
+        forEachTarget("price_alerts", "t.status = 'ACTIVE'", emptyMap(), isolatedAs = "price-alert-scan") { alertId ->
+            tx.execute {
+                lockRow("price_alerts", alertId)
+                val alert = em.find(PriceAlert::class.java, alertId)
+                if (alert.status != "ACTIVE") return@execute false
+                if (!alert.expiresAt.isAfter(now)) {
+                    alert.status = "EXPIRED"
+                    alert.closedAt = now
+                    return@execute true
+                }
+                if (em.find(User::class.java, alert.userId).purchaseRestrictedUntil?.isAfter(now) == true) return@execute false
+                val bidId = em.createNativeQuery(
+                    "SELECT id FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now" +
+                        " AND price <= :target ORDER BY price, created_at, id LIMIT 1",
+                ).setParameter("size", alert.productSizeId).setParameter("now", now).setParameter("target", alert.targetPrice)
+                    .resultList.firstOrNull() as Number? ?: return@execute false
+                alert.status = "TRIGGERED"
+                alert.triggeredBidId = bidId.toLong()
+                alert.closedAt = now
+                em.persist(
+                    Notification(userId = alert.userId, kind = "PRICE_ALERT", refId = alertId, dedupeKey = "PRICE_ALERT:$alertId", createdAt = now),
+                )
+                true
+            }!!
+        }
+
+    // ---- A11 배송 추적 (ADR-0007 §12.2) ----
+
+    private val carriers = setOf("CJ", "HANJIN", "LOTTE", "POST")
+    private val trackingEventTypes = setOf("PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED")
+    private val trackableItemStatuses = setOf("SHIPPED_TO_CENTER", "INSPECTING", "DELIVERING", "DELIVERED")
+
+    /**
+     * 배송 추적 이벤트 기록(§12.2). enum은 문서 글자 그대로, trackingNo 1~30자(받은 그대로 저장), occurredAt ≤ 현재(아니면 400).
+     * 없는 항목 404, 항목 상태가 SHIPPED_TO_CENTER·INSPECTING·DELIVERING·DELIVERED가 아니면 409. 1행(received_at = 현재)
+     * + 감사 TRACKING_EVENT(target = 새 이벤트 id, detail = event_type). 항목 상태는 바꾸지 않는다.
+     */
+    fun recordTrackingEvent(itemId: Long, carrier: String?, trackingNo: String?, eventType: String?, occurredAt: Instant?): TrackingEventView {
+        if (carrier == null) badRequest("carrier가 필요하다")
+        if (carrier !in carriers) badRequest("알 수 없는 carrier: $carrier")
+        if (trackingNo == null) badRequest("trackingNo가 필요하다")
+        if (textLength(trackingNo) !in 1..30) badRequest("trackingNo는 1~30자")
+        if (eventType == null) badRequest("eventType이 필요하다")
+        if (eventType !in trackingEventTypes) badRequest("알 수 없는 eventType: $eventType")
+        if (occurredAt == null) badRequest("occurredAt이 필요하다")
+        val now = clock.now()
+        if (occurredAt.isAfter(now)) badRequest("occurredAt은 현재 이후일 수 없다: $occurredAt")
+
+        return tx.execute {
+            val item = em.find(OrderItem::class.java, itemId) ?: notFound("없는 주문 항목: $itemId")
+            if (item.status !in trackableItemStatuses) stateConflict("배송 추적을 기록할 수 없는 주문 항목: $itemId (${item.status})")
+            val event = ShipmentTrackingEvent(
+                orderItemId = itemId,
+                carrier = carrier,
+                trackingNo = trackingNo,
+                eventType = eventType,
+                occurredAt = occurredAt,
+                receivedAt = now,
+            )
+            em.persist(event)
+            audit("TRACKING_EVENT", event.id!!, eventType, now)
+            trackingEventView(event)
+        }!!
+    }
+
+    /** `GET /order-items/{id}/tracking`(§12.2): 구매자 또는 판매자만. events는 occurredAt·id 오름차순, delays는 id 오름차순. */
+    fun tracking(userId: Long, itemId: Long): TrackingView = snapshotTx.execute {
+        val item = em.find(OrderItem::class.java, itemId) ?: notFound("없는 주문 항목: $itemId")
+        val trade = em.find(Trade::class.java, item.tradeId)
+        if (userId != trade.buyerId && userId != trade.sellerId) {
+            throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "구매자도 판매자도 아닌 주문 항목: $itemId")
+        }
+        val events = em.createQuery(
+            "SELECT e FROM ShipmentTrackingEvent e WHERE e.orderItemId = :item ORDER BY e.occurredAt, e.id",
+            ShipmentTrackingEvent::class.java,
+        ).setParameter("item", itemId).resultList.map { trackingEventView(it) }
+        val delays = em.createQuery("SELECT d FROM ShipmentDelay d WHERE d.orderItemId = :item ORDER BY d.id", ShipmentDelay::class.java)
+            .setParameter("item", itemId).resultList.map { ShipmentDelayView(it.kind, it.detectedAt) }
+        TrackingView(events, delays)
+    }!!
+
+    private fun trackingEventView(e: ShipmentTrackingEvent) =
+        TrackingEventView(e.id!!, e.orderItemId, e.carrier, e.trackingNo, e.eventType, e.occurredAt, e.receivedAt)
+
+    /**
+     * delivery-delay-scan(§12.2): 두 종류를 차례로(order_items id 순). SHIPMENT_OVERDUE = PAID이고 paid_at + 3일 ≤ 현재,
+     * DELIVERY_LATE = DELIVERING이고 inspected_at + 5일 ≤ 현재. 같은 (항목, kind) 행이 없을 때만 1행(detected_at = 현재).
+     * 잠금 없음, 항목 상태는 바꾸지 않는다. 반환 = 쓴 행 수.
+     */
+    private fun scanDeliveryDelays(now: Instant): BatchResult {
+        val kinds = listOf(
+            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(Duration.ofDays(3))),
+            Triple("DELIVERY_LATE", "t.status = 'DELIVERING' AND t.inspected_at <= :due", now.minus(Duration.ofDays(5))),
+        )
+        var processed = 0
+        var failed = 0
+        for ((kind, condition, due) in kinds) {
+            val result = forEachTarget(
+                "order_items",
+                "$condition AND NOT EXISTS (SELECT 1 FROM shipment_delays d WHERE d.order_item_id = t.id AND d.kind = '$kind')",
+                mapOf("due" to due),
+                isolatedAs = "delivery-delay-scan",
+            ) { itemId ->
+                tx.execute {
+                    em.persist(ShipmentDelay(orderItemId = itemId, kind = kind, detectedAt = now))
+                    true
+                }!!
+            }
+            processed += result.processed
+            failed += result.failed
+        }
+        return BatchResult(processed, failed)
+    }
 
     // ---- 기동 (ADR-0003 §9의 7) ----
 
