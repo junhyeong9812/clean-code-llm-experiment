@@ -5,9 +5,9 @@ god와 layered에 같은 요청 순서를 보내고 결과를 비교한다. 비�
 
 ```bash
 tools/equiv/run.sh run           # 시나리오 하나
-tools/equiv/run.sh all           # 12종 전부(약 20분)
+tools/equiv/run.sh all           # 16종 전부(약 27분)
 LAYERED_JAR=/path/old.jar tools/equiv/run.sh pay   # jar 지정(GOD_JAR도 같음). 지정하지 않은 앱은 bootJar를 빌드한다
-CONC_N=10 tools/equiv/run.sh conc                  # 동시 요청 쌍 수(기본 30)
+CONC_N=10 tools/equiv/run.sh conc                  # 동시 요청 쌍 수(기본 30. sa-lock도 CONC_N을 읽는다 — 기본 5회)
 tools/equiv/measure-expiry.sh 3  # bid-expiry 소요 시간 측정. god·layered를 교대로 3회(기본 2), 판정 없음
 tools/equiv/measure-batches.sh 2 # 배치 8종(평상시·몰아 처리)·포인트 예약 소요 시간 측정. EXPLAIN 전용 0회차 god + god·layered 교대 2회, 판정 없음(시드 MEASURE_SEED, 기본 500k-s42)
 ```
@@ -43,12 +43,16 @@ tools/equiv/measure-batches.sh 2 # 배치 8종(평상시·몰아 처리)·포인
 | `s2batch` | auto-confirm(시드 포함), point-expiry(배분 있는 묶음), grade-recalc → 승급 뒤 적립률, 각 재실행 0건 | 지연 3초 | + `norm_pg_tx_id` |
 | `settle` | weekly-settlement 시드 전체(좁히지 않음): 한 주 → 재실행 0 → 정산 뒤 분쟁 인정·기각·이월 → 두 주, 정산 조회 | 지연 3초 | + `norm_pg_tx_id` |
 | `iso` | 배치 대상 1건 실패의 격리(트리거로 대상 하나만 실패): bid-expiry·point-expiry·auto-confirm(단독)은 200 `failed` 1 → 트리거 제거 뒤 재실행으로 처리, weekly-settlement는 앞 auto-confirm 실패에서 400 `UNEXPECTED_ERROR`(고정 문구)·정산 행 0 → 재실행으로 정산. 격리 실패 ERROR 로그 건수. 판정은 두 앱 비교다. 시나리오 안의 확인은 두 가지뿐이다 — 주입 경로를 지났는지(`need`), 앱마다 응답과 로그가 맞는지(카드 취소 대상이 없는 이 시나리오에서 응답 `failed` 합 = 격리 실패 ERROR 수, 400 수 ≤ 계약 밖 오류 로그 수 — 어긋나면 exit 2). 계약 자체는 행동 테스트 `BatchIsolationTest`가 단언한다 | 지연 3초 | 공통만 |
+| `sa-a` | 단계 A 묶음 A(ADR-0007 §4·§5·§6·§10·§2.7): seller-grade-recalc(문턱 등급·판매 제한 STANDARD)·rebate-settlement(PAID·시드 ZERO)·monthly-statement(이월·HELD 수)·tax-invoice-issue(ISSUE·HOLD·지급일 전 보류 → 지급일 뒤 발행)와 각 재실행 0, 계산서 정정(연쇄·409), 지급 계좌 요청·판정·조회(INITIAL·REQUEST), 리뷰 작성·삭제·숨김·판매자 조회, rating-recalc(분쟁 숨김 → 기각 해제 → 인정 뒤 유지), 리뷰 기한(30일 정각 201·1초 뒤 409), 감사 로그. 400·401·403·404·409. 정산은 픽스처로 넣는다(09-28 정산이 9월을 닫아 리베이트·정산서는 시드 판매자 전체가 대상) | 지연 3초 | 공통만 |
+| `sa-b` | 단계 A 묶음 B(§7·§8·§12.2): 위시리스트·가격 알림 등록·중복·삭제·조회, price-alert-scan(TRIGGERED — 알림 INSERT 바로 다음이 가격 알림 UPDATE인지 `need`로 확인 · 만료 · 구매 제한 중 그대로), deadline-reminder 6종(시점 셋, 각 재실행 0 = dedupe, 제한 연장 뒤 새 `<E>` 알림, 소수 초 제한 끝의 초 내림 키), 알림 조회(unread)·읽음, 배송 추적 기록(오프셋 없는 시각·미래·enum 400, PAID 409)·조회, delivery-delay-scan 두 종류(각 재실행 0) | 지연 3초 | 공통만 |
+| `sa-c` | 단계 A 묶음 C(§9·§11·§12.1·§12.3): 문의 작성(항목 당사자·제3자 403)·추가 메시지·답변·종결·목록·상세·SLA, inquiry-auto-close(두 시점), price-stats(아래 중앙값, 재실행 0)·시세 조회(92일·93일·형식 400)·최근 체결, 관리자 조회 7종(키셋 `nextAfter` → 다음 페이지, 400), 판매자 프로필 PUT 생성·갱신·조회(onVacation), 입고 슬롯 생성(시드·픽스처 중복 409)·조회·예약(판정 순서의 각 409, 정원과 기한이 함께면 정원)·취소(정각 200·1초 뒤 409)·체크인(시작 전 409·정각 200·+1시간 409)·inbound-no-show | 지연 3초 | 공통만 |
+| `sa-lock` | ADR-0007 §19의 9-1(문의: 주문 → 항목 KEY SHARE)·9-2(리뷰: users id 순 KEY SHARE)·10-1(위시 삭제: 사용자 잠금 뒤 다시 찾기)·10-2(위시·가격 알림 등록: 사이즈 KEY SHARE가 사용자 잠금보다 먼저, 없는 사이즈는 사용자를 잠그지 않음). 직렬 구간은 줄 단위 비교 + 잠금 문장 순서 `need`, 동시 구간(같은 대상 2요청 × `CONC_N`, 기본 5)은 위시 등록·삭제, 가격 알림 등록, 같은 항목 리뷰, 같은 항목 문의 2건, 확정 ∥ 문의 — 쌍의 상태 코드 조합은 시나리오가 기대값과 대조(교착·UNIQUE 위반이면 exit 2) | 지연 3초 | + `norm_conc_pair`, `norm_set_from_mark` |
 
 ## 비교 층 (`build/equiv/<시나리오>/{god,layered}/norm/<층>/`)
 
 | 층 | 원본 | 추출 |
 |---|---|---|
-| 응답 `responses` | `responses.txt`: 요청 1건이 한 줄(메서드, 경로, 멱등 키, 본문, 상태 코드) | 그대로. conc의 동시 쌍 줄만 `norm_conc_pair` |
+| 응답 `responses` | `responses.txt`: 요청 1건이 한 줄(메서드, 경로, 멱등 키, 본문, 상태 코드) | 그대로. conc·sa-lock의 동시 쌍 줄만 `norm_conc_pair` |
 | 새 행 `rows` | `rows/*.txt`: 시나리오의 `dump`·`dump_text` 결과. id는 시작 시 `max(id)`를 뺀 오프셋으로 쓴다. 단계별 덤프와 앱 로그 건수도 여기에 든다 | 그대로 |
 | Hibernate SQL `sql` | `app.log`(`--logging.level.org.hibernate.SQL=debug`, 재기동하면 이어 쓴다) | `ext_hibernate_sql` |
 | DB 문장 로그 `pgstmt` | `pg.log`(`log_statement=all`, 접두 `%a\|`, BEGIN·COMMIT·SET 포함) | `ext_pg_app_statements` → `norm_drop_pool_probe` |
@@ -64,8 +68,8 @@ tools/equiv/measure-batches.sh 2 # 배치 8종(평상시·몰아 처리)·포인
 | `norm_drop_pool_probe` | pgstmt 층(전 시나리오) | 빈 문장 `LOG:  statement: `을 지운다 | pgjdbc `isValid`의 빈 질의다. HikariCP가 500ms 넘게 쉰 연결을 빌려줄 때나 health 확인 때 나가서 요청 사이 간격(부하)에 따라 수가 바뀐다. 앱 문장은 비어 있을 수 없다(명세 §2 재합의 1) |
 | `norm_pg_tx_id` | 덤프 SQL의 식 | `pg_tx_id IS NOT NULL`: 값 대신 있음/없음만 | 가짜 PG가 거래 id를 매번 새로 만든다 |
 | `norm_poll_fold <시작> <끝>` | fail의 sql·pgstmt 층, 두 mark 사이만 | 같은 블록(1~16줄)이 연달아 2번 이상 나오면 한 번 + `⟳ 반복 접음(N줄 블록)`으로 바꾼다 | 같은 키 진 요청은 대기 상한까지 50ms마다 스냅샷을 다시 읽어서 반복 횟수가 시간에 따라 다르다. 블록의 내용·순서와 구간 밖은 그대로 비교한다. **한계:** 구간(두 번째 KC 요청 전체) 안에서 연달아 반복되는 동일 블록은 폴링이 아니어도 접힌다. 또 반복 단위가 통째로 늘어나는 변경(예: 대기 한 번에 같은 스냅샷 읽기를 2회)은 반복 횟수 차이와 구분되지 않아 잡지 못한다(실측: 아래 '가정 2 실증', 명세 재합의 2) |
-| `norm_set_from_mark <표식>` | conc의 sql·pgstmt 층 | 표식 앞은 그대로(줄 단위), 표식 뒤는 중복을 뺀 정렬 문장 집합(`sort -u`). 경계 줄 `== MARK <이름> (이후 집합 비교: 순서·횟수 무시)` | 동시 구간은 두 요청의 SQL이 섞이고 대기 폴링·충돌 재시도 횟수도 달라서 줄 단위 비교가 성립하지 않는다. 순서·횟수는 비교하지 않지만 한쪽에만 있는 문장 종류는 잡는다(명세 재합의 3). 집합에 넣기 전에 pgstmt의 준비 문장 이름 `execute S_<n>:`·`execute <unnamed>:`를 `execute:`로 바꾼다. pgjdbc가 연결별 사용 횟수에 따라 붙이는 이름이라, 동시 구간에서는 연결 배정에 따라 실행마다 달라진다(실측). 표식 앞은 이름을 그대로 비교한다(명세 재합의 4). 앞쪽 직렬 픽스처 요청(입찰·체결 3N건)은 줄 단위로 비교한다 |
-| `norm_conc_pair` | conc의 응답 층, `conc` 줄만 | 쌍마다 한 줄(`conc <a\|b> <회차> orders=<키당 주문 수> trades=<보낸 체결 2개>` + 두 응답의 상태 코드·본문 전체). 두 응답을 id를 가린 값으로 정렬하고, `orderId`·`orderItemId` 값을 쌍 안에서 처음 나온 순서대로 `#orderId1` 같은 기호로 바꾼다(같은 값은 같은 기호). `tradeId`는 그 쌍이 보낸 체결이면 `#sent`, 아니면 원래 값 | 어느 요청이 이기는지와 그에 따른 주문 id 배정(충돌로 소비된 번호 포함)이 실행마다 다르다. 기호는 대응 관계를 보존해 (a)에서 두 응답이 같은 주문을 가리키는지가 비교에 남는다. 체결 id는 결정적이라 보낸 체결 밖을 가리키면 차이로 잡힌다. 금액·status·message·items 구조·상태 코드는 그대로 비교한다 |
+| `norm_set_from_mark <표식>` | conc·sa-lock의 sql·pgstmt 층 | 표식 앞은 그대로(줄 단위), 표식 뒤는 중복을 뺀 정렬 문장 집합(`sort -u`). 경계 줄 `== MARK <이름> (이후 집합 비교: 순서·횟수 무시)` | 동시 구간은 두 요청의 SQL이 섞이고 대기 폴링·충돌 재시도 횟수도 달라서 줄 단위 비교가 성립하지 않는다. 순서·횟수는 비교하지 않지만 한쪽에만 있는 문장 종류는 잡는다(명세 재합의 3). 집합에 넣기 전에 pgstmt의 준비 문장 이름 `execute S_<n>:`·`execute <unnamed>:`를 `execute:`로 바꾼다. pgjdbc가 연결별 사용 횟수에 따라 붙이는 이름이라, 동시 구간에서는 연결 배정에 따라 실행마다 달라진다(실측). 표식 앞은 이름을 그대로 비교한다(명세 재합의 4). 앞쪽 직렬 픽스처 요청(입찰·체결 3N건)은 줄 단위로 비교한다 |
+| `norm_conc_pair` | conc·sa-lock의 응답 층, `conc` 줄만 | 쌍마다 한 줄(`conc <a\|b> <회차> orders=<키당 주문 수> trades=<보낸 체결 2개>` + 두 응답의 상태 코드·본문 전체). 두 응답을 id를 가린 값으로 정렬하고, `orderId`·`orderItemId` 값을 쌍 안에서 처음 나온 순서대로 `#orderId1` 같은 기호로 바꾼다(같은 값은 같은 기호). `tradeId`는 그 쌍이 보낸 체결이면 `#sent`, 아니면 원래 값 | 어느 요청이 이기는지와 그에 따른 주문 id 배정(충돌로 소비된 번호 포함)이 실행마다 다르다. 기호는 대응 관계를 보존해 (a)에서 두 응답이 같은 주문을 가리키는지가 비교에 남는다. 체결 id는 결정적이라 보낸 체결 밖을 가리키면 차이로 잡힌다. 금액·status·message·items 구조·상태 코드는 그대로 비교한다 |
 | `norm_startup_log` | recov·fail의 새 행 층 `startup-log` | 앱 로그의 `기동 시 PAYING` 줄을 `<레벨> <메시지>`로 남긴다(시각·pid·앱 이름·스레드·로거를 지운다) | 시각·pid는 실행마다 다르다. 로거는 두 앱의 클래스 구조가 달라(god `Marketplace` / layered `StalePaymentRecovery`, 명세 재합의 1의 기동 훅 구조 차이) 남기면 구조 차이만으로 실패한다 |
 
 가정 2 실증(2026-10-19, fail 시나리오, layered를 작업 트리에서 임시로 바꿔 만든 jar를 `LAYERED_JAR`로 지정):
@@ -81,6 +85,8 @@ tools/equiv/measure-batches.sh 2 # 배치 8종(평상시·몰아 처리)·포인
 `refund`의 금액 불일치는 ADR-0004 §7.2 계약 밖 노트의 자연 경로(취소를 기록한 PG가 응답하지 않는 사이 같은 주문의 다른 항목이 환불되어 '마지막 환불' 금액이 바뀜)가 아니라, 그 결과 상태(같은 키에 다른 금액의 기록)를 하네스가 직접 만든 것이다. 가짜 PG 취소에는 응답 없음 결과가 없다.
 
 conc의 행 층은 id·구매자 배정 순서와 무관한 집계로만 덤프한다(상태별 주문 수, 키 접두별 주문 수·금액, PG 거래 상태, 체결 상태, 재시도·예상 못 한 오류 로그 건수).
+
+단계 A 시나리오(`sa-a`·`sa-b`·`sa-c`)도 배치가 시드 전체를 대상으로 하므로 같은 방식이다: 바뀔 수 있는 시드 행은 md5, 새 행(시드 판매자의 리베이트·정산서, 시드 항목의 알림·지연 표시 포함)은 오프셋 줄 단위. 픽스처·시드 경로를 지났는지는 `need`(값 또는 기대값 대조, 어긋나면 exit 2)로 확인한다. `sa-lock`의 동시 구간 행은 conc처럼 배정 순서와 무관한 집계(사용자별 문의 수 등)로 덤프하고, 교착(`deadlock detected`)·예상 못 한 오류 로그 건수도 행 층에 넣는다. `sa-lock`의 직렬 구간 `need`는 실행 중 DB 문장 로그를 `ext_pg_app_statements`로 뽑아 표식 구간 안의 잠금 문장 순서를 본다(판정 규칙이 아니라 경로 확인).
 
 ## 결과 위치
 
