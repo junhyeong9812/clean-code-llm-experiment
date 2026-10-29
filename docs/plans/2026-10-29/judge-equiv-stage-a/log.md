@@ -22,6 +22,7 @@
 | 2026-10-30 04:15 | 3회차 Opus jr3-opus 회수: 재점검 지적 없음(JR-22·24·8·10·13·16·3·9 확인, 기각 근거 타당 — JR-14 근거인 contract3 동시성 테스트 실재 확인), nit 1(JR-26 test docstring 수정 전 의미), 신규 minor 1(JR-27 ADR-0006 §6.1-5 '1·2회차 비교용 contract·contract2만 본 성공' 보조가 판정기에 없음). JR-26·JR-27 메인 수정 — success_stage12 + JUDGE_FIELDS + 테스트 1 + ADR-0005 §4.1-3 보조 문장, 러너 테스트 445 OK, 커밋 `dc97a39`(code)·`ec02f65`(ADR). JR-25는 all 실행 뒤 sa-lock 수정 | all 대기 |
 | 2026-10-30 04:37 | 최종 `all` 16/16 같음 exit 0(821f68e 기준). JR-25 메인 수정(sa-lock 직렬 오류 요청 4곳 404 NOT_FOUND need + 예상 못 한 오류 0 need) → sa-lock 단독 같음 exit 0, 커밋 `5e26134`. 3루프 상한 도달 — 3회차 수정분(JR-25·26·27)은 post-fix 재점검 1회(codex, diff 821f68e..5e26134) | 재점검 |
 | 2026-10-30 04:40 | post-fix 재점검(codex, 821f68e..5e26134, bwrap 0): JR-25·26 지적 없음, JR-27 수정분 major 1(JR-28: 빌드 실패·jar 없음·테스트 컴파일 실패 조기 반환에 success_stage12 없음) → 메인 수정(조기 반환 4곳에 success_without_regression과 같이 기록) + 행동 테스트(가짜 빌드 rc 1 compile → False·rc 125 infra → None), 변이 확인(수정 되돌리면 테스트 실패), 러너 테스트 446 OK. 커밋 `f77c536`. 루프 상한 도달 — JR-28 수정은 셀프 확인(변이 테스트)으로 종료 | 마감 |
+| 2026-10-30 05:26 | 사용자 결정 '병합·push 후 다음으로' → main fast-forward b889129..4a1bfe0 | push |
 
 ## 리뷰 ledger
 
