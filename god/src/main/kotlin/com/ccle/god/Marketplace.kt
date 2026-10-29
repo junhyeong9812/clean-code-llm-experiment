@@ -1922,10 +1922,11 @@ class Marketplace(
             isolatedAs = "rating-recalc",
         ) { sellerId ->
             tx.execute {
-                em.createNativeQuery("SELECT id FROM reviews WHERE seller_id = :seller ORDER BY id FOR UPDATE")
-                    .setParameter("seller", sellerId).resultList
+                val locked = em.createNativeQuery("SELECT id FROM reviews WHERE seller_id = :seller ORDER BY id FOR UPDATE")
+                    .setParameter("seller", sellerId).resultList.map { (it as Number).toLong() }.toSet()
+                // 잠근 행만 처리한다 — 두 문장 사이에 커밋된 새 리뷰(잠기지 않음)는 다음 실행의 대상이다
                 val reviews = em.createQuery("SELECT r FROM Review r WHERE r.sellerId = :seller ORDER BY r.id", Review::class.java)
-                    .setParameter("seller", sellerId).resultList
+                    .setParameter("seller", sellerId).resultList.filter { it.id in locked }
                 var wrote = false
                 for (review in reviews) {
                     val itemStatus = em.find(OrderItem::class.java, review.orderItemId).status
