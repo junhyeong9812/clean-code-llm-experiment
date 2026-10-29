@@ -456,7 +456,7 @@
 2. 문자열 자리는 JSON 문자열만, 정수 자리는 정수 JSON 숫자만 받는다(`5.0`·`"5"` → 400 — 기존 두 구현의 본문 파싱 관례와 같다). `accountNo`는 JSON 문자열이고 앞뒤 공백을 포함해 숫자 10~14자리여야 한다(공백이 있으면 400).
 3. 쿼리와 본문의 enum·boolean 값은 문서에 적은 글자 그대로만 받는다(대소문자 구분 — 본문 `"cj"` → 400, 쿼리 빈 값 `?unread=` → 400).
 4. 문서에 쿼리로 적은 날짜·필터 중 **필수**는 `GET /inbound-slots`의 `date`, 시세 조회의 `from`·`to`, `GET /admin/users/restricted`의 `type`이다(누락 400). 그 밖의 필터는 선택이다.
-5. 시각 입력(`occurredAt`·`slotStart`)은 오프셋 포함 ISO-8601만 받는다(오프셋 없으면 400).
+5. 시각 입력(`occurredAt`·`slotStart`)은 오프셋 포함 ISO-8601만 받는다(오프셋 없으면 400). 날짜 입력(쿼리 `date`·`from`·`to`, 본문 `vacationFrom`·`vacationTo`)은 정확히 `[0-9]{4}-[0-9]{2}-[0-9]{2}`이고 실제 날짜여야 한다 — ISO 확장 연도(`+10000-01-01`·`-0001-01-01`)·없는 날짜는 400(god 구현 리뷰 2026-10-29).
 6. "앞뒤 공백"은 ADR-0004 §15의 4와 같은 공백 집합(Kotlin `isWhitespace` — NBSP·전각 공백 포함)이다. 길이(§2.1)도 그 공백을 앞뒤에서 뺀 값으로 센다.
 7. 이 문서의 헤더가 필요 없는 새 엔드포인트(`GET /sellers/{id}/reviews`·`/profile`, `/product-sizes/{id}/price-stats`·`/recent-trades`, `/inbound-slots`)는 `X-User-Id`를 **읽지 않는다**(잘못된 값이 와도 401이 아니다).
 8. 경로 변수가 정수가 아닌 경우는 계약 밖이다(프레임워크 라우팅 — 기존 엔드포인트와 같다).
