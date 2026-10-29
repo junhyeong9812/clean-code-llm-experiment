@@ -9,9 +9,10 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
-/** 고객 문의 작성·추가 메시지·답변(관리자)·종결·조회(ADR-0007 §9). */
+/** 고객 문의 작성·추가 메시지·답변(관리자)·종결·조회(ADR-0007 §9), 재개·관리자 문의함(§20.4). */
 @RestController
 class InquiryController(private val users: UserService, private val inquiries: InquiryService) {
 
@@ -57,6 +58,29 @@ class InquiryController(private val users: UserService, private val inquiries: I
         val userId = users.requireUser(userIdOf(userHeader))
         return InquiryView(inquiries.close(userId, pathId(inquiryId)))
     }
+
+    @PostMapping("/me/inquiries/{inquiryId}/reopen")
+    fun reopen(
+        @RequestHeader("X-User-Id", required = false) userHeader: String?,
+        @PathVariable inquiryId: String,
+        @RequestBody(required = false) body: String?,
+    ): InquiryView {
+        val userId = users.requireUser(userIdOf(userHeader))
+        val json = parseObject(body)
+        return InquiryView(inquiries.reopen(userId, pathId(inquiryId), json.textOrNull("body")))
+    }
+
+    /** 관리자 문의함(§20.4.2 — §2.5 키셋 페이지). 쿼리 값의 형식·범위는 서비스가 본다. */
+    @GetMapping("/admin/inquiries")
+    fun adminList(
+        @RequestParam(required = false) status: String?,
+        @RequestParam(required = false) slaBreached: String?,
+        @RequestParam(required = false) limit: String?,
+        @RequestParam(required = false) after: String?,
+    ): PageView<AdminInquiryView> = PageView(inquiries.adminList(status, slaBreached, limit, after).map { AdminInquiryView(it) })
+
+    @GetMapping("/admin/inquiries/{inquiryId}")
+    fun adminDetail(@PathVariable inquiryId: String): AdminInquiryDetailView = AdminInquiryDetailView(inquiries.adminDetail(pathId(inquiryId)))
 
     @GetMapping("/me/inquiries")
     fun list(@RequestHeader("X-User-Id", required = false) userHeader: String?): List<InquiryView> =

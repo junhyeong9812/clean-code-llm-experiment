@@ -16,6 +16,12 @@ data class NotificationView(val notificationId: Long, val kind: String, val refI
     constructor(n: Notification) : this(n.id!!, n.kind, n.refId, n.createdAt, n.readAt)
 }
 
+/** 일괄 읽음 응답(§20.6.1). */
+data class ReadAllView(val readCount: Long)
+
+/** 안 읽은 수(§20.6.2). */
+data class UnreadCountView(val unreadCount: Long)
+
 /** 위시리스트 등록·삭제 응답(§8.1). */
 data class WishlistEntryView(val productSizeId: Long, val createdAt: Instant) {
     constructor(w: Wishlist) : this(w.productSizeId, w.createdAt)

@@ -71,6 +71,22 @@ class Review(
     }
 
     /**
+     * 수정(§20.2.1): 주문 행·리뷰 행을 잠근 뒤 다시 읽은 리뷰·항목으로 부른다. 409 순서는 1 리뷰 VISIBLE 아님 → 2 항목 CONFIRMED 아님
+     * → 3 현재 > confirmed_at + 30일(DEADLINE_PASSED). rating·content = 받은 값, updated_at = 현재(같은 값이어도 쓴다).
+     */
+    fun edit(item: OrderItem, input: ReviewInput, now: Instant) {
+        if (status != "VISIBLE") throw MarketException(Failure.ITEM_STATE_CONFLICT, "VISIBLE이 아닌 리뷰: $id ($status)")
+        if (item.status != "CONFIRMED") {
+            throw MarketException(Failure.ITEM_STATE_CONFLICT, "CONFIRMED가 아닌 주문 항목: ${item.id} (${item.status})")
+        }
+        val deadline = deadlineOf(item.confirmedAt!!)
+        if (now.isAfter(deadline)) throw MarketException(Failure.DEADLINE_PASSED, "리뷰 수정 기간($deadline)이 지났다: $id")
+        rating = input.rating
+        content = input.content
+        updatedAt = now
+    }
+
+    /**
      * rating-recalc의 분쟁 반영(§4.5의 1·2). 1 VISIBLE이고 항목이 DISPUTED·REFUNDED_AFTER_CONFIRM → HIDDEN·DISPUTE.
      * 2 HIDDEN·DISPUTE이고 항목이 CONFIRMED(기각) → VISIBLE. ADMIN 숨김과 REFUNDED_AFTER_CONFIRM은 풀지 않는다. 반환 = 바꿨는가.
      */
@@ -92,6 +108,12 @@ class Review(
 
     companion object {
         private val WRITE_WITHIN: Duration = Duration.ofDays(30)
+
+        /** 작성·수정 기한(§4.1·§20.2): confirmed_at + 30일 — 비교와 표시에만 쓴다(저장하지 않는다). */
+        fun deadlineOf(confirmedAt: Instant): Instant = confirmedAt.plus(WRITE_WITHIN)
+
+        /** 쓸 수 있는 항목(§20.2.2)의 확정 시각 하한: 현재 ≤ confirmed_at + 30일 ⇔ confirmed_at ≥ 현재 − 30일. */
+        fun writableCutoff(now: Instant): Instant = now.minus(WRITE_WITHIN)
 
         /**
          * 작성(§4.1): 항목이 CONFIRMED이고 리뷰가 아직 없고(어떤 상태든) 현재 ≤ confirmed_at + 30일. 순서는 상태 → 중복 → 기한.
@@ -160,6 +182,16 @@ class SellerReviews(val sellerId: Long, rating: SellerRating?, val reviews: List
     val averageX100: Long? = if (reviewCount == 0L) null else Math.floorDiv(ratingSum * 100, reviewCount)
 }
 
+/** 쓸 수 있는 항목(§20.2.2): sellerId = 체결 판매자, reviewDeadline = confirmed_at + 30일(계산 값). */
+class ReviewableItem(val orderItemId: Long, val sellerId: Long, val confirmedAt: Instant) {
+    val reviewDeadline: Instant = Review.deadlineOf(confirmedAt)
+}
+
+/** 내 리뷰(§20.2.3): reviewDeadline = 그 항목의 confirmed_at + 30일(수정 기한, 계산 값). */
+class MyReview(val review: Review, confirmedAt: Instant) {
+    val reviewDeadline: Instant = Review.deadlineOf(confirmedAt)
+}
+
 interface ReviewRepository {
     fun add(review: Review)
 
@@ -187,6 +219,12 @@ interface ReviewRepository {
 
     /** 그 판매자의 VISIBLE 리뷰, id 순. */
     fun visibleOfSeller(sellerId: Long): List<Review>
+
+    /** §20.2.2: 그 구매자의 CONFIRMED 항목 중 confirmed_at ≥ cutoff이고 리뷰 행이 없는 것(상태 무관), id 순. */
+    fun reviewableItemsOf(buyerId: Long, cutoff: Instant): List<OrderItem>
+
+    /** 그 구매자가 쓴 리뷰 전부(세 상태), id 순. */
+    fun listOfBuyer(buyerId: Long): List<Review>
 }
 
 interface SellerRatingRepository {

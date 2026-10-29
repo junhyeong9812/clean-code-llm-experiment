@@ -12,6 +12,7 @@ import com.ccle.layered.domain.Wishlist
 import com.ccle.layered.domain.WishlistItem
 import com.ccle.layered.domain.WishlistRepository
 import com.ccle.layered.domain.invalidRequest
+import com.ccle.layered.domain.priceAlertTarget
 import com.ccle.layered.domain.notFound
 import org.springframework.stereotype.Component
 import org.springframework.stereotype.Service
@@ -101,6 +102,37 @@ class PriceAlertService(
         }!!
     }
 
+    /** 목표가 변경(§20.3.1): 400 → 404 → 403 → 알림 행 FOR UPDATE → 409(ACTIVE 아님). 상태를 바꾸지 않는 수정이라 동시 변경은 줄을 서서 둘 다 성공한다. */
+    fun changeTarget(userId: Long, alertId: Long, targetPrice: Long?): PriceAlert {
+        val target = priceAlertTarget(targetPrice)
+        return tx.execute {
+            val alert = alerts.find(alertId) ?: notFound("없는 가격 알림: $alertId")
+            alert.requireOwner(userId)
+            alerts.lock(alertId)
+            alerts.reload(alert)
+            alert.changeTarget(target)
+            alert
+        }!!
+    }
+
+    /**
+     * 재등록(§20.3.2): 404 → 403 → 그 알림 사이즈 KEY SHARE → 사용자 행 FOR UPDATE(등록과 같은 "사이즈 → 사용자", §19의 10-2) → 409 → 새 알림 1행.
+     * 사용자 행으로 같은 사용자의 등록·재등록·재무장이 줄을 선다. 옛 알림 행은 잠그지도 바꾸지도 않는다.
+     */
+    fun renew(userId: Long, alertId: Long): PriceAlert {
+        val now = clock.now()
+        return tx.execute {
+            val old = alerts.find(alertId) ?: notFound("없는 가격 알림: $alertId")
+            old.requireOwner(userId)
+            if (!wishes.keyShareSize(old.productSizeId)) notFound("없는 사이즈: ${old.productSizeId}")
+            users.lock(userId)
+            alerts.reload(old)
+            val alert = old.renew({ alerts.countNewerOrActive(userId, old.productSizeId, alertId) }, now)
+            alerts.add(alert)
+            alert
+        }!!
+    }
+
     /** 조회: 본인 가격 알림 전부, alertId 오름차순. */
     fun list(userId: Long): List<PriceAlert> = alerts.listOf(userId)
 }
@@ -130,6 +162,32 @@ class PriceAlertScanBatch(
             if (alert.isPausedFor(users.find(alert.userId)!!, now)) return@execute false
             val bidId = alerts.triggeringSell(alert.productSizeId, alert.targetPrice, now) ?: return@execute false
             notifications.add(alert.trigger(bidId, now))
+            true
+        }!!
+    }
+}
+
+/**
+ * price-alert-rearm(ADR-0007 §20.3.3): TRIGGERED이고 종결 7일 안, 발동 입찰의 저장 상태가 CANCELLED·EXPIRED, 위시리스트 있음,
+ * 그 쌍에 더 큰 id·ACTIVE 알림 없음, 주인이 구매 제한 중이 아님(price_alerts id 순). 알림 1건 = 트랜잭션 하나:
+ * 사이즈 KEY SHARE → 사용자 행 FOR UPDATE(재등록과 같은 순서) 뒤 같은 조건을 그 알림에 다시 확인하고, 성립하면 새 알림 1행(재등록과 같은 값).
+ * 입찰·옛 알림·notifications에는 쓰지 않는다. processed = 만든 새 알림 수.
+ */
+@Component
+class PriceAlertRearmBatch(
+    private val targets: BatchTargets,
+    private val tx: TransactionTemplate,
+    private val users: UserRepository,
+    private val wishes: WishlistRepository,
+    private val alerts: PriceAlertRepository,
+) {
+    fun run(now: Instant): BatchResult = targets.forEachIsolated("price-alert-rearm", BatchTarget.REARMABLE_PRICE_ALERTS, now) { alertId ->
+        tx.execute {
+            val old = alerts.find(alertId)!!
+            if (!wishes.keyShareSize(old.productSizeId)) notFound("없는 사이즈: ${old.productSizeId}")
+            users.lock(old.userId)
+            if (!alerts.isRearmable(alertId, now)) return@execute false
+            alerts.add(old.successor(now))
             true
         }!!
     }

@@ -1,5 +1,6 @@
 package com.ccle.layered.service
 
+import com.ccle.layered.domain.AdminInquiryFilter
 import com.ccle.layered.domain.BatchTarget
 import com.ccle.layered.domain.BatchTargets
 import com.ccle.layered.domain.Inquiry
@@ -9,8 +10,10 @@ import com.ccle.layered.domain.InquiryMessage
 import com.ccle.layered.domain.InquiryOrderItem
 import com.ccle.layered.domain.InquiryRead
 import com.ccle.layered.domain.InquiryRepository
+import com.ccle.layered.domain.KeysetPage
 import com.ccle.layered.domain.MarketClock
 import com.ccle.layered.domain.OrderItemRepository
+import com.ccle.layered.domain.PageOf
 import com.ccle.layered.domain.TradeRepository
 import com.ccle.layered.domain.inquiryMessageBody
 import com.ccle.layered.domain.notFound
@@ -110,6 +113,38 @@ class InquiryService(
             InquiryOrderItem(itemId, items.find(itemId)!!.status, openDisputes > 0)
         }
         InquiryDetail(InquiryRead(inquiry, now), messages, orderItem)
+    }!!
+
+    /** 재개(§20.4.1): 400 → 404 → 403(작성자 아님) → 문의 행 FOR UPDATE → 409(CLOSED 아님 → 기한) → OPEN + USER 메시지 1행. */
+    fun reopen(userId: Long, inquiryId: Long, body: String?): InquiryRead {
+        val text = inquiryMessageBody(body)
+        val now = clock.now()
+        return tx.execute {
+            val inquiry = inquiries.find(inquiryId) ?: notFound("없는 문의: $inquiryId")
+            inquiry.requireAuthor(userId)
+            inquiries.lock(inquiryId)
+            inquiries.reload(inquiry)
+            inquiry.reopen(now)
+            inquiries.addMessage(InquiryMessage(inquiryId = inquiryId, author = "USER", body = text, createdAt = now))
+            InquiryRead(inquiry, now)
+        }!!
+    }
+
+    /** `GET /admin/inquiries`(§20.4.2·§2.5 페이지): 400(필터 → 페이지) → id 순 페이지. 한 스냅샷에서 읽는다. */
+    fun adminList(status: String?, slaBreached: String?, limit: String?, after: String?): PageOf<InquiryRead> {
+        val filter = AdminInquiryFilter.of(status, slaBreached)
+        val page = KeysetPage.of(limit, after)
+        return snapshotTx.execute {
+            val now = clock.now()
+            val items = inquiries.adminPage(filter, now, page).map { InquiryRead(inquiries.find(it)!!, now) }
+            page.of(items) { it.inquiry.id!! }
+        }!!
+    }
+
+    /** `GET /admin/inquiries/{id}`(§20.4.2): 상세(§9.2) — 없는 문의 404. 한 스냅샷에서 읽는다. */
+    fun adminDetail(inquiryId: Long): InquiryDetail = snapshotTx.execute {
+        val inquiry = inquiries.find(inquiryId) ?: notFound("없는 문의: $inquiryId")
+        detail(inquiry.userId, inquiryId)
     }!!
 
     /** 상태를 바꾸는 요청의 공통 단계: 404 → (작성자 요청이면) 403 → 문의 행 FOR UPDATE 뒤 CLOSED면 409. authorId = null이면 운영자. */

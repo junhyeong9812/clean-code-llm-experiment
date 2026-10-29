@@ -1,11 +1,13 @@
 package com.ccle.layered.infra
 
+import com.ccle.layered.domain.OrderItem
 import com.ccle.layered.domain.Review
 import com.ccle.layered.domain.ReviewRepository
 import com.ccle.layered.domain.SellerRating
 import com.ccle.layered.domain.SellerRatingRepository
 import jakarta.persistence.EntityManager
 import org.springframework.stereotype.Component
+import java.time.Instant
 
 @Component
 class JpaReviewRepository(private val em: EntityManager) : ReviewRepository {
@@ -42,6 +44,18 @@ class JpaReviewRepository(private val em: EntityManager) : ReviewRepository {
             "SELECT r FROM Review r WHERE r.sellerId = :seller AND r.status = 'VISIBLE' ORDER BY r.id",
             Review::class.java,
         ).setParameter("seller", sellerId).resultList
+
+    override fun reviewableItemsOf(buyerId: Long, cutoff: Instant): List<OrderItem> =
+        em.createQuery(
+            "SELECT i FROM OrderItem i WHERE i.status = 'CONFIRMED' AND i.confirmedAt >= :due" +
+                " AND i.orderId IN (SELECT o.id FROM PurchaseOrder o WHERE o.buyerId = :user)" +
+                " AND NOT EXISTS (SELECT r FROM Review r WHERE r.orderItemId = i.id) ORDER BY i.id",
+            OrderItem::class.java,
+        ).setParameter("due", cutoff).setParameter("user", buyerId).resultList
+
+    override fun listOfBuyer(buyerId: Long): List<Review> =
+        em.createQuery("SELECT r FROM Review r WHERE r.buyerId = :user ORDER BY r.id", Review::class.java)
+            .setParameter("user", buyerId).resultList
 }
 
 @Component

@@ -40,7 +40,19 @@ class Notification(
         readAt = now
     }
 
+    /** 일괄 읽음(§20.6.1): 잠근 뒤에도 안 읽은 행만 read_at = 현재. 반환 = 바꿨는가(이미 읽었으면 409가 아니라 건너뜀). */
+    fun markReadIfUnread(now: Instant): Boolean {
+        if (readAt != null) return false
+        readAt = now
+        return true
+    }
+
     companion object {
+        private val KEEP_READ_FOR: Duration = Duration.ofDays(30)
+
+        /** notification-purge(§20.6.3)의 읽은 시각 상한: read_at ≤ 현재 − 30일(정각 포함). */
+        fun purgeCutoff(now: Instant): Instant = now.minus(KEEP_READ_FOR)
+
         /** `GET /me/notifications`의 unread(§7.2·§19의 3): "true"·"false"만(글자 그대로), 없으면 전체. 반환 = 안 읽은 것만인가. */
         fun unreadOnly(unread: String?): Boolean {
             if (unread != null && unread != "true" && unread != "false") invalidRequest("unread는 true 또는 false: $unread")
@@ -102,6 +114,15 @@ interface NotificationRepository {
 
     /** 그 사용자의 알림, id 순. unreadOnly면 read_at NULL만. */
     fun listOf(userId: Long, unreadOnly: Boolean): List<Notification>
+
+    /** 일괄 읽음(§20.6.1): 그 사용자의 read_at NULL 행을 id 오름차순으로 FOR UPDATE 하고 잠근 id를 돌려준다(사용자 행은 잠그지 않는다). */
+    fun lockUnreadOf(userId: Long): List<Long>
+
+    /** 그 사용자의 read_at NULL 알림 수(§20.6.2). */
+    fun countUnread(userId: Long): Long
+
+    /** notification-purge(§20.6.3): 그 행이 아직 read_at ≤ due면 지운다(문장 하나 — 잠금·재확인을 함께 한다). 반환 = 지웠는가. */
+    fun purge(id: Long, due: Instant): Boolean
 
     /** 대상 행(ref) 하나의 알림 1행을 INSERT … SELECT로 쓴다(받는 사람·dedupe_key는 SQL 식). 반환 = 1행 썼는가. */
     fun addReminder(reminder: DeadlineReminder, refId: Long, now: Instant): Boolean

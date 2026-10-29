@@ -94,6 +94,19 @@ class Inquiry(
         closedAt = now
     }
 
+    /**
+     * 재개(§20.4.1): 문의 행을 잠근 뒤 다시 읽고 부른다. 1 CLOSED가 아니면 409 2 현재 > closed_at + 7일이면 409 DEADLINE_PASSED(종결 사유 무관).
+     * → OPEN, close_reason·closed_at NULL. answered_at·first_answered_at·sla_due_at은 그대로(메시지 행은 부르는 쪽이 쓴다).
+     */
+    fun reopen(now: Instant) {
+        if (status != "CLOSED") throw MarketException(Failure.ITEM_STATE_CONFLICT, "종결되지 않은 문의: $id ($status)")
+        val deadline = closedAt!!.plus(REOPEN_WITHIN)
+        if (now.isAfter(deadline)) throw MarketException(Failure.DEADLINE_PASSED, "재개 기한($deadline)이 지났다: $id")
+        status = "OPEN"
+        closeReason = null
+        closedAt = null
+    }
+
     /** 자동 종결 대상(§9.3): ANSWERED이고 answered_at + 7일 ≤ 현재. */
     fun isAutoClosable(now: Instant): Boolean = status == "ANSWERED" && !answeredAt!!.isAfter(autoCloseCutoff(now))
 
@@ -113,6 +126,7 @@ class Inquiry(
     companion object {
         private val SLA = Duration.ofHours(48)
         private val AUTO_CLOSE_AFTER = Duration.ofDays(7)
+        private val REOPEN_WITHIN = Duration.ofDays(7)
 
         /** 자동 종결 기준 시각 상한(§9.3): answered_at ≤ 현재 − 7일. */
         fun autoCloseCutoff(now: Instant): Instant = now.minus(AUTO_CLOSE_AFTER)
@@ -127,6 +141,21 @@ class Inquiry(
             createdAt = now,
             slaDueAt = now.plus(SLA),
         )
+    }
+}
+
+/** 관리자 문의함(§20.4.2)의 선택 필터: status는 세 값, slaBreached는 "true"·"false"(글자 그대로 — §19의 3). 아니면 400. */
+class AdminInquiryFilter private constructor(val status: String?, val slaBreached: Boolean?) {
+    companion object {
+        private val STATUSES = setOf("OPEN", "ANSWERED", "CLOSED")
+
+        fun of(status: String?, slaBreached: String?): AdminInquiryFilter {
+            if (status != null && status !in STATUSES) invalidRequest("알 수 없는 문의 상태: $status")
+            if (slaBreached != null && slaBreached != "true" && slaBreached != "false") {
+                invalidRequest("slaBreached는 true 또는 false: $slaBreached")
+            }
+            return AdminInquiryFilter(status, slaBreached?.let { it == "true" })
+        }
     }
 }
 
@@ -178,4 +207,10 @@ interface InquiryRepository {
 
     /** 그 항목의 OPEN 분쟁 수. */
     fun countOpenDisputes(orderItemId: Long): Long
+
+    /**
+     * 관리자 문의함(§20.4.2): 필터에 맞는 문의 id를 id 오름차순으로 id > page.after인 것 page.limit개. slaBreached 필터는 응답 값(§9.1)과
+     * 같은 식을 SQL로 본다(now = 요청 시각).
+     */
+    fun adminPage(filter: AdminInquiryFilter, now: Instant, page: KeysetPage): List<Long>
 }

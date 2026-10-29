@@ -44,6 +44,13 @@ class PriceAlertInput private constructor(val productSizeId: Long, val targetPri
     }
 }
 
+/** 목표가 변경 요청의 값(§20.3.1): targetPrice 양의 정수(등록 §8.2와 같은 규칙). */
+fun priceAlertTarget(targetPrice: Long?): Long {
+    if (targetPrice == null) invalidRequest("targetPrice가 필요하다")
+    if (targetPrice <= 0) invalidRequest("targetPrice는 0보다 커야 한다: $targetPrice")
+    return targetPrice
+}
+
 /** 가격 알림 행(§3 price_alerts). status = ACTIVE·TRIGGERED·EXPIRED·CANCELLED, 부분 UNIQUE(user_id, product_size_id) WHERE ACTIVE. */
 @Entity
 @Table(name = "price_alerts")
@@ -82,6 +89,40 @@ class PriceAlert(
         closedAt = now
     }
 
+    /**
+     * 목표가 변경(§20.3.1): ACTIVE만(저장 상태만 본다 — 만료 시각이 지났어도 scan 전이면 바꾼다). target_price만 바꾸고
+     * expires_at·created_at·status는 그대로(같은 값도 성공). 알림 행을 잠근 뒤 다시 읽고 부른다.
+     */
+    fun changeTarget(targetPrice: Long) {
+        if (!isActive()) throw MarketException(Failure.ITEM_STATE_CONFLICT, "ACTIVE가 아닌 가격 알림: $id ($status)")
+        this.targetPrice = targetPrice
+    }
+
+    /**
+     * 재등록(§20.3.2): 사이즈 KEY SHARE → 사용자 행 FOR UPDATE 뒤 다시 읽고 부른다. 409 순서는 1 EXPIRED·TRIGGERED가 아님
+     * → 2 같은 (사용자, 사이즈)에 더 큰 id 알림(상태 무관)이나 ACTIVE 알림이 있음(blocking = 그 수) → 3 현재 > closed_at + 7일(DEADLINE_PASSED).
+     * 새 알림은 등록과 같은 모양(ACTIVE, 같은 target_price, expires_at = 현재 + 60일). 이 행은 바꾸지 않는다.
+     */
+    fun renew(blocking: () -> Long, now: Instant): PriceAlert {
+        if (status != "EXPIRED" && status != "TRIGGERED") {
+            throw MarketException(Failure.ITEM_STATE_CONFLICT, "재등록할 수 없는 가격 알림: $id ($status)")
+        }
+        if (blocking() > 0) throw MarketException(Failure.ITEM_STATE_CONFLICT, "그 사이즈의 마지막 가격 알림이 아니다: $id")
+        val deadline = closedAt!!.plus(RENEW_WITHIN)
+        if (now.isAfter(deadline)) throw MarketException(Failure.DEADLINE_PASSED, "재등록 기한($deadline)이 지났다: $id")
+        return successor(now)
+    }
+
+    /** 재등록·재무장(§20.3.2·§20.3.3)의 새 알림: ACTIVE, 같은 사용자·사이즈·target_price, expires_at = 현재 + 60일, created_at = 현재. */
+    fun successor(now: Instant): PriceAlert = PriceAlert(
+        userId = userId,
+        productSizeId = productSizeId,
+        targetPrice = targetPrice,
+        status = "ACTIVE",
+        expiresAt = now.plus(VALID_FOR),
+        createdAt = now,
+    )
+
     /** price-alert-scan의 1(§8.3): expires_at ≤ 현재. */
     fun isExpired(now: Instant): Boolean = !expiresAt.isAfter(now)
 
@@ -103,6 +144,10 @@ class PriceAlert(
 
     companion object {
         private val VALID_FOR: Duration = Duration.ofDays(60)
+        private val RENEW_WITHIN: Duration = Duration.ofDays(7)
+
+        /** 재무장 대상(§20.3.3)의 종결 시각 하한: closed_at ≥ 현재 − 7일(재등록 기한과 같은 창, 정각 포함). */
+        fun rearmCutoff(now: Instant): Instant = now.minus(RENEW_WITHIN)
 
         /** 등록(§8.2): 사용자 행을 잠근 뒤 센 같은 사이즈 ACTIVE 수가 0이어야 한다. expires_at = 현재 + 60일. 구매 제한 중에도 등록한다. */
         fun open(userId: Long, input: PriceAlertInput, activeCount: Long, now: Instant): PriceAlert {
@@ -159,6 +204,12 @@ interface PriceAlertRepository {
 
     /** 그 사용자의 가격 알림 전부, id 순. */
     fun listOf(userId: Long): List<PriceAlert>
+
+    /** 재등록(§20.3.2의 2): 그 사용자·사이즈에서 id가 alertId보다 크거나 ACTIVE인 알림 수(상태 무관). */
+    fun countNewerOrActive(userId: Long, productSizeId: Long, alertId: Long): Long
+
+    /** price-alert-rearm(§20.3.3): 잠근 뒤 그 알림에 대상 조건을 다시 확인한다(대상 조회와 같은 식). */
+    fun isRearmable(alertId: Long, now: Instant): Boolean
 
     /** 그 사이즈의 ACTIVE·expires_at > 현재·price ≤ target인 SELL 입찰 중 price, created_at, id 순 첫 번째 id(읽기 — 잠그지 않는다). */
     fun triggeringSell(productSizeId: Long, targetPrice: Long, now: Instant): Long?

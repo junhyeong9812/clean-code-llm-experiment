@@ -78,6 +78,12 @@ enum class BatchTarget {
 
     /** inbound-no-show(ADR-0007 §12.3): RESERVED이고 slot_start + 1시간 ≤ 현재인 입고 예약. */
     NO_SHOW_RESERVATIONS,
+
+    /** price-alert-rearm(ADR-0007 §20.3.3): TRIGGERED·종결 7일 안·발동 입찰 CANCELLED·EXPIRED·위시리스트 있음·더 새 알림·ACTIVE 없음·구매 제한 아님. */
+    REARMABLE_PRICE_ALERTS,
+
+    /** notification-purge(ADR-0007 §20.6.3): read_at IS NOT NULL이고 read_at ≤ 현재 − 30일인 알림. */
+    PURGEABLE_NOTIFICATIONS,
 }
 
 interface BatchTargets {

@@ -1,5 +1,6 @@
 package com.ccle.layered.service
 
+import com.ccle.layered.domain.BatchTarget
 import com.ccle.layered.domain.BatchTargets
 import com.ccle.layered.domain.DeadlineReminder
 import com.ccle.layered.domain.MarketClock
@@ -11,7 +12,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 
-/** A4 알림 조회·읽음(ADR-0007 §7.2). 사용자 확인(401)은 부르는 쪽이 한다. */
+/** A4 알림 조회·읽음(ADR-0007 §7.2)·일괄 읽음·안 읽은 수(§20.6). 사용자 확인(401)은 부르는 쪽이 한다. */
 @Service
 class NotificationService(
     private val clock: MarketClock,
@@ -32,6 +33,38 @@ class NotificationService(
             notification.markRead(now)
             notification
         }!!
+    }
+
+    /**
+     * 일괄 읽음(§20.6.1): 내 안 읽은 알림을 id 오름차순으로 FOR UPDATE(같은 사용자의 두 요청이 교착하지 않게) → 잠근 뒤에도 안 읽은 행만
+     * read_at = 현재. 반환 = 바꾼 수(0건도 성공).
+     */
+    fun readAll(userId: Long): Long {
+        val now = clock.now()
+        return tx.execute {
+            notifications.lockUnreadOf(userId).count { notifications.find(it)!!.markReadIfUnread(now) }.toLong()
+        }!!
+    }
+
+    /** `GET /me/notifications/unread-count`(§20.6.2): 내 알림 중 read_at NULL 수. */
+    fun unreadCount(userId: Long): Long = notifications.countUnread(userId)
+}
+
+/**
+ * notification-purge(ADR-0007 §20.6.3): read_at IS NOT NULL이고 read_at ≤ 현재 − 30일(id 순). 알림 1건 = DELETE 한 문장의 트랜잭션 하나
+ * (잠금 없음 — 문장이 행 잠금과 조건 재평가를 함께 한다). 안 읽은 알림은 지우지 않는다. processed = 지운 행 수.
+ */
+@Component
+class NotificationPurgeBatch(
+    private val targets: BatchTargets,
+    private val tx: TransactionTemplate,
+    private val notifications: NotificationRepository,
+) {
+    fun run(now: Instant): BatchResult {
+        val due = Notification.purgeCutoff(now)
+        return targets.forEachIsolated("notification-purge", BatchTarget.PURGEABLE_NOTIFICATIONS, now) { notificationId ->
+            tx.execute { notifications.purge(notificationId, due) }!!
+        }
     }
 }
 

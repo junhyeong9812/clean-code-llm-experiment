@@ -87,6 +87,8 @@ class BatchService(
     private val inquiryAutoClose: InquiryAutoCloseBatch,
     private val priceStats: PriceStatsBatch,
     private val inboundNoShow: InboundNoShowBatch,
+    private val priceAlertRearm: PriceAlertRearmBatch,
+    private val notificationPurge: NotificationPurgeBatch,
 ) {
     private val log = LoggerFactory.getLogger(BatchService::class.java)
 
@@ -113,6 +115,8 @@ class BatchService(
             "inquiry-auto-close" -> inquiryAutoClose.run(now)
             "price-stats" -> priceStats.run(now)
             "inbound-no-show" -> inboundNoShow.run(now)
+            "price-alert-rearm" -> priceAlertRearm.run(now)
+            "notification-purge" -> notificationPurge.run(now)
             else -> invalidRequest("알 수 없는 배치: $name")
         }
         log.info(

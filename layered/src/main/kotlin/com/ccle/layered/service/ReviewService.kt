@@ -3,11 +3,13 @@ package com.ccle.layered.service
 import com.ccle.layered.domain.BatchTarget
 import com.ccle.layered.domain.BatchTargets
 import com.ccle.layered.domain.MarketClock
+import com.ccle.layered.domain.MyReview
 import com.ccle.layered.domain.OrderItemRepository
 import com.ccle.layered.domain.OrderRepository
 import com.ccle.layered.domain.Review
 import com.ccle.layered.domain.ReviewInput
 import com.ccle.layered.domain.ReviewRepository
+import com.ccle.layered.domain.ReviewableItem
 import com.ccle.layered.domain.SellerRating
 import com.ccle.layered.domain.SellerRatingRepository
 import com.ccle.layered.domain.SellerReviews
@@ -85,6 +87,39 @@ class ReviewService(
             review
         }!!
     }
+
+    /**
+     * 수정(§20.2.1). 순서: 400 → 404 → 403(작성자 아님) → 주문 행 FOR UPDATE → 리뷰 행 FOR UPDATE → 409(리뷰 상태 → 항목 상태 → 기한).
+     * 주문 행으로 분쟁 제기와, 리뷰 행으로 삭제·숨김·rating-recalc·다른 수정과 줄을 선다. 평점 캐시는 다음 rating-recalc가 반영한다.
+     */
+    fun edit(userId: Long, reviewId: Long, rating: Long?, content: String?): Review {
+        val input = ReviewInput.of(rating, content)
+        val now = clock.now()
+        return tx.execute {
+            val review = reviews.find(reviewId) ?: notFound("없는 리뷰: $reviewId")
+            review.requireAuthor(userId)
+            val item = items.find(review.orderItemId)!!
+            orders.lock(item.orderId)
+            reviews.lock(reviewId)
+            reviews.reload(review)
+            items.reload(item)
+            review.edit(item, input, now)
+            review
+        }!!
+    }
+
+    /** `GET /me/reviewable-items`(§20.2.2): 작성이 409 없이 받는 항목, orderItemId 오름차순. 한 스냅샷에서 읽는다. */
+    fun reviewableItems(userId: Long): List<ReviewableItem> = snapshotTx.execute {
+        val now = clock.now()
+        reviews.reviewableItemsOf(userId, Review.writableCutoff(now)).map { item ->
+            ReviewableItem(item.id!!, trades.find(item.tradeId)!!.sellerId, item.confirmedAt!!)
+        }
+    }!!
+
+    /** `GET /me/reviews`(§20.2.3): 내가 쓴 리뷰 전부(세 상태), reviewId 오름차순. 한 스냅샷에서 읽는다. */
+    fun myReviews(userId: Long): List<MyReview> = snapshotTx.execute {
+        reviews.listOfBuyer(userId).map { MyReview(it, items.find(it.orderItemId)!!.confirmedAt!!) }
+    }!!
 
     /** 판매자 리뷰 조회(§4.4, 헤더 불필요). 없는 사용자 404. 평점과 VISIBLE 리뷰를 한 스냅샷에서 읽는다. */
     fun sellerReviews(sellerId: Long): SellerReviews = snapshotTx.execute {

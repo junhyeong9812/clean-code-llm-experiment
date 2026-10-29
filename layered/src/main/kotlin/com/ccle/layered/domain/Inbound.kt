@@ -59,7 +59,7 @@ class InboundSlot(
     }
 
     companion object {
-        private val RESERVE_BEFORE = Duration.ofHours(24)
+        internal val RESERVE_BEFORE = Duration.ofHours(24)
 
         /** 예약할 수 있는 항목 상태(§12.3의 1): PAID. 슬롯 행 잠금 전에 판정한다. */
         fun requireReservable(item: OrderItem) {
@@ -116,6 +116,32 @@ class InboundReservation(
         closedAt = now
     }
 
+    /** 예약 변경(§20.5.1)의 3: 새 슬롯이 지금 슬롯과 같으면 409. 예약 행을 잠근 뒤, 새 슬롯을 잠그기 전에 부른다. */
+    fun requireOtherSlot(newSlotId: Long) {
+        if (slotId == newSlotId) throw MarketException(Failure.ITEM_STATE_CONFLICT, "지금과 같은 슬롯: $newSlotId")
+    }
+
+    /**
+     * 예약 변경(§20.5.1)의 4~6 — 새 슬롯 행을 잠근 뒤 부른다. 409 순서는 4 새 슬롯 정원(liveOfNew — 잠금 뒤에 센다)
+     * → 5 현재 > 옛 slot_start − 2시간(취소 기한) → 6 현재 > 새 slot_start − 24시간(예약 기한).
+     * 통과하면 이 예약 → CANCELLED(closed_at = 현재)로 바꾸고 새 예약(RESERVED, 같은 판매자·항목, created_at = 현재)을 돌려준다 —
+     * 부분 UNIQUE 때문에 부르는 쪽이 이 UPDATE를 새 예약 INSERT보다 먼저 DB에 보낸다(flush).
+     */
+    fun reschedule(newSlot: InboundSlot, liveOfNew: () -> Long, oldSlotStart: () -> Instant, now: Instant): InboundReservation {
+        if (liveOfNew() >= newSlot.capacity) throw MarketException(Failure.ITEM_STATE_CONFLICT, "정원이 찬 슬롯: ${newSlot.id}")
+        val cancelDeadline = oldSlotStart().minus(CANCEL_BEFORE)
+        if (now.isAfter(cancelDeadline)) {
+            throw MarketException(Failure.DEADLINE_PASSED, "입고 예약 취소 기한($cancelDeadline)이 지났다: $id")
+        }
+        val reserveDeadline = newSlot.slotStart.minus(InboundSlot.RESERVE_BEFORE)
+        if (now.isAfter(reserveDeadline)) {
+            throw MarketException(Failure.DEADLINE_PASSED, "입고 예약 기한($reserveDeadline)이 지났다: 슬롯 ${newSlot.id}")
+        }
+        status = "CANCELLED"
+        closedAt = now
+        return InboundReservation(slotId = newSlot.id!!, sellerId = sellerId, orderItemId = orderItemId, status = "RESERVED", createdAt = now)
+    }
+
     /** 노쇼(§12.3 inbound-no-show): RESERVED만 → NO_SHOW, closed_at = 현재. 바꿨으면 true. */
     fun markNoShow(now: Instant): Boolean {
         if (status != "RESERVED") return false
@@ -170,4 +196,7 @@ interface InboundReservationRepository {
 
     /** 그 판매자의 예약, id 순. */
     fun listOf(sellerId: Long): List<InboundReservation>
+
+    /** 지금까지의 변경을 DB에 보낸다(예약 변경 §20.5.1 — 옛 예약 UPDATE를 새 예약 INSERT보다 먼저). */
+    fun flush()
 }

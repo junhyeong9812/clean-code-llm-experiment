@@ -6,6 +6,7 @@ import com.ccle.layered.domain.ClosedMonth
 import com.ccle.layered.domain.GradePeriod
 import com.ccle.layered.domain.InboundReservation
 import com.ccle.layered.domain.Inquiry
+import com.ccle.layered.domain.Notification
 import com.ccle.layered.domain.OrderItem
 import com.ccle.layered.domain.PriceStatsDay
 import com.ccle.layered.domain.SellerGradeMonth
@@ -88,6 +89,10 @@ class KeysetBatchTargets(private val em: EntityManager) : BatchTargets {
             "inbound_reservations",
             "t.status = 'RESERVED' AND EXISTS (SELECT 1 FROM inbound_slots s WHERE s.id = t.slot_id AND s.slot_start <= :due)",
         ) { mapOf("due" to InboundReservation.noShowCutoff(it)) }
+        BatchTarget.REARMABLE_PRICE_ALERTS -> Spec("price_alerts", PriceAlertRearmSql.CONDITION, PriceAlertRearmSql::params)
+        BatchTarget.PURGEABLE_NOTIFICATIONS -> Spec("notifications", "t.read_at IS NOT NULL AND t.read_at <= :due") {
+            mapOf("due" to Notification.purgeCutoff(it))
+        }
     }
 
     private fun nowParam(now: Instant): Map<String, Any> = mapOf("now" to now)

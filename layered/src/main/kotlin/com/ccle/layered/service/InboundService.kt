@@ -120,6 +120,51 @@ class InboundService(
     fun list(userId: Long): List<InboundReservationRead> =
         reservations.listOf(userId).map { InboundReservationRead(it, slots.find(it.slotId)!!.slotStart) }
 
+    /**
+     * 예약 변경(§20.5.1): 400 → 404(예약) → 404(새 슬롯) → 403 → 주문 행 FOR UPDATE → 항목 PAID 아님 409(다른 잠금 전) → 예약 행 FOR UPDATE
+     * → RESERVED 아님 409 → 같은 슬롯 409 → 새 슬롯 행 FOR UPDATE → 정원 409 → 취소 기한 → 예약 기한. 옛 예약 UPDATE → flush → 새 예약 INSERT.
+     */
+    fun reschedule(userId: Long, reservationId: Long, slotId: Long?): Pair<InboundReservationRead, InboundReservationRead> {
+        if (slotId == null) invalidRequest("slotId가 필요하다")
+        val now = clock.now()
+        return tx.execute {
+            val reservation = reservations.find(reservationId) ?: notFound("없는 예약: $reservationId")
+            val slot = slots.find(slotId) ?: notFound("없는 슬롯: $slotId")
+            reservation.requireOwner(userId)
+            val item = items.find(reservation.orderItemId)!!
+            orders.lock(item.orderId)
+            items.reload(item)
+            InboundSlot.requireReservable(item)
+            reservations.lock(reservationId)
+            reservations.reload(reservation)
+            reservation.requireReserved()
+            reservation.requireOtherSlot(slotId)
+            slots.lock(slotId)
+            val reserved = reservation.reschedule(
+                slot,
+                liveOfNew = { slots.countLive(slotId) },
+                oldSlotStart = { slots.find(reservation.slotId)!!.slotStart },
+                now = now,
+            )
+            reservations.flush()
+            reservations.add(reserved)
+            InboundReservationRead(reservation, slots.find(reservation.slotId)!!.slotStart) to InboundReservationRead(reserved, slot.slotStart)
+        }!!
+    }
+
+    /** `GET /inbound-slots/{id}`(§20.5.2, 헤더 불필요): 없는 슬롯 404. 한 스냅샷에서 읽는다. */
+    fun slot(slotId: Long): InboundSlotRead = snapshotTx.execute {
+        val slot = slots.find(slotId) ?: notFound("없는 슬롯: $slotId")
+        InboundSlotRead(slot, slots.countLive(slotId))
+    }!!
+
+    /** `GET /me/inbound-reservations/{id}`(§20.5.2): 없는 예약 404, 남의 예약 403. */
+    fun reservation(userId: Long, reservationId: Long): InboundReservationRead {
+        val reservation = reservations.find(reservationId) ?: notFound("없는 예약: $reservationId")
+        reservation.requireOwner(userId)
+        return InboundReservationRead(reservation, slots.find(reservation.slotId)!!.slotStart)
+    }
+
     /** 예약 행을 잠그고 다시 읽은 뒤 RESERVED만 통과시킨다. 반환 = 그 슬롯 시각. */
     private fun lockReserved(reservation: InboundReservation): Instant {
         reservations.lock(reservation.id!!)

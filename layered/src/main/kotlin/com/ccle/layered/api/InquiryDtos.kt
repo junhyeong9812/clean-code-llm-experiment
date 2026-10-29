@@ -51,3 +51,13 @@ data class InquiryDetailView(
         d.orderItem?.let { InquiryOrderItemView(it) },
     )
 }
+
+/** 관리자 문의함 항목(§20.4.2) = 문의 모양 + userId. */
+data class AdminInquiryView(@get:JsonUnwrapped val inquiry: InquiryView, val userId: Long) {
+    constructor(r: InquiryRead) : this(InquiryView(r), r.inquiry.userId)
+}
+
+/** 관리자 문의 상세(§20.4.2) = 상세 모양(§9.2) + userId. */
+data class AdminInquiryDetailView(@get:JsonUnwrapped val detail: InquiryDetailView, val userId: Long) {
+    constructor(d: InquiryDetail) : this(InquiryDetailView(d), d.inquiry.inquiry.userId)
+}

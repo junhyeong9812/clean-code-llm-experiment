@@ -66,4 +66,6 @@ class JpaInboundReservationRepository(private val em: EntityManager) : InboundRe
     override fun listOf(sellerId: Long): List<InboundReservation> =
         em.createQuery("SELECT r FROM InboundReservation r WHERE r.sellerId = :seller ORDER BY r.id", InboundReservation::class.java)
             .setParameter("seller", sellerId).resultList
+
+    override fun flush() = em.flush()
 }
