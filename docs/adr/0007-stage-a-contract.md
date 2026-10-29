@@ -460,6 +460,7 @@
 6. "앞뒤 공백"은 ADR-0004 §15의 4와 같은 공백 집합(Kotlin `isWhitespace` — NBSP·전각 공백 포함)이다. 길이(§2.1)도 그 공백을 앞뒤에서 뺀 값으로 센다.
 7. 이 문서의 헤더가 필요 없는 새 엔드포인트(`GET /sellers/{id}/reviews`·`/profile`, `/product-sizes/{id}/price-stats`·`/recent-trades`, `/inbound-slots`)는 `X-User-Id`를 **읽지 않는다**(잘못된 값이 와도 401이 아니다).
 8. 경로 변수가 정수가 아닌 경우는 계약 밖이다(프레임워크 라우팅 — 기존 엔드포인트와 같다).
+8-1. 정수 입력이 상한 없이 정의된 곳(예: §10.3 `supplyAmount`)에서 계산이 bigint를 넘는 값(부가세·합계 오버플로)은 계약 밖이다 — ADR-0003 §12의 1대로 400 `UNEXPECTED_ERROR`가 나도 계약 위반이 아니다(god 구현 리뷰 2026-10-29).
 
 **기능별 보완**
 
