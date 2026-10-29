@@ -94,7 +94,10 @@ need "NBSP 본문 수정" "$(last_status)" "400 INVALID_REQUEST"
 edit $B_ 999999999 '{"rating":4,"content":"x"}'               # 404
 edit $C_ "$V1" '{"rating":4,"content":"x"}'                   # 작성자 아님 403
 edit $S_ "$V1" '{"rating":4,"content":"x"}'                   # 판매자도 403
+mark review-edit-ok
 edit $B_ "$V1" '{"rating":4,"content":" 고침 "}'              # 200
+# 잠금 순서(§20.8): 주문 FU → 리뷰 FU → UPDATE — 두 앱이 함께 틀려도 잡히게 절대 순서로 확인
+lock_seq review-edit-ok 'from orders where id = .* for update' 'from reviews where id = .* for update' 'update reviews'
 need "리뷰 수정" "$(last_status) $(q "SELECT rating||' '||content||' '||status FROM reviews WHERE id=$V1")" "200 4  고침  VISIBLE"
 edit $B_ "$V1" '{"rating":4,"content":" 고침 "}'              # 같은 값도 200(멱등 처리 없음)
 call POST "/admin/reviews/$V2/hide"
@@ -214,6 +217,11 @@ mark inbound-reschedule-not-paid
 resch $S_ "${RV[1]}" "{\"slotId\":$SB}"
 need "PAID 아님" "$(last_status)" "409 ITEM_STATE_CONFLICT"
 resch $S_ "${RV[1]}" "{\"slotId\":$SA}"                       # PAID 아님 + 같은 슬롯 → 판정 1이 먼저(메시지로 비교)
+# PAID 판정이 예약·슬롯 잠금보다 먼저(§20.5.1의 1·GF-7): 이 구간에 예약·슬롯 FOR UPDATE가 없어야 한다(두 앱이 함께 틀려도 잡히게)
+pgl=$(docker logs "$EQ_DB" 2>&1)
+n_np=$(ext_pg_app_statements /dev/stdin <<< "$pgl" | awk '$0 == "== MARK inbound-reschedule-not-paid" { f = 1; next } f && /^== MARK / { exit } f && tolower($0) ~ /from inbound_(reservations|slots) where id = .* for update/ { n++ } END { print n + 0 }')
+grep -q "MARK inbound-reschedule-not-paid" <<< "$pgl" || die "DB 문장 로그에 not-paid 표식이 없음"
+need "PAID 판정이 예약·슬롯 잠금보다 먼저" "$n_np" 0
 mark inbound-reschedule-ok
 resch $S_ "${RV[0]}" "{\"slotId\":$SB}"                       # 200 {cancelled, reserved}
 need "예약 변경" "$(last_status) $(q "SELECT string_agg(status||'@'||(slot_id-$msl), ' ' ORDER BY id) FROM inbound_reservations WHERE order_item_id=${P[0]}")" "200 CANCELLED@1 RESERVED@2"
