@@ -35,7 +35,7 @@ object SlowTrigger {
 
     fun <T> on(table: String, event: String, condition: String = "TRUE", block: () -> T): T {
         require(table.matches(Regex("[a-z_]+")))
-        require(event == "UPDATE" || event == "INSERT")
+        require(event == "UPDATE" || event == "INSERT" || event == "DELETE")
         require(Env.httpTimeoutMs > OBSERVE_MS + 2_000) { "HTTP_TIMEOUT_MS(${Env.httpTimeoutMs})는 관측 상한 ${OBSERVE_MS}ms보다 2초 이상 길어야 한다" }
         val name = "bt_slow_" + UUID.randomUUID().toString().replace("-", "").take(12)
         val key = Random.nextLong(1L shl 20, 1L shl 31)
@@ -52,7 +52,7 @@ object SlowTrigger {
         try {
             Db.update(
                 "CREATE FUNCTION $name() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN " +
-                    "PERFORM pg_advisory_xact_lock_shared($key); RETURN NEW; END $$",
+                    "PERFORM pg_advisory_xact_lock_shared($key); RETURN coalesce(NEW, OLD); END $$",   // DELETE는 NEW가 없다
             )
             Db.update("CREATE TRIGGER $name BEFORE $event ON $table FOR EACH ROW WHEN ($condition) EXECUTE FUNCTION $name()")
             val future = pool.submit<T> { block() }

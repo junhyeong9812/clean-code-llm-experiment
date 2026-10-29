@@ -137,4 +137,18 @@ class A5WishlistTest {
         rs.filter { it.status != 201 }.forEach { it.assertError(409, "ITEM_STATE_CONFLICT") }
         assertEquals(1, SB.wishRows(u, size).size)
     }
+
+    /** §8.1·§19의 10-1·§2.3: 같은 위시리스트 행을 동시에 두 번 지우면 사용자 행 잠금으로 줄을 서 하나만 200, 다른 하나는 404. */
+    @Test
+    fun `§19의 10-1·§2_3 동시성 - 같은 행 동시 삭제는 200 하나·404 하나`() {
+        val u = Db.createUser()
+        val size = Db.createProductSize()
+        SB.wishAdd(u, size).assertStatus(201)
+        val rs = SlowTrigger.on("wishlists", "DELETE", condition = "OLD.user_id = $u") {
+            SB.concurrently(2) { SB.wishDel(u, size) }
+        }
+        assertEquals(listOf(200, 404), rs.map { it.status }.sorted(), "응답: $rs")
+        rs.single { it.status == 404 }.assertError(404, "NOT_FOUND")
+        assertEquals(0, SB.wishRows(u, size).size)
+    }
 }
