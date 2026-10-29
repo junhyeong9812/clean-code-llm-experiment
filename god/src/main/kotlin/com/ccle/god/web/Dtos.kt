@@ -108,3 +108,84 @@ data class SettlementView(
 )
 
 data class SettlementItemView(val orderItemId: Long, val amount: Long, val fee: Long, val status: String)
+
+// ---- 단계 A (ADR-0007) ----
+
+/** 리뷰 모양(ADR-0007 §4.1). 작성·삭제·숨김 응답과 판매자 리뷰 조회가 같이 쓴다. */
+data class ReviewView(
+    val reviewId: Long,
+    val orderItemId: Long,
+    val sellerId: Long,
+    val rating: Int,
+    val content: String,
+    val status: String,
+    val createdAt: Instant,
+)
+
+/** 판매자 리뷰 조회(§4.4). reviewCount·ratingSum = 마지막 rating-recalc 결과, averageX100은 reviewCount 0이면 null. */
+data class SellerReviewsView(
+    val sellerId: Long,
+    val reviewCount: Long,
+    val ratingSum: Long,
+    val averageX100: Long?,
+    val reviews: List<ReviewView>,
+)
+
+/** 판매자 등급 모양(§5.4). effectiveFrom은 "YYYY-MM-DD". */
+data class SellerGradeView(val grade: String, val effectiveFrom: LocalDate, val basisAmount: Long, val restricted: Boolean)
+
+data class SellerGradesView(val current: SellerGradeView?, val history: List<SellerGradeView>)
+
+/** 리베이트 1행(§5.4). */
+data class FeeRebateView(
+    val month: LocalDate,
+    val grade: String,
+    val feeBase: Long,
+    val ratePermille: Int,
+    val amount: Long,
+    val status: String,
+    val paidAt: Instant?,
+)
+
+/** 지급 계좌 변경 요청 모양(§6.1). */
+data class PayoutRequestView(
+    val requestId: Long,
+    val bankCode: String,
+    val accountNoMasked: String,
+    val status: String,
+    val rejectReason: String?,
+    val requestedAt: Instant,
+    val decidedAt: Instant?,
+)
+
+/** 유효 지급 계좌(§6.3). source = REQUEST|INITIAL, 둘 다 없으면 세 필드 null. pending = PENDING 요청. */
+data class PayoutAccountView(val bankCode: String?, val accountNoMasked: String?, val source: String?, val pending: PayoutRequestView?)
+
+/** 월간 정산서 1행(§6.4). */
+data class MonthlyStatementView(
+    val month: LocalDate,
+    val settlementCount: Int,
+    val gross: Long,
+    val feeTotal: Long,
+    val penaltyTotal: Long,
+    val payoutTotal: Long,
+    val carriedCount: Int,
+    val heldCount: Int,
+    val lastCarryOut: Long,
+)
+
+/** 세금계산서 모양(§10.3). */
+data class TaxInvoiceView(
+    val invoiceId: Long,
+    val settlementId: Long,
+    val kind: String,
+    val status: String,
+    val supplyAmount: Long,
+    val vatAmount: Long,
+    val totalAmount: Long,
+    val refInvoiceId: Long?,
+    val issuedAt: Instant,
+)
+
+/** 정정 응답(§10.3): cancelled = 새 CANCEL 행, reissued = 새 ISSUE 행. */
+data class TaxInvoiceCorrected(val cancelled: TaxInvoiceView, val reissued: TaxInvoiceView)

@@ -1,11 +1,15 @@
 package com.ccle.god
 
+import com.ccle.god.entity.AdminAuditLog
 import com.ccle.god.entity.Bid
 import com.ccle.god.entity.BidEvent
 import com.ccle.god.entity.BuyerWarning
 import com.ccle.god.entity.Dispute
+import com.ccle.god.entity.FeeRebate
 import com.ccle.god.entity.Inspection
+import com.ccle.god.entity.MonthlyStatement
 import com.ccle.god.entity.OrderItem
+import com.ccle.god.entity.PayoutAccountRequest
 import com.ccle.god.entity.PgTransaction
 import com.ccle.god.entity.PointAllocation
 import com.ccle.god.entity.PointBalance
@@ -13,9 +17,13 @@ import com.ccle.god.entity.PointLedgerEntry
 import com.ccle.god.entity.ProductSize
 import com.ccle.god.entity.PurchaseOrder
 import com.ccle.god.entity.Refund
+import com.ccle.god.entity.Review
+import com.ccle.god.entity.SellerGrade
 import com.ccle.god.entity.SellerPenalty
+import com.ccle.god.entity.SellerRating
 import com.ccle.god.entity.Settlement
 import com.ccle.god.entity.SettlementItem
+import com.ccle.god.entity.TaxInvoice
 import com.ccle.god.entity.Trade
 import com.ccle.god.entity.User
 import com.ccle.god.web.ApiException
@@ -26,14 +34,24 @@ import com.ccle.god.web.BidView
 import com.ccle.god.web.BookView
 import com.ccle.god.web.DisputeOpened
 import com.ccle.god.web.DisputeView
+import com.ccle.god.web.FeeRebateView
 import com.ccle.god.web.ItemView
+import com.ccle.god.web.MonthlyStatementView
 import com.ccle.god.web.OrderItemView
 import com.ccle.god.web.OrderView
 import com.ccle.god.web.PaymentResult
+import com.ccle.god.web.PayoutAccountView
+import com.ccle.god.web.PayoutRequestView
 import com.ccle.god.web.PointsView
 import com.ccle.god.web.RefundView
+import com.ccle.god.web.ReviewView
+import com.ccle.god.web.SellerGradeView
+import com.ccle.god.web.SellerGradesView
+import com.ccle.god.web.SellerReviewsView
 import com.ccle.god.web.SettlementItemView
 import com.ccle.god.web.SettlementView
+import com.ccle.god.web.TaxInvoiceCorrected
+import com.ccle.god.web.TaxInvoiceView
 import com.ccle.god.web.TradeView
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
@@ -1280,6 +1298,11 @@ class Marketplace(
             "point-expiry" -> expirePoints(now)
             "grade-recalc" -> recalcGrades(now)
             "weekly-settlement" -> BatchResult(settleWeeks(now), failed = 0)
+            "rating-recalc" -> recalcRatings(now)
+            "seller-grade-recalc" -> recalcSellerGrades(now)
+            "rebate-settlement" -> settleRebates(now)
+            "monthly-statement" -> writeMonthlyStatements(now)
+            "tax-invoice-issue" -> issueTaxInvoices(now)
             else -> badRequest("알 수 없는 배치: $name")
         }
         log.info(
@@ -1735,6 +1758,559 @@ class Marketplace(
             )
         }
     }!!
+
+    // ---- 단계 A 공통 (ADR-0007 §2) ----
+
+    /** 글자 수(§2.1·§19의 6): 앞뒤 공백(isWhitespace)을 뺀 값의 유니코드 코드 포인트 수. 중간 공백은 센다. */
+    private fun textLength(value: String): Int {
+        val trimmed = value.trim()
+        return trimmed.codePointCount(0, trimmed.length)
+    }
+
+    /** 새 테이블 행의 상태 충돌(§2.2 — 기존 code ITEM_STATE_CONFLICT를 쓴다). */
+    private fun stateConflict(message: String): Nothing =
+        throw ApiException(HttpStatus.CONFLICT, "ITEM_STATE_CONFLICT", message)
+
+    /** 새 테이블 행 하나를 `FOR UPDATE`로 잠근다(§2.3). 잠근 뒤 엔티티를 refresh해 최신 상태로 판정한다. */
+    private fun lockRow(table: String, id: Long) {
+        em.createNativeQuery("SELECT id FROM $table WHERE id = :id FOR UPDATE").setParameter("id", id).resultList
+    }
+
+    /**
+     * 관리자 감사 로그 1행(§2.7·§11.3). 새 `/admin` 쓰기 요청이 성공 경로의 같은 트랜잭션 안에서 부른다(실패하면 함께 롤백된다).
+     * target_id = 바뀐 행 id, detail은 action별 값(§11.3), created_at = 요청 시각.
+     */
+    private fun audit(action: String, targetId: Long, detail: String?, now: Instant) {
+        em.persist(AdminAuditLog(action = action, targetId = targetId, detail = detail, createdAt = now))
+    }
+
+    /**
+     * 지난달 M(현재 달 1일 − 1개월)이 닫혔으면 M, 아니면 null(§5.3·§6.4). 닫힘 = M에 속하는 마지막 월요일 L에 대해
+     * 지금까지 만든 정산의 마지막 마감(max(period_start) + 7일, ADR-0004 §10.1)이 L + 7일 이상.
+     */
+    private fun closedLastMonth(now: Instant): LocalDate? {
+        val m = LocalDate.ofInstant(now, kst).withDayOfMonth(1).minusMonths(1)
+        val lastMonday = m.plusMonths(1).minusDays(1).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        val lastPeriodStart = em.createQuery("SELECT max(s.periodStart) FROM Settlement s", LocalDate::class.java).singleResult
+            ?: return null
+        return if (lastPeriodStart.plusDays(7).isBefore(lastMonday.plusDays(7))) null else m
+    }
+
+    // ---- A1 리뷰·평점 (ADR-0007 §4) ----
+
+    /**
+     * 리뷰 작성(§4.1). 구매자만, CONFIRMED만, 항목당 1건(지운 뒤에도 다시 쓸 수 없다), 현재 ≤ confirmed_at + 30일.
+     * 순서: 400 → 404 → 403 → 주문 행 FOR UPDATE → 409(상태 → 중복 → 기한). 주문 행 잠금으로 같은 항목의 동시 작성이 줄을 선다.
+     */
+    fun writeReview(userId: Long, itemId: Long, rating: Long?, content: String?): ReviewView {
+        if (rating == null) badRequest("rating이 필요하다")
+        if (rating !in 1L..5L) badRequest("rating은 1~5: $rating")
+        if (content == null) badRequest("content가 필요하다")
+        if (textLength(content) !in 1..1_000) badRequest("content는 1~1,000자")
+
+        val now = clock.now()
+        return tx.execute {
+            val item = em.find(OrderItem::class.java, itemId) ?: notFound("없는 주문 항목: $itemId")
+            requireBuyer(item, userId)
+            em.createNativeQuery("SELECT id FROM orders WHERE id = :id FOR UPDATE").setParameter("id", item.orderId).resultList
+            em.refresh(item)
+            requireItemStatus(item, "CONFIRMED")
+            val exists = em.createQuery("SELECT count(r) FROM Review r WHERE r.orderItemId = :item", Long::class.javaObjectType)
+                .setParameter("item", itemId).singleResult
+            if (exists > 0) stateConflict("리뷰가 이미 있는 주문 항목: $itemId")
+            val deadline = item.confirmedAt!!.plus(Duration.ofDays(30))
+            if (now.isAfter(deadline)) {
+                throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "리뷰 작성 기간($deadline)이 지났다: $itemId")
+            }
+            val review = Review(
+                orderItemId = itemId,
+                buyerId = userId,
+                sellerId = em.find(Trade::class.java, item.tradeId).sellerId,
+                rating = rating.toShort(),
+                content = content,
+                status = "VISIBLE",
+                createdAt = now,
+                updatedAt = now,
+            )
+            em.persist(review)
+            reviewView(review)
+        }!!
+    }
+
+    /** 리뷰 삭제(§4.2). 작성자만. VISIBLE·HIDDEN → DELETED(hidden_reason NULL), DELETED면 409. */
+    fun deleteReview(userId: Long, reviewId: Long): ReviewView {
+        val now = clock.now()
+        return tx.execute {
+            val review = em.find(Review::class.java, reviewId) ?: notFound("없는 리뷰: $reviewId")
+            if (review.buyerId != userId) throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "작성자가 아닌 리뷰: $reviewId")
+            lockRow("reviews", reviewId)
+            em.refresh(review)
+            if (review.status == "DELETED") stateConflict("이미 지운 리뷰: $reviewId")
+            review.status = "DELETED"
+            review.hiddenReason = null
+            review.updatedAt = now
+            reviewView(review)
+        }!!
+    }
+
+    /** 관리자 숨김(§4.3). VISIBLE만 → HIDDEN·ADMIN + 감사 REVIEW_HIDE(detail null). */
+    fun hideReview(reviewId: Long): ReviewView {
+        val now = clock.now()
+        return tx.execute {
+            val review = em.find(Review::class.java, reviewId) ?: notFound("없는 리뷰: $reviewId")
+            lockRow("reviews", reviewId)
+            em.refresh(review)
+            if (review.status != "VISIBLE") stateConflict("VISIBLE이 아닌 리뷰: $reviewId (${review.status})")
+            review.status = "HIDDEN"
+            review.hiddenReason = "ADMIN"
+            review.updatedAt = now
+            audit("REVIEW_HIDE", reviewId, null, now)
+            reviewView(review)
+        }!!
+    }
+
+    /**
+     * 판매자 리뷰 조회(§4.4, 헤더 불필요). 평점 = seller_ratings 행(마지막 rating-recalc 결과, 없으면 0·0),
+     * averageX100 = floor(ratingSum × 100 / reviewCount)(0건이면 null), reviews = 지금의 VISIBLE 리뷰 reviewId 오름차순.
+     */
+    fun sellerReviews(sellerId: Long): SellerReviewsView = snapshotTx.execute {
+        em.find(User::class.java, sellerId) ?: notFound("없는 사용자: $sellerId")
+        val rating = em.find(SellerRating::class.java, sellerId)
+        val count = rating?.reviewCount?.toLong() ?: 0L
+        val sum = rating?.ratingSum?.toLong() ?: 0L
+        val reviews = em.createQuery(
+            "SELECT r FROM Review r WHERE r.sellerId = :seller AND r.status = 'VISIBLE' ORDER BY r.id",
+            Review::class.java,
+        ).setParameter("seller", sellerId).resultList
+        SellerReviewsView(
+            sellerId = sellerId,
+            reviewCount = count,
+            ratingSum = sum,
+            averageX100 = if (count == 0L) null else Math.floorDiv(sum * 100, count),
+            reviews = reviews.map { reviewView(it) },
+        )
+    }!!
+
+    private fun reviewView(r: Review) =
+        ReviewView(r.id!!, r.orderItemId, r.sellerId, r.rating.toInt(), r.content, r.status, r.createdAt)
+
+    /**
+     * rating-recalc(§4.5): 리뷰가 있는 판매자(users id 순). 판매자 1명 = 그 판매자의 리뷰 행을 id 순으로 잠근 트랜잭션 하나.
+     * 1 분쟁 숨김(VISIBLE이고 항목 DISPUTED·REFUNDED_AFTER_CONFIRM → HIDDEN·DISPUTE) 2 분쟁 해제(HIDDEN·DISPUTE이고 항목 CONFIRMED → VISIBLE)
+     * 3 평점(VISIBLE 수·합 — 행이 없고 1건 이상이면 INSERT, 행이 있고 값이 다르면 UPDATE). 반환 = 1~3 중 하나라도 쓴 판매자 수.
+     */
+    private fun recalcRatings(now: Instant): BatchResult =
+        forEachTarget(
+            "users",
+            "EXISTS (SELECT 1 FROM reviews r WHERE r.seller_id = t.id)",
+            emptyMap(),
+            isolatedAs = "rating-recalc",
+        ) { sellerId ->
+            tx.execute {
+                em.createNativeQuery("SELECT id FROM reviews WHERE seller_id = :seller ORDER BY id FOR UPDATE")
+                    .setParameter("seller", sellerId).resultList
+                val reviews = em.createQuery("SELECT r FROM Review r WHERE r.sellerId = :seller ORDER BY r.id", Review::class.java)
+                    .setParameter("seller", sellerId).resultList
+                var wrote = false
+                for (review in reviews) {
+                    val itemStatus = em.find(OrderItem::class.java, review.orderItemId).status
+                    if (review.status == "VISIBLE" && (itemStatus == "DISPUTED" || itemStatus == "REFUNDED_AFTER_CONFIRM")) {
+                        review.status = "HIDDEN"
+                        review.hiddenReason = "DISPUTE"
+                        review.updatedAt = now
+                        wrote = true
+                    } else if (review.status == "HIDDEN" && review.hiddenReason == "DISPUTE" && itemStatus == "CONFIRMED") {
+                        review.status = "VISIBLE"
+                        review.hiddenReason = null
+                        review.updatedAt = now
+                        wrote = true
+                    }
+                }
+                val visible = reviews.filter { it.status == "VISIBLE" }
+                val count = visible.size
+                val sum = visible.sumOf { it.rating.toInt() }
+                val rating = em.find(SellerRating::class.java, sellerId)
+                if (rating == null) {
+                    if (count > 0) {
+                        em.persist(SellerRating(sellerId = sellerId, reviewCount = count, ratingSum = sum, recalculatedAt = now))
+                        wrote = true
+                    }
+                } else if (rating.reviewCount != count || rating.ratingSum != sum) {
+                    rating.reviewCount = count
+                    rating.ratingSum = sum
+                    rating.recalculatedAt = now
+                    wrote = true
+                }
+                wrote
+            }!!
+        }
+
+    // ---- A2 판매자 등급·수수료 리베이트 (ADR-0007 §5) ----
+
+    /** 판매자 등급(§5.1): MASTER ≥ 8,000,000 · PRO ≥ 3,000,000 · PLUS ≥ 1,000,000 · 그 밖 STANDARD. */
+    private fun sellerGradeOf(basis: Long): String = when {
+        basis >= 8_000_000 -> "MASTER"
+        basis >= 3_000_000 -> "PRO"
+        basis >= 1_000_000 -> "PLUS"
+        else -> "STANDARD"
+    }
+
+    /** 리베이트율(§5.3, 천분율): STANDARD 0 · PLUS 50 · PRO 100 · MASTER 150. */
+    private fun rebatePermille(grade: String): Int = when (grade) {
+        "STANDARD" -> 0
+        "PLUS" -> 50
+        "PRO" -> 100
+        "MASTER" -> 150
+        else -> throw IllegalStateException("알 수 없는 판매자 등급: $grade")
+    }
+
+    /**
+     * seller-grade-recalc(§5.2): 기준월 D = 현재가 속한 달 1일(KST). 대상 = 정산 행이 있고 effective_from = D 행이 없는 사용자(users id 순).
+     * 사용자 1명 = 그 사용자 행을 잠근 트랜잭션 하나, 잠근 뒤 D 행이 없는지 다시 본다(있으면 건너뜀 — 첫 결과 유지).
+     * 기준 금액 = INCLUDED amount 합(소속 정산 period_start ∈ [D − 3개월, D)). 판매 제한 중(sale_restricted_until > 현재)이면 restricted·STANDARD.
+     */
+    private fun recalcSellerGrades(now: Instant): BatchResult {
+        val d = LocalDate.ofInstant(now, kst).withDayOfMonth(1)
+        return forEachTarget(
+            "users",
+            "EXISTS (SELECT 1 FROM settlements s WHERE s.seller_id = t.id)" +
+                " AND NOT EXISTS (SELECT 1 FROM seller_grades g WHERE g.seller_id = t.id AND g.effective_from = :d)",
+            mapOf("d" to d),
+            isolatedAs = "seller-grade-recalc",
+        ) { userId ->
+            tx.execute {
+                lockUser(userId)
+                val existing = em.createQuery(
+                    "SELECT count(g) FROM SellerGrade g WHERE g.sellerId = :seller AND g.effectiveFrom = :d",
+                    Long::class.javaObjectType,
+                ).setParameter("seller", userId).setParameter("d", d).singleResult
+                if (existing > 0) return@execute false
+                val basis = (
+                    em.createNativeQuery(
+                        "SELECT coalesce(sum(si.amount), 0) FROM settlement_items si JOIN settlements s ON s.id = si.settlement_id" +
+                            " WHERE s.seller_id = :seller AND si.status = 'INCLUDED' AND s.period_start >= :from AND s.period_start < :d",
+                    ).setParameter("seller", userId).setParameter("from", d.minusMonths(3)).setParameter("d", d).singleResult as Number
+                    ).toLong()
+                val restricted = em.find(User::class.java, userId).saleRestrictedUntil?.isAfter(now) == true
+                em.persist(
+                    SellerGrade(
+                        sellerId = userId,
+                        grade = if (restricted) "STANDARD" else sellerGradeOf(basis),
+                        effectiveFrom = d,
+                        basisAmount = basis,
+                        restricted = restricted,
+                        createdAt = now,
+                    ),
+                )
+                true
+            }!!
+        }
+    }
+
+    /**
+     * rebate-settlement(§5.3): 대상 달 M = 지난달, 닫혔을 때만(§6.4와 같은 판정 — 아니면 대상 0건).
+     * 대상 = effective_from = M 등급 행이 있고 month = M 리베이트가 없는 판매자(users id 순). 사용자 행을 잠근 뒤 다시 확인한다.
+     * fee_base = period_start가 M에 속하는 정산의 fee_total 합, amount = floor(max(fee_base, 0) × 율 / 1000). amount > 0이면 PAID(paid_at = 현재), 아니면 ZERO.
+     */
+    private fun settleRebates(now: Instant): BatchResult {
+        val m = closedLastMonth(now) ?: return BatchResult(0, 0)
+        val params = mapOf<String, Any>("m" to m)
+        return forEachTarget(
+            "users",
+            "EXISTS (SELECT 1 FROM seller_grades g WHERE g.seller_id = t.id AND g.effective_from = :m)" +
+                " AND NOT EXISTS (SELECT 1 FROM fee_rebates f WHERE f.seller_id = t.id AND f.month = :m)",
+            params,
+            isolatedAs = "rebate-settlement",
+        ) { userId ->
+            tx.execute {
+                lockUser(userId)
+                val grade = em.createQuery(
+                    "SELECT g FROM SellerGrade g WHERE g.sellerId = :seller AND g.effectiveFrom = :m",
+                    SellerGrade::class.java,
+                ).setParameter("seller", userId).setParameter("m", m).resultList.firstOrNull() ?: return@execute false
+                val existing = em.createQuery(
+                    "SELECT count(f) FROM FeeRebate f WHERE f.sellerId = :seller AND f.month = :m",
+                    Long::class.javaObjectType,
+                ).setParameter("seller", userId).setParameter("m", m).singleResult
+                if (existing > 0) return@execute false
+                val feeBase = (
+                    em.createNativeQuery(
+                        "SELECT coalesce(sum(s.fee_total), 0) FROM settlements s" +
+                            " WHERE s.seller_id = :seller AND s.period_start >= :m AND s.period_start < :next",
+                    ).setParameter("seller", userId).setParameter("m", m).setParameter("next", m.plusMonths(1)).singleResult as Number
+                    ).toLong()
+                val rate = rebatePermille(grade.grade)
+                val amount = mulDiv(maxOf(feeBase, 0L), rate.toLong(), 1000)
+                em.persist(
+                    FeeRebate(
+                        sellerId = userId,
+                        month = m,
+                        grade = grade.grade,
+                        feeBase = feeBase,
+                        ratePermille = rate,
+                        amount = amount,
+                        status = if (amount > 0) "PAID" else "ZERO",
+                        paidAt = if (amount > 0) now else null,
+                        createdAt = now,
+                    ),
+                )
+                true
+            }!!
+        }
+    }
+
+    /** `GET /me/seller-grade`(§5.4): current = effective_from이 가장 늦은 행, history = effective_from 오름차순. */
+    fun sellerGrades(userId: Long): SellerGradesView {
+        val history = em.createQuery(
+            "SELECT g FROM SellerGrade g WHERE g.sellerId = :seller ORDER BY g.effectiveFrom",
+            SellerGrade::class.java,
+        ).setParameter("seller", userId).resultList.map { SellerGradeView(it.grade, it.effectiveFrom, it.basisAmount, it.restricted) }
+        return SellerGradesView(current = history.lastOrNull(), history = history)
+    }
+
+    /** `GET /me/fee-rebates`(§5.4): month 오름차순. */
+    fun feeRebates(userId: Long): List<FeeRebateView> =
+        em.createQuery("SELECT f FROM FeeRebate f WHERE f.sellerId = :seller ORDER BY f.month", FeeRebate::class.java)
+            .setParameter("seller", userId).resultList
+            .map { FeeRebateView(it.month, it.grade, it.feeBase, it.ratePermille, it.amount, it.status, it.paidAt) }
+
+    // ---- A3 지급 계좌 변경·월간 정산서 (ADR-0007 §6) ----
+
+    /** 시드 은행 코드(§6.1). */
+    private val bankCodes = setOf("004", "011", "020", "081", "088", "090")
+
+    private val accountNoPattern = Regex("[0-9]{10,14}")
+
+    /**
+     * 지급 계좌 변경 요청(§6.1). bankCode는 시드 은행 코드 6개 중 하나, accountNo는 숫자 10~14자리(앞뒤 공백 불가 — §19의 2).
+     * 사용자 행 FOR UPDATE → PENDING 요청이 있으면 409. 저장은 "****" + 끝 4자리(전체 번호는 저장하지 않는다).
+     */
+    fun requestPayoutAccount(userId: Long, bankCode: String?, accountNo: String?): PayoutRequestView {
+        if (bankCode == null) badRequest("bankCode가 필요하다")
+        if (bankCode !in bankCodes) badRequest("알 수 없는 은행 코드: $bankCode")
+        if (accountNo == null) badRequest("accountNo가 필요하다")
+        if (!accountNoPattern.matches(accountNo)) badRequest("accountNo는 숫자 10~14자리")
+
+        val now = clock.now()
+        return tx.execute {
+            lockUser(userId)
+            val pending = em.createQuery(
+                "SELECT count(p) FROM PayoutAccountRequest p WHERE p.userId = :user AND p.status = 'PENDING'",
+                Long::class.javaObjectType,
+            ).setParameter("user", userId).singleResult
+            if (pending > 0) stateConflict("판정 대기 중인 요청이 있다: 사용자 $userId")
+            val request = PayoutAccountRequest(
+                userId = userId,
+                bankCode = bankCode,
+                accountNoMasked = "****" + accountNo.takeLast(4),
+                status = "PENDING",
+                requestedAt = now,
+            )
+            em.persist(request)
+            payoutRequestView(request)
+        }!!
+    }
+
+    /**
+     * 지급 계좌 판정(§6.2·§19의 9). approve 필수, 반려면 reason이 비지 않아야 한다(받은 그대로 저장), 승인이면 reason은 저장하지 않는다.
+     * PENDING만(요청 행 FOR UPDATE 뒤 확인) → APPROVED·REJECTED, decided_at = 현재 + 감사 PAYOUT_ACCOUNT_DECISION(detail = 결과 상태).
+     * seller_payout_accounts는 바꾸지 않는다.
+     */
+    fun decidePayoutAccount(requestId: Long, approve: Boolean?, reason: String?): PayoutRequestView {
+        if (approve == null) badRequest("approve가 필요하다")
+        if (!approve && reason.isNullOrBlank()) badRequest("반려에는 reason이 필요하다")
+
+        val now = clock.now()
+        return tx.execute {
+            val request = em.find(PayoutAccountRequest::class.java, requestId) ?: notFound("없는 요청: $requestId")
+            lockRow("payout_account_requests", requestId)
+            em.refresh(request)
+            if (request.status != "PENDING") stateConflict("PENDING이 아닌 요청: $requestId (${request.status})")
+            request.status = if (approve) "APPROVED" else "REJECTED"
+            request.rejectReason = if (approve) null else reason
+            request.decidedAt = now
+            audit("PAYOUT_ACCOUNT_DECISION", requestId, request.status, now)
+            payoutRequestView(request)
+        }!!
+    }
+
+    /**
+     * `GET /me/payout-account`(§6.3): 유효 계좌 = APPROVED 요청 중 decided_at이 가장 늦은 것(같으면 id 큰 것) → REQUEST,
+     * 없으면 seller_payout_accounts 행 → INITIAL, 둘 다 없으면 null. pending = PENDING 요청.
+     */
+    fun payoutAccount(userId: Long): PayoutAccountView = snapshotTx.execute {
+        val requests = em.createQuery(
+            "SELECT p FROM PayoutAccountRequest p WHERE p.userId = :user AND p.status IN ('APPROVED', 'PENDING') ORDER BY p.decidedAt DESC, p.id DESC",
+            PayoutAccountRequest::class.java,
+        ).setParameter("user", userId).resultList
+        val approved = requests.firstOrNull { it.status == "APPROVED" }
+        val pending = requests.firstOrNull { it.status == "PENDING" }?.let { payoutRequestView(it) }
+        if (approved != null) {
+            PayoutAccountView(approved.bankCode, approved.accountNoMasked, "REQUEST", pending)
+        } else {
+            val initial = em.createNativeQuery("SELECT bank_code, account_no_masked FROM seller_payout_accounts WHERE user_id = :user")
+                .setParameter("user", userId).resultList.firstOrNull() as Array<*>?
+            if (initial != null) {
+                PayoutAccountView(initial[0] as String, initial[1] as String, "INITIAL", pending)
+            } else {
+                PayoutAccountView(null, null, null, pending)
+            }
+        }
+    }!!
+
+    private fun payoutRequestView(p: PayoutAccountRequest) =
+        PayoutRequestView(p.id!!, p.bankCode, p.accountNoMasked, p.status, p.rejectReason, p.requestedAt, p.decidedAt)
+
+    /**
+     * monthly-statement(§6.4): 대상 달 M = 지난달, 닫혔을 때만(아니면 대상 0건). 대상 = period_start가 M에 속하는 정산이 있고
+     * month = M 정산서가 없는 판매자(users id 순). 사용자 행을 잠근 뒤 다시 확인하고 그 달 정산들로 1행:
+     * 건수·각 합·CARRIED 수·HELD 행 수(주마다 센다)·period_start가 가장 늦은 정산의 carry_out.
+     */
+    private fun writeMonthlyStatements(now: Instant): BatchResult {
+        val m = closedLastMonth(now) ?: return BatchResult(0, 0)
+        val next = m.plusMonths(1)
+        return forEachTarget(
+            "users",
+            "EXISTS (SELECT 1 FROM settlements s WHERE s.seller_id = t.id AND s.period_start >= :m AND s.period_start < :next)" +
+                " AND NOT EXISTS (SELECT 1 FROM monthly_statements ms WHERE ms.seller_id = t.id AND ms.month = :m)",
+            mapOf("m" to m, "next" to next),
+            isolatedAs = "monthly-statement",
+        ) { userId ->
+            tx.execute {
+                lockUser(userId)
+                val existing = em.createQuery(
+                    "SELECT count(ms) FROM MonthlyStatement ms WHERE ms.sellerId = :seller AND ms.month = :m",
+                    Long::class.javaObjectType,
+                ).setParameter("seller", userId).setParameter("m", m).singleResult
+                if (existing > 0) return@execute false
+                val settlements = em.createQuery(
+                    "SELECT s FROM Settlement s WHERE s.sellerId = :seller AND s.periodStart >= :m AND s.periodStart < :next ORDER BY s.periodStart",
+                    Settlement::class.java,
+                ).setParameter("seller", userId).setParameter("m", m).setParameter("next", next).resultList
+                if (settlements.isEmpty()) return@execute false
+                val held = em.createQuery(
+                    "SELECT count(i) FROM SettlementItem i WHERE i.settlementId IN :ids AND i.status = 'HELD'",
+                    Long::class.javaObjectType,
+                ).setParameter("ids", settlements.map { it.id!! }).singleResult
+                em.persist(
+                    MonthlyStatement(
+                        sellerId = userId,
+                        month = m,
+                        settlementCount = settlements.size,
+                        gross = settlements.fold(0L) { sum, s -> Math.addExact(sum, s.gross) },
+                        feeTotal = settlements.fold(0L) { sum, s -> Math.addExact(sum, s.feeTotal) },
+                        penaltyTotal = settlements.fold(0L) { sum, s -> Math.addExact(sum, s.penaltyTotal) },
+                        payoutTotal = settlements.fold(0L) { sum, s -> Math.addExact(sum, s.payout) },
+                        carriedCount = settlements.count { it.status == "CARRIED" },
+                        heldCount = held.toInt(),
+                        lastCarryOut = settlements.last().carryOut,
+                        createdAt = now,
+                    ),
+                )
+                true
+            }!!
+        }
+    }
+
+    /** `GET /me/monthly-statements`(§6.4): month 오름차순. */
+    fun monthlyStatements(userId: Long): List<MonthlyStatementView> =
+        em.createQuery("SELECT ms FROM MonthlyStatement ms WHERE ms.sellerId = :seller ORDER BY ms.month", MonthlyStatement::class.java)
+            .setParameter("seller", userId).resultList
+            .map {
+                MonthlyStatementView(
+                    it.month, it.settlementCount, it.gross, it.feeTotal, it.penaltyTotal, it.payoutTotal,
+                    it.carriedCount, it.heldCount, it.lastCarryOut,
+                )
+            }
+
+    // ---- A7 세금계산서 (ADR-0007 §10) ----
+
+    /** 부가세(§10.1) = floor(공급가액 × 10 / 100). 공급가액은 0 이상이다. */
+    private fun vatOf(supply: Long): Long = mulDiv(supply, 10, 100)
+
+    /**
+     * tax-invoice-issue(§10.2): 계산서가 하나도 없는 정산 중 (PAID이고 paid_at ≤ 현재) 또는 CARRIED(settlements id 순).
+     * 정산 1건 = 그 정산 행을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다. PAID → ISSUE/ISSUED(공급가액 = max(fee_total, 0)),
+     * CARRIED → HOLD/DONE(0·0·0). issued_at = 현재.
+     */
+    private fun issueTaxInvoices(now: Instant): BatchResult =
+        forEachTarget(
+            "settlements",
+            "NOT EXISTS (SELECT 1 FROM tax_invoices v WHERE v.settlement_id = t.id)" +
+                " AND ((t.status = 'PAID' AND t.paid_at <= :now) OR t.status = 'CARRIED')",
+            mapOf("now" to now),
+            isolatedAs = "tax-invoice-issue",
+        ) { settlementId ->
+            tx.execute {
+                lockRow("settlements", settlementId)
+                val s = em.find(Settlement::class.java, settlementId)
+                val existing = em.createQuery("SELECT count(v) FROM TaxInvoice v WHERE v.settlementId = :s", Long::class.javaObjectType)
+                    .setParameter("s", settlementId).singleResult
+                val invoice = when {
+                    existing > 0 -> null
+                    s.status == "PAID" && !s.paidAt!!.isAfter(now) -> {
+                        val supply = maxOf(s.feeTotal, 0L)
+                        val vat = vatOf(supply)
+                        TaxInvoice(
+                            settlementId = settlementId, sellerId = s.sellerId, kind = "ISSUE", status = "ISSUED",
+                            supplyAmount = supply, vatAmount = vat, totalAmount = supply + vat, issuedAt = now,
+                        )
+                    }
+                    s.status == "CARRIED" -> TaxInvoice(
+                        settlementId = settlementId, sellerId = s.sellerId, kind = "HOLD", status = "DONE",
+                        supplyAmount = 0, vatAmount = 0, totalAmount = 0, issuedAt = now,
+                    )
+                    else -> null
+                }
+                if (invoice != null) em.persist(invoice)
+                invoice != null
+            }!!
+        }
+
+    /**
+     * 세금계산서 정정(§10.3). supplyAmount ≥ 0. 대상이 ISSUE·ISSUED가 아니면 409(원본 행 FOR UPDATE 뒤 확인).
+     * 한 트랜잭션, 이 순서로: 원본 → CANCELLED(부분 UNIQUE 때문에 INSERT보다 먼저 DB에 보낸다) · CANCEL 1행(원본 금액 × −1)
+     * · 새 ISSUE/ISSUED 1행(같은 정산, ref = 원본) · 감사 TAX_INVOICE_CORRECTION(detail = 새 ISSUE id). 원본은 status만 바뀐다(§19의 12).
+     */
+    fun correctTaxInvoice(invoiceId: Long, supplyAmount: Long?): TaxInvoiceCorrected {
+        if (supplyAmount == null) badRequest("supplyAmount가 필요하다")
+        if (supplyAmount < 0) badRequest("supplyAmount는 0 이상: $supplyAmount")
+
+        val now = clock.now()
+        return tx.execute {
+            val original = em.find(TaxInvoice::class.java, invoiceId) ?: notFound("없는 세금계산서: $invoiceId")
+            lockRow("tax_invoices", invoiceId)
+            em.refresh(original)
+            if (original.kind != "ISSUE" || original.status != "ISSUED") {
+                stateConflict("정정할 수 없는 세금계산서: $invoiceId (${original.kind}·${original.status})")
+            }
+            original.status = "CANCELLED"
+            em.flush()
+            val cancel = TaxInvoice(
+                settlementId = original.settlementId, sellerId = original.sellerId, kind = "CANCEL", status = "DONE",
+                supplyAmount = -original.supplyAmount, vatAmount = -original.vatAmount, totalAmount = -original.totalAmount,
+                refInvoiceId = invoiceId, issuedAt = now,
+            )
+            em.persist(cancel)
+            val vat = vatOf(supplyAmount)
+            val reissue = TaxInvoice(
+                settlementId = original.settlementId, sellerId = original.sellerId, kind = "ISSUE", status = "ISSUED",
+                supplyAmount = supplyAmount, vatAmount = vat, totalAmount = Math.addExact(supplyAmount, vat),
+                refInvoiceId = invoiceId, issuedAt = now,
+            )
+            em.persist(reissue)
+            audit("TAX_INVOICE_CORRECTION", invoiceId, reissue.id!!.toString(), now)
+            TaxInvoiceCorrected(cancelled = taxInvoiceView(cancel), reissued = taxInvoiceView(reissue))
+        }!!
+    }
+
+    /** `GET /me/tax-invoices`(§10.4): 판매자 본인 계산서 전부(세 kind), invoiceId 오름차순. */
+    fun taxInvoices(userId: Long): List<TaxInvoiceView> =
+        em.createQuery("SELECT v FROM TaxInvoice v WHERE v.sellerId = :seller ORDER BY v.id", TaxInvoice::class.java)
+            .setParameter("seller", userId).resultList.map { taxInvoiceView(it) }
+
+    private fun taxInvoiceView(v: TaxInvoice) =
+        TaxInvoiceView(v.id!!, v.settlementId, v.kind, v.status, v.supplyAmount, v.vatAmount, v.totalAmount, v.refInvoiceId, v.issuedAt)
 
     // ---- 기동 (ADR-0003 §9의 7) ----
 

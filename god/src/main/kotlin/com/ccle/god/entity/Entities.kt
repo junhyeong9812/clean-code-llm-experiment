@@ -255,3 +255,119 @@ class SettlementItem(
     var fee: Long,
     var status: String,
 )
+
+// ---- 단계 A 새 테이블(ADR-0007 §3) ----
+
+@Entity
+@Table(name = "reviews")
+class Review(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var orderItemId: Long,
+    var buyerId: Long,
+    var sellerId: Long,
+    var rating: Short,
+    var content: String,
+    var status: String,
+    var hiddenReason: String? = null,
+    var createdAt: Instant,
+    var updatedAt: Instant,
+)
+
+@Entity
+@Table(name = "seller_ratings")
+class SellerRating(
+    @Id
+    var sellerId: Long,
+    var reviewCount: Int,
+    var ratingSum: Int,
+    var recalculatedAt: Instant,
+)
+
+@Entity
+@Table(name = "seller_grades")
+class SellerGrade(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var sellerId: Long,
+    var grade: String,
+    var effectiveFrom: LocalDate,
+    var basisAmount: Long,
+    var restricted: Boolean,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "fee_rebates")
+class FeeRebate(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var sellerId: Long,
+    var month: LocalDate,
+    var grade: String,
+    var feeBase: Long,
+    var ratePermille: Int,
+    var amount: Long,
+    var status: String,
+    var paidAt: Instant? = null,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "payout_account_requests")
+class PayoutAccountRequest(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var userId: Long,
+    var bankCode: String,
+    var accountNoMasked: String,
+    var status: String,
+    var rejectReason: String? = null,
+    var requestedAt: Instant,
+    var decidedAt: Instant? = null,
+)
+
+@Entity
+@Table(name = "monthly_statements")
+class MonthlyStatement(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var sellerId: Long,
+    var month: LocalDate,
+    var settlementCount: Int,
+    var gross: Long,
+    var feeTotal: Long,
+    var penaltyTotal: Long,
+    var payoutTotal: Long,
+    var carriedCount: Int,
+    var heldCount: Int,
+    var lastCarryOut: Long,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "tax_invoices")
+class TaxInvoice(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var settlementId: Long,
+    var sellerId: Long,
+    var kind: String,
+    var status: String,
+    var supplyAmount: Long,
+    var vatAmount: Long,
+    var totalAmount: Long,
+    var refInvoiceId: Long? = null,
+    var issuedAt: Instant,
+)
+
+@Entity
+@Table(name = "admin_audit_logs")
+class AdminAuditLog(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var action: String,
+    var targetId: Long,
+    var detail: String? = null,
+    var createdAt: Instant,
+)
