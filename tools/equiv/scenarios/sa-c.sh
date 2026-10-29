@@ -4,7 +4,9 @@
 #   예약(판정 순서: 404 → 403 → PAID 아님 409 → 살아 있는 예약 409 → 정원 409 → 기한 409, 정원과 기한이 함께면 정원)·취소(정각 허용·1초 뒤 409)·
 #   체크인(시작 전 409·시작 정각 200·+1시간 409)·inbound-no-show, A6 문의 작성(항목 당사자·제3자 403)·추가 메시지·답변·종결·목록·상세·SLA·
 #   inquiry-auto-close(두 시점), A8 price-stats(아래 중앙값)·시세 조회(기간·형식 400)·최근 체결, A9 관리자 조회 7종(키셋 nextAfter → 다음 페이지).
-#   배치는 같은 시각 재실행(0건)까지. 오류 경로 400·401·403·404·409.
+#   배치는 첫 실행 failed 0 · 같은 시각 재실행 processed 0·failed 0까지 단언한다. inquiry-auto-close(첫 시점)는 건별 격리(§2.6)도 밟는다 —
+#   문의 Q1의 UPDATE만 트리거로 실패시켜 200 failed 1·나머지 종결 → 트리거를 지우고 재실행하면 Q1만 processed 1.
+#   입력 규칙(§19): 확장 연도 날짜 400(19-5)·NBSP·전각 공백뿐인 shopName 400(19-6)·휴가 키 생략 = null(19-14). 오류 경로 400·401·403·404·409.
 # 사용: scenarios/sa-c.sh <god|layered> <jar> <outdir>  (보통은 tools/equiv/run.sh sa-c)
 # 배치는 시드 전체가 대상이다(시드 RESERVED 예약·ANSWERED 문의). 관리자 조회는 시드 행을 그대로 읽는다. 바뀐 시드 행은 md5로 비교한다.
 source "$(dirname "$0")/../lib.sh"
@@ -25,6 +27,7 @@ seed_size=$(q "SELECT product_size_id FROM price_stats_daily WHERE stat_date BET
 pen_user=$(q "SELECT seller_id FROM seller_penalties GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 1")
 warn_user=$(q "SELECT user_id FROM buyer_warnings GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 1")
 set_seller=$(q "SELECT seller_id FROM settlements WHERE period_start BETWEEN '2026-09-01' AND '2026-09-30' GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 1")
+for v in seed_size pen_user warn_user set_seller; do int_or_die "$v" "${!v}"; done
 
 # need <이름> <값> [기대]: 경로를 실제로 지났는지. 기대가 없으면 양의 정수여야 한다(두 앱이 함께 지나치지 않았는데 같음으로 끝나지 않게)
 need() {
@@ -34,7 +37,8 @@ need() {
 next_after() { local n; n=$(tail -1 "$out/responses.txt" | sed -n 's/.*"nextAfter":\([0-9][0-9]*\).*/\1/p'); [[ $n =~ ^[0-9]+$ ]] || die "nextAfter 없음: $(tail -1 "$out/responses.txt" | cut -c1-200)"; echo "$n"; }
 start_pg 3000
 start_app 2000
-batch2() { call POST "/admin/batches/$1"; call POST "/admin/batches/$1"; }   # 실행 + 같은 시각 재실행(대상 없음)
+# 실행(failed 0) + 같은 시각 재실행(대상 없음 — processed 0·failed 0)
+batch2() { batch_run "$1" '^[0-9]+ 0 200$'; batch_run "$1" '^0 0 200$'; }
 
 mark seller-profile
 prof() { call PUT /me/seller-profile "$1" "$2"; }
@@ -46,7 +50,15 @@ prof $S_ '{"shopName":"가게"}'                                                
 prof $S_ '{"shopName":"가게","intro":"","vacationFrom":"2026-10-01"}'                  # 한쪽만 400
 prof $S_ '{"shopName":"가게","intro":"","vacationFrom":"2026-10-03","vacationTo":"2026-10-01"}'   # from > to 400
 prof $S_ '{"shopName":"가게","intro":"","vacationFrom":"2026-02-30","vacationTo":"2026-03-01"}'   # 없는 날짜 400
+prof $S_ '{"shopName":"가게","intro":"","vacationFrom":"+10000-01-01","vacationTo":"+10000-01-02"}'   # 확장 연도 400(§19-5)
+need "확장 연도 휴가" "$(last_status)" "400 INVALID_REQUEST"
+prof $S_ '{"shopName":"가게","intro":"","vacationFrom":"-0001-01-01","vacationTo":"2026-10-02"}'     # 음수 연도 400(§19-5)
+need "음수 연도 휴가" "$(last_status)" "400 INVALID_REQUEST"
+prof $S_ '{"shopName":"\u00a0\u3000","intro":""}'                                     # NBSP·전각 공백뿐 400(§19-6)
+need "NBSP shopName" "$(last_status)" "400 INVALID_REQUEST"
 prof $S_ '{"shopName":" 가게 ","intro":"","vacationFrom":"2026-10-01","vacationTo":"2026-10-02"}' # 생성 200(휴가 중)
+prof $S_ '{"shopName":" 가게 ","intro":""}'                                             # 휴가 키 생략 = null(§19-14) 200
+need "휴가 키 생략 → null" "$(last_status) $(q "SELECT coalesce(vacation_from::text,'null')||' '||coalesce(vacation_to::text,'null') FROM seller_profiles WHERE user_id=$S_")" "200 null null"
 prof $S_ '{"shopName":"새 가게","intro":"소개","vacationFrom":null,"vacationTo":null}'   # 갱신 200
 prof $S_ '{"shopName":"새 가게","intro":"소개","vacationFrom":"2026-10-02","vacationTo":"2026-10-02"}'   # 갱신 200(아직 휴가 전)
 call GET "/sellers/$S_/profile"; call GET "/sellers/$C_/profile"; call GET /sellers/999999999/profile    # 200 · 프로필 없음 404 · 사용자 없음 404
@@ -78,6 +90,8 @@ slot '{"slotStart":"2026-10-04T09:00:00+09:00","capacity":5}'  # SL4(취소 기�
 sl=$(q "SELECT string_agg(id::text, ' ' ORDER BY id) FROM inbound_slots WHERE id>$msl"); read -r SL1 SL2 SL3 SL4 <<< "$sl"; [ -n "$SL4" ] || die "슬롯 4개가 아님: $sl"
 call GET "/inbound-slots?date=2026-10-03"; call GET "/inbound-slots?date=2026-10-03" abc   # 헤더를 읽지 않는다
 call GET "/inbound-slots?date=2026-10-3"; call GET /inbound-slots                          # 400 · 누락 400
+call GET "/inbound-slots?date=%2B10000-01-01"                  # 확장 연도 400(§19-5)
+need "확장 연도 date" "$(last_status)" "400 INVALID_REQUEST"
 mark inbound-reserve
 rsv() { call POST /me/inbound-reservations "$1" "{\"slotId\":$2,\"orderItemId\":$3}"; }
 rsv $S_ 999999999 "$I1"                                        # 슬롯 404
@@ -184,10 +198,18 @@ call GET /me/inbound-reservations $S_; call GET "/inbound-slots?date=2026-10-03"
 call PUT /admin/clock "" '{"now":"2026-10-04T07:00:00+09:00"}'
 mark inbound-cancel-on-time
 call DELETE "/me/inbound-reservations/$R5" $S_                 # slot − 2시간 정각 → 200
+need "취소 기한 정각" "$(last_status) $(q "SELECT status FROM inbound_reservations WHERE id=$R5")" "200 CANCELLED"
 
 call PUT /admin/clock "" '{"now":"2026-10-08T00:01:00+09:00"}'
+mark inquiry-auto-close-fail
+inject_on inquiries "BEFORE UPDATE" "OLD.id = $Q1"
+batch_run inquiry-auto-close '^[1-9][0-9]* 1 200$'             # Q1만 실패(롤백), Q2·시드 ANSWERED 종결 → failed 1
+need "격리 실패 뒤 Q1" "$(q "SELECT status FROM inquiries WHERE id=$Q1")" ANSWERED
+need "격리 실패 중 Q2" "$(q "SELECT close_reason FROM inquiries WHERE id=$Q2")" AUTO
+inject_off inquiries
 mark inquiry-auto-close-1
-batch2 inquiry-auto-close                                      # Q1(답변 10-01 00:01)·Q2 + 시드 ANSWERED
+batch_run inquiry-auto-close '^1 0 200$'                       # 트리거 제거 뒤 Q1(답변 10-01 00:01)만 남음
+batch_run inquiry-auto-close '^0 0 200$'                       # 같은 시각 재실행 0건
 need "Q1·Q2 자동 종결" "$(q "SELECT string_agg(close_reason, ' ' ORDER BY id) FROM inquiries WHERE id IN ($Q1,$Q2)")" "AUTO AUTO"
 need "Q4 아직" "$(q "SELECT status FROM inquiries WHERE id=$Q4")" ANSWERED
 call PUT /admin/clock "" '{"now":"2026-10-10T01:00:00+09:00"}'

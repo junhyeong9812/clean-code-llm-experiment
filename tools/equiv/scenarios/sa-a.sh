@@ -3,10 +3,15 @@
 #   A2 seller-grade-recalc(문턱 등급·판매 제한 STANDARD)·rebate-settlement(PAID·시드 ZERO)·조회, A3 monthly-statement(이월·HELD 수)·
 #   지급 계좌 요청·판정·조회(INITIAL·REQUEST), A7 tax-invoice-issue(ISSUE·HOLD·지급일 전 보류 → 지급일 뒤 발행)·정정(연쇄)·조회,
 #   A1 리뷰 작성·삭제·숨김·판매자 조회, rating-recalc(분쟁 숨김 → 기각 해제 → 인정 뒤 유지), 리뷰 기한(30일 정각 허용·1초 뒤 409).
-#   각 배치는 같은 시각 재실행(0건)까지. 오류 경로 401·400·403·404·409(ITEM_STATE_CONFLICT·DEADLINE_PASSED).
+#   각 배치는 첫 실행 failed 0 · 같은 시각 재실행 processed 0·failed 0까지 단언한다. monthly-statement는 건별 격리(§2.6)도 밟는다 —
+#   판매자 s의 정산서 INSERT만 트리거로 실패시켜 200 failed 1·나머지 처리 → 트리거를 지우고 재실행하면 s만 processed 1.
+#   입력 규칙(§19): rating 5.0 400(19-2)·NBSP·전각 공백뿐인 본문 400(19-6). 오류 경로 401·400·403·404·409(ITEM_STATE_CONFLICT·DEADLINE_PASSED).
 # 사용: scenarios/sa-a.sh <god|layered> <jar> <outdir>  (보통은 tools/equiv/run.sh sa-a)
 # 정산은 픽스처로 직접 넣는다(판매자 s: 09-07 PAID·09-14 CARRIED(HELD 1)·09-28 PAID(지급 10-05), 판매자 s2: 09-07 PAID·판매 제한 중).
 # 09-28 정산이 시드 마지막 마감(09-21 + 7일)을 넘겨 9월이 닫힌다(§6.4) — rebate-settlement·monthly-statement는 시드 판매자 전체가 대상이다.
+# 정산 픽스처는 의도적 단순화다: 계약 경로로는 만들 수 없는 상태(항목이 전부 시드 항목 하나 — 다른 판매자의 항목, s의 P3는 정산 기간 전 항목)를
+# 직접 넣는다. 목적은 배치의 대상 판정·집계 SQL(등급 기준액·리베이트·정산서 집계·계산서 대상)을 두 앱에서 같은 입력으로 비교하는 것이고,
+# 정산 행과 항목의 정합성은 이 시나리오가 확인하지 않는다(정산 계산 자체는 settle 시나리오·contract2).
 # 바뀐 시드 행은 정렬 덤프의 md5로, 새 행은 오프셋 줄 단위로 비교한다.
 source "$(dirname "$0")/../lib.sh"
 app_begin "$@"
@@ -24,7 +29,7 @@ ms=$(q "SELECT max(id) FROM settlements"); msi=$(q "SELECT max(id) FROM settleme
 mf=$(q "SELECT max(id) FROM fee_rebates"); mm=$(q "SELECT max(id) FROM monthly_statements")
 mv=$(q "SELECT max(id) FROM tax_invoices"); mq=$(q "SELECT max(id) FROM payout_account_requests"); mw=$(q "SELECT max(id) FROM reviews")
 mu=$(q "SELECT max(id) FROM admin_audit_logs")
-seed_item=$(q "SELECT min(id) FROM order_items")
+seed_item=$(q "SELECT min(id) FROM order_items"); int_or_die seed_item "$seed_item"
 # 정산 픽스처(ADR-0004 §10의 식을 만족: net = gross − fee − penalty + carry_in, payout/carry_out, PAID ⇔ payout > 0)
 q "INSERT INTO settlements(seller_id,period_start,period_end,gross,fee_total,penalty_total,carry_in,net,payout,carry_out,status,paid_at) VALUES
   ($S_,'2026-09-07','2026-09-13',1200000,60000,0,0,1140000,1140000,0,'PAID','2026-09-14T00:00:00+09:00'),
@@ -39,7 +44,9 @@ q "INSERT INTO settlement_items(settlement_id,order_item_id,amount,fee,status) V
 q "INSERT INTO seller_grades(seller_id,grade,effective_from,basis_amount,restricted,created_at) VALUES
   ($S_,'PLUS','2026-09-01',1100000,false,'2026-09-01T00:00:00+09:00'),($S2_,'MASTER','2026-09-01',8500000,false,'2026-09-01T00:00:00+09:00')" > /dev/null
 mg=$(q "SELECT max(id) FROM seller_grades")   # 위 9월 픽스처 뒤
-initial_user=$(q "SELECT min(user_id) FROM seller_payout_accounts")
+# 지급 계좌 INITIAL: 시드 계좌가 있고 APPROVED 요청이 없는 사용자(있으면 source가 REQUEST가 된다)
+initial_user=$(q "SELECT min(a.user_id) FROM seller_payout_accounts a WHERE NOT EXISTS (SELECT 1 FROM payout_account_requests r WHERE r.user_id = a.user_id AND r.status = 'APPROVED')")
+int_or_die initial_user "$initial_user"
 
 # need <이름> <값> [기대]: 경로를 실제로 지났는지. 기대가 없으면 양의 정수여야 한다(두 앱이 함께 지나치지 않았는데 같음으로 끝나지 않게)
 need() {
@@ -48,7 +55,8 @@ need() {
 }
 start_pg 3000
 start_app 2000
-batch2() { call POST "/admin/batches/$1"; call POST "/admin/batches/$1"; }   # 실행 + 같은 시각 재실행(대상 없음)
+# 실행(failed 0) + 같은 시각 재실행(대상 없음 — processed 0·failed 0)
+batch2() { batch_run "$1" '^[0-9]+ 0 200$'; batch_run "$1" '^0 0 200$'; }
 
 mark seller-grade-recalc
 batch2 seller-grade-recalc                                     # D = 10-01: s(기준 141만 → PLUS)·s2(제한 → STANDARD restricted)
@@ -59,8 +67,15 @@ batch2 rebate-settlement                                       # M = 9월(닫힘
 need "s 리베이트" "$(q "SELECT status||' '||amount FROM fee_rebates WHERE id>$mf AND seller_id=$S_")" "PAID 3550"
 need "시드 리베이트 ZERO" "$(q "SELECT count(*) FROM fee_rebates WHERE id>$mf AND seller_id<$base AND status='ZERO'")"
 need "시드 리베이트 PAID" "$(q "SELECT count(*) FROM fee_rebates WHERE id>$mf AND seller_id<$base AND status='PAID'")"
+mark monthly-statement-fail
+inject_on monthly_statements "BEFORE INSERT" "NEW.seller_id = $S_"
+batch_run monthly-statement '^[1-9][0-9]* 1 200$'              # s만 실패(롤백), s2·시드 판매자 처리 → failed 1
+need "격리 실패 뒤 s 정산서 없음" "$(q "SELECT count(*) FROM monthly_statements WHERE id>$mm AND seller_id=$S_")" 0
+need "격리 실패 중 시드 정산서" "$(q "SELECT count(*) FROM monthly_statements WHERE id>$mm AND seller_id<$base")"
+inject_off monthly_statements
 mark monthly-statement
-batch2 monthly-statement                                       # 9월: s 3건(이월 1·HELD 1)·s2·시드 판매자
+batch_run monthly-statement '^1 0 200$'                        # 트리거 제거 뒤 s만 남음: 9월 3건(이월 1·HELD 1)
+batch_run monthly-statement '^0 0 200$'                        # 같은 시각 재실행 0건
 need "s 정산서" "$(q "SELECT settlement_count||' '||carried_count||' '||held_count FROM monthly_statements WHERE id>$mm AND seller_id=$S_")" "3 1 1"
 need "시드 정산서" "$(q "SELECT count(*) FROM monthly_statements WHERE id>$mm AND seller_id<$base")"
 mark tax-invoice-issue
@@ -106,6 +121,7 @@ call GET /me/payout-account $S_                                # REQUEST + pendi
 call POST "/admin/payout-account-requests/$r2/decision" "" '{"approve":false,"reason":" 계좌 불일치 "}'   # 반려 200
 call GET /me/payout-account $S_                                # REQUEST, pending null
 call GET /me/payout-account "$initial_user"                    # INITIAL
+need "지급 계좌 INITIAL" "$(tail -1 "$out/responses.txt" | grep -o '"source":"[A-Z]*"')" '"source":"INITIAL"'
 call GET /me/payout-account $C_                                # 전부 null
 
 mark review-fixtures
@@ -123,7 +139,11 @@ mark review-write
 call POST "/order-items/$I1/review" "" '{"rating":5,"content":"좋다"}'                    # 401
 call POST "/order-items/$I1/review" $B_ '{"rating":6,"content":"좋다"}'                   # 400
 call POST "/order-items/$I1/review" $B_ '{"rating":"5","content":"좋다"}'                 # 문자열 400
+call POST "/order-items/$I1/review" $B_ '{"rating":5.0,"content":"좋다"}'                 # 정수 자리의 5.0 400(§19-2)
+need "rating 5.0" "$(last_status)" "400 INVALID_REQUEST"
 call POST "/order-items/$I1/review" $B_ '{"rating":5,"content":"  "}'                    # 빈 본문 400
+call POST "/order-items/$I1/review" $B_ '{"rating":5,"content":"\u00a0\u3000"}'          # NBSP·전각 공백뿐 400(§19-6)
+need "NBSP 본문" "$(last_status)" "400 INVALID_REQUEST"
 call POST "/order-items/$I1/review" $B_ '{"rating":5}'                                   # 본문 누락 400
 call POST /order-items/999999999/review $B_ '{"rating":5,"content":"좋다"}'               # 404
 call POST "/order-items/$I1/review" $C_ '{"rating":5,"content":"좋다"}'                   # 구매자 아님 403
@@ -181,6 +201,7 @@ call PUT /admin/clock "" "{\"now\":\"$dl\"}"
 call POST "/order-items/$I7/review" $B_ '{"rating":4,"content":"정각"}'                   # confirmed_at + 30일 정각 201
 adv 1
 call POST "/order-items/$I5/review" $B_ '{"rating":4,"content":"늦음"}'                   # 409 DEADLINE_PASSED
+need "I5 기한 지남" "$(last_status)" "409 DEADLINE_PASSED"
 call POST "/order-items/$I6/review" $B_ '{"rating":4,"content":"늦음"}'                   # 상태 위반이 먼저 409 ITEM_STATE_CONFLICT
 need "기한 정각 리뷰" "$(q "SELECT count(*) FROM reviews WHERE id>$mw AND order_item_id=$I7")" 1
 need "기한 지난 리뷰 없음" "$(q "SELECT count(*) FROM reviews WHERE id>$mw AND order_item_id=$I5")" 0

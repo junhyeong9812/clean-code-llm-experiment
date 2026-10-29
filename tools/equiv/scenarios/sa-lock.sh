@@ -10,7 +10,9 @@
 #    각 경로의 잠금 문장이 그 순서로 실제로 나갔는지(DB 문장 로그) 확인한다 — 두 앱이 함께 잠금을 빼먹었는데 같음으로 끝나지 않게.
 #  - 동시 구간(mark concurrent 뒤): 같은 대상에 동시 2요청 × CONC_N회(기본 5) — 위시 등록(201·409)·위시 삭제(200·404)·
 #    가격 알림 등록(201·409)·같은 항목 리뷰(201·409)·같은 항목 문의 2건(201·201, KEY SHARE끼리 막지 않음)·
-#    항목 확정 ∥ 그 항목 문의(200·201, 주문 FOR UPDATE가 문의의 KEY SHARE를 막는다). 어느 요청이 먼저 잠그는지·SQL이 섞이는
+#    항목 확정 ∥ 그 항목 문의(200·201, 주문 FOR UPDATE가 문의의 KEY SHARE를 막는다)·
+#    god에서 교착이던 두 조합 — 9-2 리뷰 작성 ∥ 같은 두 사용자(판매자 id < 구매자 id)의 다른 주문 검수 FAIL(판매자 귀책: 두 사용자 id 순
+#    FOR UPDATE)(201·200), 10-2 위시 등록 ∥ 같은 사용자·사이즈 BUY 입찰 등록(사이즈 → 사용자, 201·201). 어느 요청이 먼저 잠그는지·SQL이 섞이는
 #    순서가 실행마다 달라, conc와 같은 규칙으로 비교한다: 응답은 쌍마다 두 응답 정렬(norm_conc_pair — 이 시나리오의 쌍에는 체결이 없어
 #    trades=-, 응답의 orderItemId는 쌍 안 기호가 된다), SQL 두 층은 표식 뒤 문장 종류 집합(norm_set_from_mark). 쌍의 상태 코드 조합은
 #    시나리오 안에서 기대값과 대조한다(교착·UNIQUE 위반이면 400이 섞여 exit 2). 행은 배정 순서와 무관한 집계로 덤프한다.
@@ -23,12 +25,14 @@ start_db
 
 # 픽스처: 사이즈 1 + N개(동시 위시·알림용), 사용자 s(판매)·b(구매)·c(제3자)
 for k in $(seq 0 "$N"); do q "INSERT INTO product_sizes(product_id,size) SELECT min(id),'L$k' FROM products" > /dev/null; done
+for k in $(seq 1 "$N"); do q "INSERT INTO product_sizes(product_id,size) SELECT min(id),'W$k' FROM products" > /dev/null; done   # 위시 ∥ 입찰용
 for u in s b c; do q "INSERT INTO users(email,name,grade,created_at) VALUES ('$u@exp','$u','BRONZE','2026-09-01T00:00:00+09:00')" > /dev/null; done
-zmax=$(q "SELECT max(id) FROM product_sizes"); Z0=$((zmax-N)); base=$(q "SELECT max(id)-2 FROM users")
+zmax=$(q "SELECT max(id) FROM product_sizes"); Z0=$((zmax-2*N)); W0=$((zmax-N)); base=$(q "SELECT max(id)-2 FROM users")
 S_=$base B_=$((base+1)) C_=$((base+2))
 mo=$(q "SELECT max(id) FROM orders"); mi=$(q "SELECT max(id) FROM order_items"); mt=$(q "SELECT max(id) FROM trades")
 mq=$(q "SELECT max(id) FROM inquiries"); mm=$(q "SELECT max(id) FROM inquiry_messages"); mw=$(q "SELECT max(id) FROM reviews")
-mwl=$(q "SELECT max(id) FROM wishlists"); ma=$(q "SELECT max(id) FROM price_alerts")
+mwl=$(q "SELECT max(id) FROM wishlists"); ma=$(q "SELECT max(id) FROM price_alerts"); mb=$(q "SELECT max(id) FROM bids")
+mr=$(q "SELECT max(id) FROM refunds"); mpn=$(q "SELECT max(id) FROM seller_penalties")
 
 # need <이름> <값> [기대]: 경로를 실제로 지났는지(기대가 없으면 양의 정수)
 need() {
@@ -67,6 +71,13 @@ read -r -a REV <<< "$(order K-REV "$N")"; read -r -a INQ <<< "$(order K-INQ "$N"
 [ ${#REV[@]} = "$N" ] && [ ${#INQ[@]} = "$N" ] && [ ${#CNF[@]} = "$N" ] || die "동시 항목 준비 실패: ${#REV[@]} ${#INQ[@]} ${#CNF[@]}"
 for x in "${REV[@]}"; do to_delivered "$x"; call POST "/order-items/$x/confirm" $B_; done   # 리뷰 대상: CONFIRMED
 for x in "${CNF[@]}"; do to_delivered "$x"; done                                          # 확정 ∥ 문의 대상: DELIVERED
+# 9-2 리뷰 ∥ 판매자 귀책: 리뷰 대상(CONFIRMED, 주문 K-RV2) · 같은 두 사용자의 다른 주문(K-FLT) 항목은 INSPECTING
+read -r -a RV2 <<< "$(order K-RV2 "$N")"; read -r -a FLT <<< "$(order K-FLT "$N")"
+[ ${#RV2[@]} = "$N" ] && [ ${#FLT[@]} = "$N" ] || die "9-2 항목 준비 실패: ${#RV2[@]} ${#FLT[@]}"
+for x in "${RV2[@]}"; do to_delivered "$x"; call POST "/order-items/$x/confirm" $B_; done
+for x in "${FLT[@]}"; do call POST "/order-items/$x/shipment" $S_; call POST "/admin/order-items/$x/receipt"; done
+need "검수 대기 항목" "$(q "SELECT count(*) FROM order_items WHERE id IN ($(IFS=,; echo "${FLT[*]}")) AND status='INSPECTING'")" "$N"
+[ "$S_" -lt "$B_" ] || die "준비: 판매자 id < 구매자 id 아님"
 
 mark lock-9-1
 call POST /me/inquiries $B_ "{\"category\":\"ORDER\",\"title\":\"t\",\"body\":\"b\",\"orderItemId\":${SER[0]}}"
@@ -85,8 +96,11 @@ lock_seq lock-10-2-alert 'from product_sizes where id = .* for key share' 'from 
 mark lock-10-2-missing
 call POST /me/wishlist $B_ '{"productSizeId":999999999}'       # 사이즈 KEY SHARE가 비어 404 — 사용자 잠금 전
 call POST /me/price-alerts $B_ '{"productSizeId":999999999,"targetPrice":1000}'
-need "없는 사이즈는 사용자를 잠그지 않음" "$(docker logs "$EQ_DB" 2>&1 | ext_pg_app_statements /dev/stdin | awk '$0 == "== MARK lock-10-2-missing" { f = 1; next } f && tolower($0) ~ /from users where id = .* for update/ { n++ } END { print n + 0 }')" 0
 lock_seq lock-10-2-missing 'from product_sizes where id = .* for key share' 'rollback' 'from product_sizes where id = .* for key share' 'rollback'
+# 문장 로그 받기 실패가 0건 통과가 되지 않게: 변수 대입(errexit)으로 받고, 위 lock_seq가 같은 구간을 읽어 확인한 뒤에 센다
+pgl=$(docker logs "$EQ_DB" 2>&1)
+n_fu=$(ext_pg_app_statements /dev/stdin <<< "$pgl" | awk '$0 == "== MARK lock-10-2-missing" { f = 1; next } f && /^== MARK / { exit } f && tolower($0) ~ /from users where id = .* for update/ { n++ } END { print n + 0 }')
+need "없는 사이즈는 사용자를 잠그지 않음" "$n_fu" 0
 mark lock-10-1
 call DELETE "/me/wishlist/$Z0" $B_                             # 200
 call DELETE "/me/wishlist/$Z0" $B_                             # 다시 찾기 → 404
@@ -94,8 +108,8 @@ lock_seq lock-10-1 'from users where id = .* for update' 'delete from wishlists'
 
 # ---- 동시 구간 ----
 # 응답 1건을 <파일 접두>.code·.body로 받는다. 본문을 못 받으면(curl 오류) 시나리오 실패.
-req() { # <파일 접두> <메서드> <경로> <사용자> [본문]
-  curl -sS --max-time "$EQ_CURL_MAX" -o "$1.body" -w '%{http_code}' -X "$2" -H 'Content-Type: application/json' -H "X-User-Id: $4" ${5:+-d "$5"} "$EQ_BASE$3" > "$1.code"; }
+req() { # <파일 접두> <메서드> <경로> <사용자(빈 값이면 헤더 없음 — /admin)> [본문]
+  curl -sS --max-time "$EQ_CURL_MAX" -o "$1.body" -w '%{http_code}' -X "$2" -H 'Content-Type: application/json' ${4:+-H "X-User-Id: $4"} ${5:+-d "$5"} "$EQ_BASE$3" > "$1.code"; }
 # pair <종류> <회차> <기대 코드 조합(정렬)> <메서드1> <경로1> <사용자1> <본문1> <메서드2> <경로2> <사용자2> <본문2>
 # 한 쌍 = responses.txt 한 줄(conc 형식 — norm_conc_pair가 두 응답을 정렬한다)
 pair() {
@@ -116,13 +130,24 @@ for i in $(seq 0 $((N-1))); do
   pair review "$i" "201 409" POST "/order-items/${REV[$i]}/review" $B_ '{"rating":4,"content":"동시"}' POST "/order-items/${REV[$i]}/review" $B_ '{"rating":4,"content":"동시"}'
   pair inquiry-2 "$i" "201 201" POST /me/inquiries $B_ "{\"category\":\"ORDER\",\"title\":\"t\",\"body\":\"b\",\"orderItemId\":${INQ[$i]}}" POST /me/inquiries $S_ "{\"category\":\"ORDER\",\"title\":\"t\",\"body\":\"b\",\"orderItemId\":${INQ[$i]}}"
   pair confirm-inquiry "$i" "200 201" POST "/order-items/${CNF[$i]}/confirm" $B_ "" POST /me/inquiries $B_ "{\"category\":\"ORDER\",\"title\":\"t\",\"body\":\"b\",\"orderItemId\":${CNF[$i]}}"
+  pair review-fault "$i" "200 201" POST "/order-items/${RV2[$i]}/review" $B_ '{"rating":3,"content":"귀책 겹침"}' POST "/admin/order-items/${FLT[$i]}/inspection" "" '{"result":"FAIL","reason":"오염"}'
+  pair wish-bid "$i" "201 201" POST /me/wishlist $B_ "{\"productSizeId\":$((W0 + 1 + i))}" POST /bids $B_ "{\"productSizeId\":$((W0 + 1 + i)),\"side\":\"BUY\",\"price\":10000,\"validDays\":30}"
 done
+need "판매자 귀책 FAIL" "$(q "SELECT count(*) FROM order_items WHERE id IN ($(IFS=,; echo "${FLT[*]}")) AND status='CANCELLED_SELLER_FAULT'")" "$N"
 
-{ docker logs "$EQ_DB" 2>&1 | grep -c 'deadlock detected' || true; grep -c '예상 못 한 오류' "$out/app.log" || true; } | dump_text log-counts   # 교착·예상 못 한 오류
+# 교착·예상 못 한 오류 건수. 문장 로그는 변수 대입(errexit)으로 받는다 — 받기 실패가 0건으로 바뀌지 않게, 마지막 표식이 들어 있는지도 본다
+pgl=$(docker logs "$EQ_DB" 2>&1)
+grep -q "MARK concurrent" <<< "$pgl" || die "DB 문장 로그에 concurrent 표식이 없음"
+n_dl=$(grep -c 'deadlock detected' <<< "$pgl" || true); n_unexp=$(grep -c '예상 못 한 오류' "$out/app.log" || true)
+need "교착 0" "$n_dl" 0
+printf '%s\n' "$n_dl" "$n_unexp" | dump_text log-counts
 dump inquiries "SELECT user_id-$base, order_item_id IS NOT NULL, status, count(*) FROM inquiries WHERE id>$mq GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
 dump inquiry_messages "SELECT author, body, count(*) FROM inquiry_messages WHERE id>$mm GROUP BY 1, 2 ORDER BY 1, 2"
 dump reviews "SELECT order_item_id-$mi, buyer_id-$base, seller_id-$base, rating, content, status FROM reviews WHERE id>$mw ORDER BY order_item_id"
 dump wishlists "SELECT count(*) FROM wishlists WHERE id>$mwl"
 dump price_alerts "SELECT product_size_id-$Z0, user_id-$base, target_price, status FROM price_alerts WHERE id>$ma ORDER BY product_size_id"
 dump order_items "SELECT id-$mi, status FROM order_items WHERE id>$mi ORDER BY id"
+dump bids "SELECT product_size_id-$Z0, user_id-$base, side, price, status FROM bids WHERE id>$mb AND product_size_id>$W0 ORDER BY product_size_id"
+dump refunds "SELECT order_item_id-$mi, card_amount, point_amount, buyer_fee_amount, shipping_amount, reason, fault, created_at FROM refunds WHERE id>$mr ORDER BY order_item_id"
+dump seller_penalties "SELECT seller_id-$base, order_item_id-$mi, amount, created_at FROM seller_penalties WHERE id>$mpn ORDER BY order_item_id"
 app_end

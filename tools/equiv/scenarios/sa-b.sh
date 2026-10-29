@@ -5,6 +5,8 @@
 #   A4 deadline-reminder 6종(PAYMENT_DUE_SOON·SETTLEMENT_PAID·PURCHASE/SALE_RESTRICTED → SHIPMENT_DUE_SOON → DISPUTE_WINDOW_CLOSING,
 #   각 재실행 0 = dedupe, 제한 연장 뒤 새 <E>의 알림), 알림 조회(unread)·읽음, A11 배송 추적 기록·조회(오프셋 없는 시각 400 등),
 #   delivery-delay-scan(SHIPMENT_OVERDUE → DELIVERY_LATE, 각 재실행 0). 오류 경로 400·401·403·404·409.
+#   각 배치는 첫 실행 failed 0 · 같은 시각 재실행 processed 0·failed 0까지 단언한다. price-alert-scan은 건별 격리(§2.6)도 밟는다 —
+#   TRIGGERED 대상 알림의 UPDATE만 트리거로 실패시켜 200 failed 1(알림 INSERT도 롤백)·만료 처리 → 트리거를 지우고 재실행하면 그 알림만 processed 1.
 # 사용: scenarios/sa-b.sh <god|layered> <jar> <outdir>  (보통은 tools/equiv/run.sh sa-b)
 # 배치는 시드 전체가 대상이다(시드 체결·항목·정산·제한 사용자·ACTIVE 가격 알림). 새 행은 오프셋 줄 단위, 바뀐 시드 행은 md5로 비교한다.
 source "$(dirname "$0")/../lib.sh"
@@ -36,7 +38,8 @@ need() {
 nk() { q "SELECT count(*) FROM notifications WHERE id>$mn AND kind='$1' AND ref_id=$2"; }   # 이 실행에서 만든 그 대상의 알림 수
 start_pg 3000
 start_app 2000
-batch2() { call POST "/admin/batches/$1"; call POST "/admin/batches/$1"; }   # 실행 + 같은 시각 재실행(대상 없음)
+# 실행(failed 0) + 같은 시각 재실행(대상 없음 — processed 0·failed 0)
+batch2() { batch_run "$1" '^[0-9]+ 0 200$'; batch_run "$1" '^0 0 200$'; }
 
 mark wishlist
 call POST /me/wishlist "" "{\"productSizeId\":$Z1}"            # 401
@@ -66,8 +69,10 @@ call DELETE "/me/price-alerts/$a_c" $C_                        # 200 CANCELLED
 call DELETE "/me/price-alerts/$a_c" $C_                        # 409
 call DELETE /me/price-alerts/999999999 $C_                     # 404
 call POST /me/price-alerts $C_ "{\"productSizeId\":$Z2,\"targetPrice\":1000}"     # 취소 뒤 다시 201 (맞는 입찰 없음 → 그대로)
+a_c2=$(q "SELECT id FROM price_alerts WHERE id>$ma AND user_id=$C_ AND status='ACTIVE'"); int_or_die a_c2 "$a_c2"
 call POST /me/price-alerts $R_ "{\"productSizeId\":$Z1,\"targetPrice\":100000}"   # 구매 제한 중에도 201 (스캔에서 그대로)
 a_b=$(q "SELECT id FROM price_alerts WHERE id>$ma AND user_id=$B_ AND product_size_id=$Z1"); a_r=$(q "SELECT id FROM price_alerts WHERE id>$ma AND user_id=$R_")
+int_or_die a_b "$a_b"; int_or_die a_r "$a_r"
 call GET /me/price-alerts $B_; call GET /me/price-alerts $C_
 mark book
 call POST /bids $S_ "{\"productSizeId\":$Z1,\"side\":\"SELL\",\"price\":88000,\"validDays\":30}"
@@ -75,16 +80,35 @@ call POST /bids $S_ "{\"productSizeId\":$Z1,\"side\":\"SELL\",\"price\":85000,\"
 call POST /bids $S_ "{\"productSizeId\":$Z1,\"side\":\"SELL\",\"price\":85000,\"validDays\":30}"   # 같은 값 — created_at·id 순 첫 번째가 뽑힌다
 bid_t=$(q "SELECT min(id) FROM bids WHERE id>$mb AND price=85000")
 call GET /me/wishlist $B_                                      # bestSell 85000 + activeAlert
+mark price-alert-scan-fail
+inject_on price_alerts "BEFORE UPDATE" "OLD.id = $a_b"
+batch_run price-alert-scan '^[1-9][0-9]* 1 200$'               # a_b만 실패(알림 INSERT까지 롤백), 만료 알림은 처리 → failed 1
+need "격리 실패 뒤 a_b" "$(q "SELECT status FROM price_alerts WHERE id=$a_b")" ACTIVE
+need "격리 실패 뒤 PRICE_ALERT 알림 없음" "$(nk PRICE_ALERT "$a_b")" 0
+need "격리 실패 중 만료" "$(q "SELECT status FROM price_alerts WHERE id=$A_exp")" EXPIRED
+inject_off price_alerts
 mark price-alert-scan
-batch2 price-alert-scan
+batch_run price-alert-scan '^1 0 200$'                         # 트리거 제거 뒤 a_b만 남음 → TRIGGERED
+batch_run price-alert-scan '^0 0 200$'                         # 같은 시각 재실행 0건
 need "TRIGGERED" "$(q "SELECT status||' '||triggered_bid_id FROM price_alerts WHERE id=$a_b")" "TRIGGERED $bid_t"
 need "PRICE_ALERT 알림" "$(nk PRICE_ALERT "$a_b")" 1
-need "만료" "$(q "SELECT status FROM price_alerts WHERE id=$A_exp")" EXPIRED
 need "구매 제한 중 그대로" "$(q "SELECT status FROM price_alerts WHERE id=$a_r")" ACTIVE
-# TRIGGERED 1건의 트랜잭션은 알림 INSERT → 가격 알림 UPDATE 순서다(앱 로그 Hibernate SQL — 순서는 두 앱 비교로도 남는다)
-# (만료 EXPIRED의 UPDATE는 INSERT 없이 나가므로 INSERT 바로 다음 SQL이 UPDATE인지를 본다)
-ord=$(awk '/^### MARK price-alert-scan/ { f = 1 } f && index($0, " org.hibernate.SQL ") { if (prev ~ /insert into notifications/ && $0 ~ /update price_alerts/) ok = 1; prev = $0 } END { print ok ? "insert-then-update" : "없음" }' "$out/app.log")
-need "TRIGGERED 문장 순서" "$ord" insert-then-update
+need "맞는 입찰 없음 그대로" "$(q "SELECT status FROM price_alerts WHERE id=$a_c2")" ACTIVE
+# TRIGGERED 1건의 트랜잭션은 알림 INSERT → 가격 알림 UPDATE 순서다. DB 문장 로그(바인드 값 DETAIL 포함)의 price-alert-scan 표식 구간에서,
+# 바인드 dedupe 키가 'PRICE_ALERT:<a_b>'인 notifications INSERT 바로 다음 앱 문장이 price_alerts UPDATE이고 그 바인드가
+# 'TRIGGERED'·마지막 값(WHERE id) = a_b인지 본다 — 다른 알림의 문장이나 만료 UPDATE로는 맞지 않는다. 순서는 두 앱 비교로도 남는다.
+pgl=$(docker logs "$EQ_DB" 2>&1)
+ord=$(awk -v a="$a_b" '
+  index($0, "psql|LOG:  statement: SELECT '\''MARK ") == 1 { f = (index($0, "'\''MARK price-alert-scan'\''") > 0); next }
+  !f || index($0, "PostgreSQL JDBC Driver|") != 1 { next }
+  { s = substr($0, 24) }
+  s ~ /^DETAIL:  Parameters: / {
+    if (st == "ins" && index(s, "'\''PRICE_ALERT:" a "'\''")) st = "ins-a"
+    else if (st == "upd" && index(s, "'\''TRIGGERED'\''") && s ~ ("= '\''" a "'\''$")) ok = 1
+    next }
+  { st = (st == "ins-a" && s ~ /update price_alerts/) ? "upd" : (s ~ /insert into notifications/) ? "ins" : "" }
+  END { print ok ? "insert-then-update" : "없음" }' <<< "$pgl")
+need "TRIGGERED 문장 순서(알림 $a_b)" "$ord" insert-then-update
 call GET /me/price-alerts $B_; call GET /me/wishlist $B_; call GET /me/price-alerts $R_
 
 mark tracking-fixtures

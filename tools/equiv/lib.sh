@@ -191,6 +191,42 @@ dump_text() {
   [ -s "$out/rows/$1.txt" ] || die "$app 덤프 0줄: $1"
 }
 
+# ---- 시나리오 안의 경로 확인 도구(sa-*). 판정 규칙이 아니다 — 어긋나면 실행 실패(exit 2) ----
+
+# 사용: last_status — responses.txt 마지막 응답의 "<상태 코드>[ <오류 code>]"(예: "409 DEADLINE_PASSED", "200")
+last_status() {
+  local l c
+  l=$(tail -1 "$out/responses.txt")
+  c=$(sed -n 's/.*"code":"\([A-Z_]*\)".*/\1/p' <<< "$l")
+  echo "${l##* }${c:+ $c}"
+}
+# 사용: last_batch — 마지막 응답(배치)을 "<processed> <failed> <상태 코드>"로. 배치 응답 모양이 아니면 실패.
+last_batch() {
+  local l r
+  l=$(tail -1 "$out/responses.txt")
+  r=$(sed -n 's/^POST \/admin\/batches\/[a-z-]* key= → {"processed":\([0-9]*\),"failed":\([0-9]*\)} \([0-9]*\)$/\1 \2 \3/p' <<< "$l")
+  [ -n "$r" ] || die "배치 응답 모양이 아님: $(cut -c1-200 <<< "$l")"
+  echo "$r"
+}
+# 사용: batch_run <배치> <기대 정규식> — 배치 1회 + 응답("<processed> <failed> <상태 코드>")을 정규식과 대조
+batch_run() {
+  local r
+  call POST "/admin/batches/$1"
+  r=$(last_batch)
+  [[ $r =~ $2 ]] || die "배치 $1: processed failed 상태 = '$r' (기대 /$2/)"
+}
+# 사용: inject_on <테이블> <BEFORE UPDATE|BEFORE INSERT> <WHEN 조건> / inject_off <테이블>
+# 배치 건별 격리 확인용 실패 주입(iso와 같은 방식 — 조건에 맞는 행 하나만 예외로 실패)
+inject_on() {
+  qs <<'SQL'
+CREATE OR REPLACE FUNCTION eq_fail_inject() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected by %', TG_NAME; END $$;
+SQL
+  q "CREATE TRIGGER eq_inject $2 ON $1 FOR EACH ROW WHEN ($3) EXECUTE FUNCTION eq_fail_inject()" > /dev/null
+}
+inject_off() { q "DROP TRIGGER eq_inject ON $1" > /dev/null; }
+# 사용: int_or_die <이름> <값> — 시드에서 뽑은 id가 정수인지(빈 값이면 엉뚱한 요청끼리 비교된다)
+int_or_die() { [[ $2 =~ ^[0-9]+$ ]] || die "시드 값이 정수가 아님: $1 = '$2'"; }
+
 # 앱이 끝까지 살아 있었는지 확인하고 DB 문장 로그를 받아 추출·정규화한다. done 표식이 없으면 run.sh는 비교하지 않는다.
 app_end() {
   kill -0 "$app_pid" 2>/dev/null || die "$app 이 시나리오 중 종료됨: $out/app.log"
