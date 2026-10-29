@@ -27,7 +27,7 @@ cd "$root"
 mkdir -p "$logs"
 ./gradlew -q ":$app:bootJar" :behavior-tests:testClasses :behavior-tests:fakePgClasspath
 docker rm -f "$db" > /dev/null 2>&1 || true
-"$root/tools/seedgen/run-db.sh" 1k-s42 "$db" "$db_port"
+"$root/tools/seedgen/run-db.sh" 1k-s42-v2 "$db" "$db_port"
 export DB_URL="jdbc:postgresql://127.0.0.1:$db_port/ccle_seed" DB_USER=ccle DB_PASSWORD=ccle
 export PG_URL="http://127.0.0.1:$pg_port" PG_PORT=$pg_port PG_TIMEOUT_MS=2000 PG_DELAY_MS=3000 PG_EXTERNAL=1
 export BASE_URL="http://127.0.0.1:$port" SERVER_PORT=$port BEHAVIOR_TESTS=1

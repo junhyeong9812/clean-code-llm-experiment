@@ -249,3 +249,237 @@ CREATE TABLE seller_penalties (
     settlement_id  bigint,
     created_at     timestamptz NOT NULL
 );
+
+-- ===== 단계 A 새 테이블 (ADR-0007 §3) — 기존 테이블은 읽기만 하고 여기에만 쓴다 =====
+
+-- A1 리뷰·평점
+CREATE TABLE reviews (
+    id             bigserial PRIMARY KEY,
+    order_item_id  bigint      NOT NULL,
+    buyer_id       bigint      NOT NULL,
+    seller_id      bigint      NOT NULL,
+    rating         smallint    NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    content        text        NOT NULL,
+    status         text        NOT NULL CHECK (status IN ('VISIBLE','HIDDEN','DELETED')),
+    hidden_reason  text        CHECK (hidden_reason IN ('DISPUTE','ADMIN')),
+    created_at     timestamptz NOT NULL,
+    updated_at     timestamptz NOT NULL,
+    CHECK ((status = 'HIDDEN') = (hidden_reason IS NOT NULL))
+);
+
+CREATE TABLE seller_ratings (
+    seller_id        bigint PRIMARY KEY,
+    review_count     int         NOT NULL CHECK (review_count >= 0),
+    rating_sum       int         NOT NULL CHECK (rating_sum >= 0),
+    recalculated_at  timestamptz NOT NULL,
+    CHECK (rating_sum BETWEEN review_count AND 5 * review_count)
+);
+
+-- A2 판매자 등급·수수료 리베이트
+CREATE TABLE seller_grades (
+    id              bigserial PRIMARY KEY,
+    seller_id       bigint      NOT NULL,
+    grade           text        NOT NULL CHECK (grade IN ('STANDARD','PLUS','PRO','MASTER')),
+    effective_from  date        NOT NULL,
+    basis_amount    bigint      NOT NULL CHECK (basis_amount >= 0),
+    restricted      boolean     NOT NULL,
+    created_at      timestamptz NOT NULL
+);
+
+CREATE TABLE fee_rebates (
+    id             bigserial PRIMARY KEY,
+    seller_id      bigint      NOT NULL,
+    month          date        NOT NULL CHECK (extract(day FROM month) = 1),
+    grade          text        NOT NULL CHECK (grade IN ('STANDARD','PLUS','PRO','MASTER')),
+    fee_base       bigint      NOT NULL,
+    rate_permille  int         NOT NULL CHECK (rate_permille IN (0, 50, 100, 150)),
+    amount         bigint      NOT NULL CHECK (amount >= 0),
+    status         text        NOT NULL CHECK (status IN ('PAID','ZERO')),
+    paid_at        timestamptz,
+    created_at     timestamptz NOT NULL,
+    CHECK ((status = 'PAID') = (amount > 0)),
+    CHECK ((status = 'PAID') = (paid_at IS NOT NULL))
+);
+
+-- A3 지급 계좌 변경 요청·월간 정산서
+CREATE TABLE payout_account_requests (
+    id                 bigserial PRIMARY KEY,
+    user_id            bigint      NOT NULL,
+    bank_code          text        NOT NULL,
+    account_no_masked  text        NOT NULL,
+    status             text        NOT NULL CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+    reject_reason      text,
+    requested_at       timestamptz NOT NULL,
+    decided_at         timestamptz,
+    CHECK ((status = 'PENDING') = (decided_at IS NULL)),
+    CHECK ((status = 'REJECTED') = (reject_reason IS NOT NULL))
+);
+
+CREATE TABLE monthly_statements (
+    id                bigserial PRIMARY KEY,
+    seller_id         bigint      NOT NULL,
+    month             date        NOT NULL CHECK (extract(day FROM month) = 1),
+    settlement_count  int         NOT NULL CHECK (settlement_count > 0),
+    gross             bigint      NOT NULL,                                -- CLAWBACK 달은 음수일 수 있다
+    fee_total         bigint      NOT NULL,
+    penalty_total     bigint      NOT NULL CHECK (penalty_total >= 0),
+    payout_total      bigint      NOT NULL CHECK (payout_total >= 0),
+    carried_count     int         NOT NULL CHECK (carried_count >= 0),
+    held_count        int         NOT NULL CHECK (held_count >= 0),
+    last_carry_out    bigint      NOT NULL CHECK (last_carry_out <= 0),
+    created_at        timestamptz NOT NULL
+);
+
+-- A4·A5 알림
+CREATE TABLE notifications (
+    id          bigserial PRIMARY KEY,
+    user_id     bigint      NOT NULL,
+    kind        text        NOT NULL CHECK (kind IN ('PAYMENT_DUE_SOON','SHIPMENT_DUE_SOON','DISPUTE_WINDOW_CLOSING',
+                                                     'SETTLEMENT_PAID','PURCHASE_RESTRICTED','SALE_RESTRICTED','PRICE_ALERT')),
+    ref_id      bigint      NOT NULL,
+    dedupe_key  text        NOT NULL,
+    created_at  timestamptz NOT NULL,
+    read_at     timestamptz
+);
+
+-- A5 위시리스트·가격 알림
+CREATE TABLE wishlists (
+    id               bigserial PRIMARY KEY,
+    user_id          bigint      NOT NULL,
+    product_size_id  bigint      NOT NULL,
+    created_at       timestamptz NOT NULL
+);
+
+CREATE TABLE price_alerts (
+    id                bigserial PRIMARY KEY,
+    user_id           bigint      NOT NULL,
+    product_size_id   bigint      NOT NULL,
+    target_price      bigint      NOT NULL CHECK (target_price > 0),
+    status            text        NOT NULL CHECK (status IN ('ACTIVE','TRIGGERED','EXPIRED','CANCELLED')),
+    expires_at        timestamptz NOT NULL,
+    triggered_bid_id  bigint,
+    closed_at         timestamptz,
+    created_at        timestamptz NOT NULL,
+    CHECK (expires_at > created_at),
+    CHECK ((status = 'ACTIVE') = (closed_at IS NULL)),
+    CHECK ((status = 'TRIGGERED') = (triggered_bid_id IS NOT NULL))
+);
+
+-- A6 고객 문의
+CREATE TABLE inquiries (
+    id                 bigserial PRIMARY KEY,
+    user_id            bigint      NOT NULL,
+    order_item_id      bigint,
+    category           text        NOT NULL CHECK (category IN ('ORDER','PAYMENT','SETTLEMENT','ACCOUNT','OTHER')),
+    title              text        NOT NULL,
+    status             text        NOT NULL CHECK (status IN ('OPEN','ANSWERED','CLOSED')),
+    close_reason       text        CHECK (close_reason IN ('USER','AUTO')),
+    created_at         timestamptz NOT NULL,
+    sla_due_at         timestamptz NOT NULL,
+    first_answered_at  timestamptz,
+    answered_at        timestamptz,
+    closed_at          timestamptz,
+    CHECK ((status = 'CLOSED') = (closed_at IS NOT NULL)),
+    CHECK ((status = 'CLOSED') = (close_reason IS NOT NULL)),
+    CHECK (sla_due_at = created_at + interval '48 hours')
+);
+
+CREATE TABLE inquiry_messages (
+    id          bigserial PRIMARY KEY,
+    inquiry_id  bigint      NOT NULL,
+    author      text        NOT NULL CHECK (author IN ('USER','ADMIN')),
+    body        text        NOT NULL,
+    created_at  timestamptz NOT NULL
+);
+
+-- A7 세금계산서 (ADR-0007 §10.1 kind별 모양)
+CREATE TABLE tax_invoices (
+    id              bigserial PRIMARY KEY,
+    settlement_id   bigint      NOT NULL,
+    seller_id       bigint      NOT NULL,
+    kind            text        NOT NULL CHECK (kind IN ('ISSUE','CANCEL','HOLD')),
+    status          text        NOT NULL CHECK (status IN ('ISSUED','CANCELLED','DONE')),
+    supply_amount   bigint      NOT NULL,
+    vat_amount      bigint      NOT NULL,
+    total_amount    bigint      NOT NULL,
+    ref_invoice_id  bigint,
+    issued_at       timestamptz NOT NULL,
+    CHECK (total_amount = supply_amount + vat_amount),
+    CHECK ((kind = 'ISSUE'  AND status IN ('ISSUED','CANCELLED') AND supply_amount >= 0 AND vat_amount = supply_amount * 10 / 100)
+        OR (kind = 'CANCEL' AND status = 'DONE' AND supply_amount <= 0 AND vat_amount <= 0 AND ref_invoice_id IS NOT NULL)
+        OR (kind = 'HOLD'   AND status = 'DONE' AND supply_amount = 0 AND vat_amount = 0 AND ref_invoice_id IS NULL))
+);
+
+-- A8 시세
+CREATE TABLE price_stats_daily (
+    id               bigserial PRIMARY KEY,
+    product_size_id  bigint      NOT NULL,
+    stat_date        date        NOT NULL,
+    trade_count      int         NOT NULL CHECK (trade_count > 0),
+    min_price        bigint      NOT NULL CHECK (min_price > 0),
+    max_price        bigint      NOT NULL CHECK (max_price > 0),
+    median_price     bigint      NOT NULL CHECK (median_price > 0),
+    created_at       timestamptz NOT NULL,
+    CHECK (min_price <= median_price AND median_price <= max_price)
+);
+
+-- A9 관리자 감사 로그
+CREATE TABLE admin_audit_logs (
+    id          bigserial PRIMARY KEY,
+    action      text        NOT NULL CHECK (action IN ('REVIEW_HIDE','PAYOUT_ACCOUNT_DECISION','INQUIRY_ANSWER','TAX_INVOICE_CORRECTION',
+                                                       'TRACKING_EVENT','INBOUND_SLOT_CREATE','INBOUND_CHECK_IN')),
+    target_id   bigint      NOT NULL,
+    detail      text,
+    created_at  timestamptz NOT NULL
+);
+
+-- A10 판매자 프로필
+CREATE TABLE seller_profiles (
+    user_id        bigint PRIMARY KEY,
+    shop_name      text        NOT NULL,
+    intro          text        NOT NULL,
+    vacation_from  date,
+    vacation_to    date,
+    created_at     timestamptz NOT NULL,
+    updated_at     timestamptz NOT NULL,
+    CHECK ((vacation_from IS NULL) = (vacation_to IS NULL)),
+    CHECK (vacation_from <= vacation_to)
+);
+
+-- A11 배송 추적·지연 표시
+CREATE TABLE shipment_tracking_events (
+    id             bigserial PRIMARY KEY,
+    order_item_id  bigint      NOT NULL,
+    carrier        text        NOT NULL CHECK (carrier IN ('CJ','HANJIN','LOTTE','POST')),
+    tracking_no    text        NOT NULL,
+    event_type     text        NOT NULL CHECK (event_type IN ('PICKED_UP','IN_TRANSIT','OUT_FOR_DELIVERY','DELIVERED')),
+    occurred_at    timestamptz NOT NULL,
+    received_at    timestamptz NOT NULL,
+    CHECK (occurred_at <= received_at)
+);
+
+CREATE TABLE shipment_delays (
+    id             bigserial PRIMARY KEY,
+    order_item_id  bigint      NOT NULL,
+    kind           text        NOT NULL CHECK (kind IN ('SHIPMENT_OVERDUE','DELIVERY_LATE')),
+    detected_at    timestamptz NOT NULL
+);
+
+-- A12 입고 예약
+CREATE TABLE inbound_slots (
+    id          bigserial PRIMARY KEY,
+    slot_start  timestamptz NOT NULL CHECK (mod(extract(epoch FROM slot_start), 3600) = 0),   -- 정시(세션 TimeZone과 무관 — KST는 정시 오프셋, 소수 초도 거부)
+    capacity    int         NOT NULL CHECK (capacity > 0),
+    created_at  timestamptz NOT NULL
+);
+
+CREATE TABLE inbound_reservations (
+    id             bigserial PRIMARY KEY,
+    slot_id        bigint      NOT NULL,
+    seller_id      bigint      NOT NULL,
+    order_item_id  bigint      NOT NULL,
+    status         text        NOT NULL CHECK (status IN ('RESERVED','CHECKED_IN','CANCELLED','NO_SHOW')),
+    created_at     timestamptz NOT NULL,
+    closed_at      timestamptz,
+    CHECK ((status = 'RESERVED') = (closed_at IS NULL))
+);

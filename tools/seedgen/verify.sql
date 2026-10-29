@@ -12,10 +12,19 @@
 \set ON_ERROR_STOP on
 \pset pager off
 
+-- [ADR-0007 §15 끝] 시드 빌드에서만 켜는 검사: 배치가 맞춰 주는 캐시·완전성·재집계는 행동 테스트 뒤(배치를 부르지 않은
+-- 상태)에는 깨질 수 있다. 서버 설정 ccle.seed_build = 1일 때만 위반을 세고, 없으면 0이다(아래 v_flags).
+-- build-image.sh만 켠다(PGOPTIONS='-c ccle.seed_build=1'). psql 변수가 아니라 설정값을 쓰는 이유: 행동 테스트의
+-- VerifySqlTest는 이 파일을 JDBC로 돌리며 psql 메타 명령 줄만 빼므로 :변수 치환이 없다.
+-- ccle.seed_now = 시드의 "현재"(기본 2026-10-01 00:00 KST, ADR-0007 §14) — 시드 빌드 전용 검사만 쓴다.
+
 BEGIN;
 SET LOCAL work_mem = '512MB';
 SET LOCAL enable_parallel_hash = off;   -- 병렬 해시는 /dev/shm(DSM)에 해시 테이블을 둔다: 본 규모에서 1GB를 넘어 실패(실측)
 SET LOCAL TIME ZONE 'Asia/Seoul';
+CREATE TEMP TABLE v_flags ON COMMIT DROP AS
+SELECT (coalesce(current_setting('ccle.seed_build', true), '') = '1')::int AS seed_only,
+       coalesce(nullif(current_setting('ccle.seed_now', true), ''), '2026-10-01 00:00:00+09')::timestamptz AS seed_now;
 
 -- 결제 이후 항목 상태(§9.4에서 AWAITING_PAYMENT·PAYMENT_FAILED를 뺀 것)
 -- 환불된 항목 상태 = CANCELLED_BY_BUYER·CANCELLED_SELLER_FAULT·REFUNDED_AFTER_CONFIRM
@@ -157,14 +166,43 @@ JOIN v_act sa ON sa.bid_id = t.sell_bid_id AND sa.e_eid IN (me.eid, me.eid2);
 CREATE INDEX ON v_match (taker_id);
 ANALYZE v_match;
 
+-- [ADR-0007] 정산별 INCLUDED 합·HELD 행 수(판매자 등급 기준 금액·월간 정산서용)
+CREATE TEMP TABLE v_set_x ON COMMIT DROP AS
+SELECT s.id, s.seller_id, s.period_start, s.cutoff, s.status, s.gross, s.fee_total, s.penalty_total, s.payout, s.carry_out,
+       date_trunc('month', s.period_start)::date AS month,
+       coalesce(x.inc, 0) AS inc, coalesce(x.n_held, 0) AS n_held
+FROM v_set s
+LEFT JOIN (SELECT settlement_id, sum(amount) FILTER (WHERE status = 'INCLUDED') AS inc,
+                  count(*) FILTER (WHERE status = 'HELD') AS n_held
+           FROM settlement_items GROUP BY settlement_id) x ON x.settlement_id = s.id;
+ANALYZE v_set_x;
+
+-- [ADR-0007 §6.4] 판매자·달(period_start의 KST 달)별 정산 집계
+CREATE TEMP TABLE v_set_month ON COMMIT DROP AS
+SELECT seller_id, month, count(*) AS n, sum(gross) AS gross, sum(fee_total) AS fee_total,
+       sum(penalty_total) AS penalty_total, sum(payout) AS payout_total,
+       count(*) FILTER (WHERE status = 'CARRIED') AS carried, sum(n_held) AS held,
+       (array_agg(carry_out ORDER BY period_start DESC))[1] AS last_carry_out
+FROM v_set_x GROUP BY seller_id, month;
+ANALYZE v_set_month;
+
+-- [ADR-0007 §6.4·§5.3] 닫힌 달: 그 달의 마지막 월요일 L에 대해 전역 마지막 마감 ≥ L + 7일(00:00 KST)
+CREATE TEMP TABLE v_mclosed ON COMMIT DROP AS
+SELECT m.month, coalesce(g.last_cutoff >= ((x.lm - (extract(isodow FROM x.lm)::int - 1) + 7)::timestamp
+                                           AT TIME ZONE 'Asia/Seoul'), false) AS closed
+FROM v_global g,
+     LATERAL (SELECT d::date AS month FROM generate_series(date '2000-01-01', date '2100-12-01', interval '1 month') d) m,
+     LATERAL (SELECT (m.month + interval '1 month')::date - 1 AS lm) x;
+ANALYZE v_mclosed;
+
 ------------------------------------------------------------------------------------------
 -- 검사
 ------------------------------------------------------------------------------------------
 CREATE TEMP TABLE v_result ON COMMIT DROP AS
 
--- [§6.1-9 FK, §6.1-6 §9.1] constraints.sql의 FK 34개(검증됨)·부분 UNIQUE 3개가 실제로 걸려 있나
+-- [§6.1-9 FK, §6.1-6 §9.1] constraints.sql의 FK 61개(검증됨 — 기존 34 + 단계 A 27, ADR-0007 §3·§15)·부분 UNIQUE 3개가 실제로 걸려 있나
 SELECT 'schema_constraints_present' AS check_name,
-       (abs(34 - (SELECT count(*) FROM pg_constraint
+       (abs(61 - (SELECT count(*) FROM pg_constraint
                   WHERE contype = 'f' AND convalidated AND connamespace = 'public'::regnamespace))
       + abs(3 - (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'
                  AND indexname IN ('trades_live_buy_bid_key','trades_live_sell_bid_key','order_items_live_trade_key')))
@@ -654,12 +692,409 @@ UNION ALL -- users.grade = 가장 최근 등급 이력 (이력이 있는 사용�
 SELECT 'user_grade_current', count(*) FROM users u
  JOIN (SELECT DISTINCT ON (user_id) user_id, grade FROM user_grade_history
        ORDER BY user_id, effective_from DESC) h ON h.user_id = u.id
- WHERE u.grade <> h.grade;
+ WHERE u.grade <> h.grade
+
+---------------- 단계 A 새 테이블 (ADR-0007 §15) — 항상 켜는 검사(행동 테스트 뒤에도 성립) ----------------
+-- 새 테이블의 행 단위 CHECK(상태 ↔ 시각·사유, 금액 모양, occurred_at ≤ received_at 등)와 UNIQUE·FK는 다시 세지 않는다.
+UNION ALL -- [ADR-0007 §3·§15] 새 부분 UNIQUE 4개가 걸려 있나: 이름마다 UNIQUE·테이블·열(순서)·predicate가 §3과 같다
+          -- (predicate는 PostgreSQL이 정규화해 돌려주는 pg_get_expr 문자열과 대조)
+SELECT 'a0_partial_unique_present', count(*) FROM (VALUES
+         ('payout_account_requests_live_user_key', 'payout_account_requests', 'user_id', $$(status = 'PENDING'::text)$$),
+         ('price_alerts_live_user_size_key', 'price_alerts', 'user_id,product_size_id', $$(status = 'ACTIVE'::text)$$),
+         ('tax_invoices_live_settlement_key', 'tax_invoices', 'settlement_id',
+          $$(((kind = 'ISSUE'::text) AND (status = 'ISSUED'::text)) OR (kind = 'HOLD'::text))$$),
+         ('inbound_reservations_live_item_key', 'inbound_reservations', 'order_item_id',
+          $$(status = ANY (ARRAY['RESERVED'::text, 'CHECKED_IN'::text]))$$)) e(idx, tbl, cols, pred)
+ WHERE NOT EXISTS (
+   SELECT 1 FROM pg_index i
+     JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid
+    WHERE c.relname = e.idx AND c.relnamespace = 'public'::regnamespace AND i.indisunique AND t.relname = e.tbl
+      AND (SELECT string_agg(a.attname, ',' ORDER BY k.n) FROM unnest(i.indkey) WITH ORDINALITY k(attnum, n)
+             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum) = e.cols
+      AND pg_get_expr(i.indpred, i.indrelid) = e.pred)
+UNION ALL -- [ADR-0007 §2.4·§15] 새 테이블의 시각 순서(received_at ≥ occurred_at는 tables.sql CHECK가 막는다)
+SELECT 'a0_time_order',
+       (SELECT count(*) FROM payout_account_requests WHERE decided_at < requested_at)
+     + (SELECT count(*) FROM notifications WHERE read_at < created_at)
+     + (SELECT count(*) FROM inquiries WHERE closed_at < created_at)
+     + (SELECT count(*) FROM price_alerts WHERE closed_at < created_at)
+     + (SELECT count(*) FROM inbound_reservations WHERE closed_at < created_at)
+     + (SELECT count(*) FROM reviews r JOIN v_oi i ON i.id = r.order_item_id
+         WHERE i.confirmed_at IS NULL OR r.created_at < i.confirmed_at)
+UNION ALL -- [ADR-0007 §4.1] 리뷰는 확정 + 30일 안(정각 포함)에 썼다
+SELECT 'a1_review_window', count(*) FROM reviews r JOIN v_oi i ON i.id = r.order_item_id
+ WHERE r.created_at > i.confirmed_at + interval '30 days'
+UNION ALL -- [ADR-0007 §4.1] 리뷰의 buyer·seller = 그 항목 체결의 구매자·판매자
+SELECT 'a1_review_parties', count(*) FROM reviews r JOIN v_oi i ON i.id = r.order_item_id
+ WHERE r.buyer_id <> i.t_buyer OR r.seller_id <> i.t_seller
+UNION ALL -- [ADR-0007 §4.1·§14] 리뷰는 CONFIRMED일 때만 쓴다 → 분쟁 구간(접수 ~ 기각) 안이나 인정된 분쟁 접수 뒤에 쓴 리뷰는 없다
+          -- (멈춘 시계에서 같은 시각은 선후를 가릴 수 없어 허용)
+SELECT 'a1_review_not_in_dispute', count(DISTINCT r.id) FROM reviews r JOIN disputes d ON d.order_item_id = r.order_item_id
+ WHERE r.created_at > d.opened_at AND (d.status <> 'REJECTED' OR r.created_at < d.resolved_at)
+UNION ALL -- [ADR-0007 §5.1·§5.2] 판매자 등급(저장 열끼리): 매월 1일, 제한이면 STANDARD, 아니면 기준 금액의 문턱 등급
+SELECT 'a2_seller_grade_rule', count(*) FROM seller_grades
+ WHERE extract(day FROM effective_from) <> 1
+    OR grade <> CASE WHEN restricted THEN 'STANDARD' WHEN basis_amount >= 8000000 THEN 'MASTER'
+                     WHEN basis_amount >= 3000000 THEN 'PRO' WHEN basis_amount >= 1000000 THEN 'PLUS' ELSE 'STANDARD' END
+UNION ALL -- [ADR-0007 §5.3] 리베이트(저장 열끼리): 율 = 등급의 율, amount = floor(max(fee_base, 0) × 율 / 1000)
+          -- (status ↔ amount·paid_at은 tables.sql CHECK)
+SELECT 'a2_rebate_rule', count(*) FROM fee_rebates
+ WHERE rate_permille <> CASE grade WHEN 'STANDARD' THEN 0 WHEN 'PLUS' THEN 50 WHEN 'PRO' THEN 100 WHEN 'MASTER' THEN 150 END
+    OR amount <> greatest(fee_base, 0) * rate_permille / 1000
+UNION ALL -- [ADR-0007 §6.4] 정산서 = 그 달(period_start) 정산들의 수·합·이월 수·HELD 행 수·마지막 정산의 carry_out
+SELECT 'a3_statement_sums', count(*) FROM monthly_statements ms
+ LEFT JOIN v_set_month v ON v.seller_id = ms.seller_id AND v.month = ms.month
+ WHERE v.n IS NULL OR ms.settlement_count <> v.n OR ms.gross <> v.gross OR ms.fee_total <> v.fee_total
+    OR ms.penalty_total <> v.penalty_total OR ms.payout_total <> v.payout_total
+    OR ms.carried_count <> v.carried OR ms.held_count <> v.held OR ms.last_carry_out <> v.last_carry_out
+UNION ALL -- [ADR-0007 §7.1·§8.3] 알림 받는 사람 = 대상의 당사자(ref_id가 가리키는 행이 없어도 위반)
+SELECT 'a4_notification_owner', count(*) FROM notifications n
+ LEFT JOIN trades t        ON n.kind = 'PAYMENT_DUE_SOON' AND t.id = n.ref_id
+ LEFT JOIN v_oi i          ON n.kind IN ('SHIPMENT_DUE_SOON','DISPUTE_WINDOW_CLOSING') AND i.id = n.ref_id
+ LEFT JOIN settlements s   ON n.kind = 'SETTLEMENT_PAID' AND s.id = n.ref_id
+ LEFT JOIN price_alerts pa ON n.kind = 'PRICE_ALERT' AND pa.id = n.ref_id
+ LEFT JOIN users u         ON n.kind IN ('PURCHASE_RESTRICTED','SALE_RESTRICTED') AND u.id = n.ref_id
+ WHERE n.user_id IS DISTINCT FROM CASE n.kind
+         WHEN 'PAYMENT_DUE_SOON'       THEN t.buyer_id
+         WHEN 'SHIPMENT_DUE_SOON'      THEN i.t_seller
+         WHEN 'DISPUTE_WINDOW_CLOSING' THEN i.o_buyer
+         WHEN 'SETTLEMENT_PAID'        THEN s.seller_id
+         WHEN 'PRICE_ALERT'            THEN pa.user_id
+         ELSE u.id END
+UNION ALL -- [ADR-0007 §7.1·§8.3] dedupe_key = kind:ref_id (제한 두 종류는 kind:ref_id:<끝 시각 epoch 초>).
+          -- 제한 두 종류의 <E>는 여기서 형식만 본다: 알림을 만든 뒤 제한이 연장되면 users 열이 바뀌고(§7.1 — 연장은 새 키로
+          -- 새 행) 옛 알림의 E는 지금 열과 달라지므로 행동 테스트 뒤에는 대조할 수 없다. 지금 열과의 대조는
+          -- 시드 빌드 전용 a4_restricted_key_current.
+SELECT 'a4_notification_dedupe_key', count(*) FROM notifications n
+ WHERE CASE WHEN n.kind IN ('PURCHASE_RESTRICTED','SALE_RESTRICTED')
+            THEN n.dedupe_key !~ ('^' || n.kind || ':' || n.ref_id || ':[0-9]+$')
+            ELSE n.dedupe_key <> n.kind || ':' || n.ref_id END
+UNION ALL -- [ADR-0007 §8.3] TRIGGERED 입찰 = 같은 사이즈 SELL·price ≤ target, 알림 종결 전 등록, 만료 전 발동
+SELECT 'a5_alert_trigger_bid', count(*) FROM price_alerts a JOIN bids b ON b.id = a.triggered_bid_id
+ WHERE a.status = 'TRIGGERED'
+   AND (b.side <> 'SELL' OR b.product_size_id <> a.product_size_id OR b.price > a.target_price
+        OR b.created_at > a.closed_at OR a.closed_at >= a.expires_at)
+UNION ALL -- [ADR-0007 §8.3] EXPIRED는 만료 시각 이후에 닫혔다
+SELECT 'a5_alert_expired_after', count(*) FROM price_alerts WHERE status = 'EXPIRED' AND closed_at < expires_at
+UNION ALL -- [ADR-0007 §9.1] 첫 메시지는 USER, 답변 시각 있음 ⇔ ADMIN 메시지 있음, ANSWERED면 답변 시각 있음,
+          -- first_answered_at = 첫 ADMIN 메시지 시각, answered_at = 마지막 ADMIN 메시지 시각(§9.1 답변이 메시지 1행과 함께 쓴다)
+SELECT 'a6_inquiry_messages', count(*) FROM inquiries q
+ LEFT JOIN (SELECT inquiry_id, (array_agg(author ORDER BY id))[1] AS first_author,
+                   count(*) FILTER (WHERE author = 'ADMIN') AS n_admin,
+                   min(created_at) FILTER (WHERE author = 'ADMIN') AS first_admin,
+                   max(created_at) FILTER (WHERE author = 'ADMIN') AS last_admin
+            FROM inquiry_messages GROUP BY inquiry_id) m ON m.inquiry_id = q.id
+ WHERE m.first_author IS DISTINCT FROM 'USER'
+    OR (q.answered_at IS NOT NULL) <> (coalesce(m.n_admin, 0) > 0)
+    OR (q.status = 'ANSWERED' AND q.answered_at IS NULL)
+    OR (q.answered_at IS NULL) <> (q.first_answered_at IS NULL)
+    OR q.first_answered_at IS DISTINCT FROM m.first_admin
+    OR q.answered_at IS DISTINCT FROM m.last_admin
+UNION ALL -- [ADR-0007 §9.3] 자동 종결(AUTO)은 답변 + 7일 이후
+SELECT 'a6_auto_close_after_7d', count(*) FROM inquiries
+ WHERE close_reason = 'AUTO' AND (answered_at IS NULL OR closed_at < answered_at + interval '7 days')
+UNION ALL -- [ADR-0007 §10.1·§10.2·§10.3] 계산서 kind별 모양(행 사이): 판매자 = 정산 판매자, ISSUE·CANCEL은 PAID 정산·HOLD는 CARRIED,
+          -- 첫 발행 공급가액 = max(fee_total, 0), ref = 같은 정산의 정정된(CANCELLED) ISSUE, CANCEL 금액 = 원본 × −1,
+          -- 정정된 원본마다 CANCEL 1·재발행 1, 정정 안 된 원본엔 둘 다 없음 (같은 행 안의 금액 식은 tables.sql CHECK)
+SELECT 'a7_invoice_shape', count(*) FROM (
+  SELECT ti.id FROM tax_invoices ti
+    JOIN settlements s ON s.id = ti.settlement_id
+    LEFT JOIN tax_invoices r ON r.id = ti.ref_invoice_id
+   WHERE ti.seller_id <> s.seller_id
+      OR (ti.kind = 'HOLD' AND s.status <> 'CARRIED')
+      OR (ti.kind IN ('ISSUE','CANCEL') AND s.status <> 'PAID')
+      OR (ti.kind = 'ISSUE' AND ti.ref_invoice_id IS NULL AND ti.supply_amount <> greatest(s.fee_total, 0))
+      OR (ti.ref_invoice_id IS NOT NULL AND (r.kind <> 'ISSUE' OR r.status <> 'CANCELLED' OR r.settlement_id <> ti.settlement_id))
+      OR (ti.kind = 'CANCEL' AND (ti.supply_amount <> -r.supply_amount OR ti.vat_amount <> -r.vat_amount
+                                  OR ti.total_amount <> -r.total_amount))
+  UNION ALL
+  SELECT o.id FROM tax_invoices o
+    LEFT JOIN (SELECT ref_invoice_id, count(*) FILTER (WHERE kind = 'CANCEL') AS n_cancel,
+                      count(*) FILTER (WHERE kind = 'ISSUE') AS n_reissue
+               FROM tax_invoices WHERE ref_invoice_id IS NOT NULL GROUP BY ref_invoice_id) c ON c.ref_invoice_id = o.id
+   WHERE o.kind = 'ISSUE'
+     AND ((o.status = 'CANCELLED') <> (coalesce(c.n_cancel, 0) = 1) OR coalesce(c.n_cancel, 0) > 1
+          OR coalesce(c.n_cancel, 0) <> coalesce(c.n_reissue, 0))) x
+UNION ALL -- [ADR-0007 §2.7·§11.3] 감사 행의 대상이 있고 action별 detail·시각이 그 쓰기와 맞다, 같은 대상 중복 없음(답변 제외)
+SELECT 'a9_audit_target', (SELECT count(*) FROM admin_audit_logs a
+  LEFT JOIN reviews r                 ON a.action = 'REVIEW_HIDE' AND r.id = a.target_id
+  LEFT JOIN payout_account_requests p ON a.action = 'PAYOUT_ACCOUNT_DECISION' AND p.id = a.target_id
+  LEFT JOIN inquiries q               ON a.action = 'INQUIRY_ANSWER' AND q.id = a.target_id
+  LEFT JOIN tax_invoices t            ON a.action = 'TAX_INVOICE_CORRECTION' AND t.id = a.target_id
+  LEFT JOIN tax_invoices t2           ON a.action = 'TAX_INVOICE_CORRECTION'
+                                     AND t2.id = CASE WHEN a.detail ~ '^[0-9]{1,18}$' THEN a.detail::bigint END
+  LEFT JOIN shipment_tracking_events e ON a.action = 'TRACKING_EVENT' AND e.id = a.target_id
+  LEFT JOIN inbound_slots sl          ON a.action = 'INBOUND_SLOT_CREATE' AND sl.id = a.target_id
+  LEFT JOIN inbound_reservations ir   ON a.action = 'INBOUND_CHECK_IN' AND ir.id = a.target_id
+ WHERE CASE a.action
+   WHEN 'REVIEW_HIDE' THEN r.id IS NULL OR a.detail IS NOT NULL
+        OR NOT (r.status = 'DELETED' OR (r.status = 'HIDDEN' AND r.hidden_reason = 'ADMIN'))
+   WHEN 'PAYOUT_ACCOUNT_DECISION' THEN p.id IS NULL OR a.detail IS DISTINCT FROM p.status
+        OR a.created_at IS DISTINCT FROM p.decided_at
+   WHEN 'INQUIRY_ANSWER' THEN q.id IS NULL OR a.detail IS NOT NULL
+        OR NOT EXISTS (SELECT 1 FROM inquiry_messages m WHERE m.inquiry_id = q.id AND m.author = 'ADMIN'
+                       AND m.created_at = a.created_at)
+   WHEN 'TAX_INVOICE_CORRECTION' THEN t.id IS NULL OR t.kind <> 'ISSUE' OR t.status <> 'CANCELLED'
+        OR t2.id IS NULL OR t2.kind <> 'ISSUE' OR t2.ref_invoice_id IS DISTINCT FROM t.id
+        OR a.created_at IS DISTINCT FROM t2.issued_at
+   WHEN 'TRACKING_EVENT' THEN e.id IS NULL OR a.detail IS DISTINCT FROM e.event_type
+        OR a.created_at IS DISTINCT FROM e.received_at
+   WHEN 'INBOUND_SLOT_CREATE' THEN sl.id IS NULL OR a.detail IS NOT NULL OR a.created_at IS DISTINCT FROM sl.created_at
+   WHEN 'INBOUND_CHECK_IN' THEN ir.id IS NULL OR ir.status <> 'CHECKED_IN' OR a.detail IS NOT NULL
+        OR a.created_at IS DISTINCT FROM ir.closed_at
+   END)
+   + (SELECT count(*) FROM (SELECT 1 FROM admin_audit_logs WHERE action <> 'INQUIRY_ANSWER'
+                            GROUP BY action, target_id HAVING count(*) > 1) d)
+UNION ALL -- [ADR-0007 §12.2] 추적 이벤트 항목은 발송됐고(shipped_at 있음) 수신 시각 ≥ 발송 시각
+SELECT 'a11_tracking_item_shipped', count(*) FROM shipment_tracking_events e JOIN v_oi i ON i.id = e.order_item_id
+ WHERE i.shipped_at IS NULL OR e.received_at < i.shipped_at
+UNION ALL -- [ADR-0007 §12.2] 지연 표시는 기한이 지난 뒤 감지: OVERDUE = 결제 + 3일 이후·그때 미발송, LATE = 검수 + 5일 이후·그때 미배송
+SELECT 'a11_delay_rule', count(*) FROM shipment_delays d JOIN v_oi i ON i.id = d.order_item_id
+ WHERE (d.kind = 'SHIPMENT_OVERDUE' AND (i.paid_at IS NULL OR d.detected_at < i.paid_at + interval '3 days'
+                                         OR i.shipped_at < d.detected_at))
+    OR (d.kind = 'DELIVERY_LATE' AND (i.inspected_at IS NULL OR d.detected_at < i.inspected_at + interval '5 days'
+                                      OR i.delivered_at < d.detected_at))
+UNION ALL -- [ADR-0007 §12.3] 슬롯마다 살아 있는 예약(RESERVED·CHECKED_IN) ≤ 정원
+SELECT 'a12_capacity', count(*) FROM inbound_slots s
+ JOIN (SELECT slot_id, count(*) AS n FROM inbound_reservations WHERE status IN ('RESERVED','CHECKED_IN') GROUP BY slot_id) r
+   ON r.slot_id = s.id
+ WHERE r.n > s.capacity
+UNION ALL -- [ADR-0007 §12.3] 예약의 seller_id = 그 항목 체결의 판매자
+SELECT 'a12_reservation_item_seller', count(*) FROM inbound_reservations r JOIN v_oi i ON i.id = r.order_item_id
+ WHERE r.seller_id <> i.t_seller
+UNION ALL -- [ADR-0007 §12.3] 예약은 슬롯 − 24시간까지(정각 포함)
+SELECT 'a12_reservation_deadline', count(*) FROM inbound_reservations r JOIN inbound_slots s ON s.id = r.slot_id
+ WHERE r.created_at > s.slot_start - interval '24 hours'
+UNION ALL -- [ADR-0007 §12.3] 예약은 PAID 항목에만: created ≥ 항목 paid_at, 발송됐으면 발송은 예약 뒤
+          -- (멈춘 시계에서 같은 시각은 선후를 가릴 수 없어 shipped_at = created_at은 허용)
+SELECT 'a12_reservation_item_paid', count(*) FROM inbound_reservations r JOIN v_oi i ON i.id = r.order_item_id
+ WHERE i.paid_at IS NULL OR r.created_at < i.paid_at OR i.shipped_at < r.created_at
+UNION ALL -- [ADR-0007 §12.3] 종결 시각 창: CHECKED_IN ∈ [슬롯, 슬롯 + 1시간), NO_SHOW ≥ 슬롯 + 1시간, CANCELLED ≤ 슬롯 − 2시간
+SELECT 'a12_reservation_close_window', count(*) FROM inbound_reservations r JOIN inbound_slots s ON s.id = r.slot_id
+ WHERE (r.status = 'CHECKED_IN' AND (r.closed_at < s.slot_start OR r.closed_at >= s.slot_start + interval '1 hour'))
+    OR (r.status = 'NO_SHOW' AND r.closed_at < s.slot_start + interval '1 hour')
+    OR (r.status = 'CANCELLED' AND r.closed_at > s.slot_start - interval '2 hours')
+
+---------------- 단계 A — 시드 빌드에서만 켜는 검사(seed_build, ADR-0007 §15 끝) ----------------
+-- 배치가 맞춰 주는 캐시·완전성·재집계, 감사 완전성. 꺼져 있으면((SELECT seed_only FROM v_flags) = 0) 상수 거짓 조건으로 스캔 없이 0이다.
+-- "NOW" = v_flags.seed_now (ADR-0007 §14 — 시드는 NOW에 배치·요청이 계약대로 돌았다면 남았을 행).
+UNION ALL -- [ADR-0007 §14] 새 테이블이 비어 있어 검사들이 빈 집합으로 통과하는 것을 막는다(shipment_delays는 "수 건"이라 제외)
+SELECT 'a0_seed_tables_not_empty', count(*) FROM (VALUES
+         ((SELECT count(*) FROM reviews)), ((SELECT count(*) FROM seller_ratings)), ((SELECT count(*) FROM seller_grades)),
+         ((SELECT count(*) FROM fee_rebates)), ((SELECT count(*) FROM payout_account_requests)),
+         ((SELECT count(*) FROM monthly_statements)), ((SELECT count(*) FROM notifications)), ((SELECT count(*) FROM wishlists)),
+         ((SELECT count(*) FROM price_alerts)), ((SELECT count(*) FROM inquiries)), ((SELECT count(*) FROM inquiry_messages)),
+         ((SELECT count(*) FROM tax_invoices)), ((SELECT count(*) FROM price_stats_daily)), ((SELECT count(*) FROM admin_audit_logs)),
+         ((SELECT count(*) FROM seller_profiles)), ((SELECT count(*) FROM shipment_tracking_events)),
+         ((SELECT count(*) FROM inbound_slots)), ((SELECT count(*) FROM inbound_reservations))) v(n)
+ WHERE (SELECT seed_only FROM v_flags) = 1 AND n = 0
+UNION ALL -- [ADR-0007 §4.5 1·2·§15] rating-recalc 뒤: VISIBLE 리뷰 항목은 CONFIRMED, DISPUTE 숨김 항목은 DISPUTED·REFUNDED_AFTER_CONFIRM
+SELECT 'a1_review_item_confirmed', count(*) FROM reviews r JOIN v_oi i ON i.id = r.order_item_id
+ WHERE (SELECT seed_only FROM v_flags) = 1
+   AND ((r.status = 'VISIBLE' AND i.status <> 'CONFIRMED')
+        OR (r.status = 'HIDDEN' AND r.hidden_reason = 'DISPUTE' AND i.status NOT IN ('DISPUTED','REFUNDED_AFTER_CONFIRM')))
+UNION ALL -- [ADR-0007 §4.5 3·§15] seller_ratings = VISIBLE 리뷰의 수·합 (행 없음 = 0·0)
+SELECT 'a1_rating_cache', count(*) FROM seller_ratings sr
+ FULL JOIN (SELECT seller_id, count(*) AS n, sum(rating) AS s FROM reviews WHERE status = 'VISIBLE' GROUP BY seller_id) v
+   ON v.seller_id = sr.seller_id
+ WHERE (SELECT seed_only FROM v_flags) = 1
+   AND (coalesce(sr.review_count, 0) <> coalesce(v.n, 0) OR coalesce(sr.rating_sum, 0) <> coalesce(v.s, 0))
+UNION ALL -- [ADR-0007 §5.1·§14·§15] 기준 금액 = D 00:00 스냅샷: 그 판매자 INCLUDED 합, 소속 정산 period_start ∈ [D − 3개월, D)
+          -- 이고 D 00:00(KST)까지 마감된 것(cutoff = period_end + 1일 00:00 ≤ D)만 — 시드는 등급 배치를 매월 D 00:00에 돌린 것으로 본다
+SELECT 'a2_seller_grade_basis', count(*) FROM (
+  SELECT g.id, g.basis_amount, coalesce(sum(w.inc), 0) AS snap_sum
+  FROM seller_grades g
+  LEFT JOIN v_set_x w ON w.seller_id = g.seller_id
+                     AND w.period_start >= (g.effective_from - interval '3 months')::date AND w.period_start < g.effective_from
+                     AND w.cutoff <= (g.effective_from::timestamp AT TIME ZONE 'Asia/Seoul')
+  WHERE (SELECT seed_only FROM v_flags) = 1
+  GROUP BY g.id, g.basis_amount) x
+ WHERE basis_amount <> snap_sum
+UNION ALL -- [ADR-0007 §5.2·§14] seller-grade-recalc를 매월 D 00:00에 돌렸다: §14의 첫 등급 달 2025-01 ~ NOW 달의 각 D에서
+          -- D 00:00까지 마감된 정산이 있는 판매자 ⇔ 그 D의 등급 행(시작 달을 데이터에서 잡으면 첫 달 통째 누락을 놓친다)
+SELECT 'a2_seller_grade_complete', count(*) FROM (
+  SELECT 1 FROM (SELECT m::date AS d FROM v_flags f,
+                        generate_series(date '2025-01-01',
+                                        date_trunc('month', f.seed_now)::date, interval '1 month') m) ds
+    JOIN (SELECT DISTINCT seller_id, cutoff FROM v_set_x) w ON w.cutoff <= (ds.d::timestamp AT TIME ZONE 'Asia/Seoul')
+   GROUP BY ds.d, w.seller_id
+  HAVING NOT EXISTS (SELECT 1 FROM seller_grades g WHERE g.seller_id = w.seller_id AND g.effective_from = ds.d)
+  UNION ALL
+  SELECT 1 FROM seller_grades g
+   WHERE NOT EXISTS (SELECT 1 FROM v_set_x w WHERE w.seller_id = g.seller_id
+                     AND w.cutoff <= (g.effective_from::timestamp AT TIME ZONE 'Asia/Seoul'))
+  UNION ALL -- §14 범위(2025-01 ~ NOW 달) 밖 등급 행
+  SELECT 1 FROM seller_grades g, v_flags f
+   WHERE g.effective_from < date '2025-01-01' OR g.effective_from > date_trunc('month', f.seed_now)::date
+  UNION ALL -- 등급 행이 없는 시드면 NOW 달 대상 판매자를 빠짐으로 센다(위 범위가 비지 않게)
+  SELECT 1 FROM (SELECT DISTINCT seller_id FROM v_set_x
+                  WHERE cutoff <= (SELECT seed_now FROM v_flags)) s
+   WHERE NOT EXISTS (SELECT 1 FROM seller_grades)) x
+ WHERE (SELECT seed_only FROM v_flags) = 1
+UNION ALL -- [ADR-0007 §14] restricted = 시드 가정: sale_restricted_until이 있고 until − 30일 ≤ D 00:00 < until
+SELECT 'a2_seller_grade_restricted', count(*) FROM seller_grades g JOIN users u ON u.id = g.seller_id
+ WHERE (SELECT seed_only FROM v_flags) = 1
+   AND g.restricted IS DISTINCT FROM coalesce(
+         u.sale_restricted_until - interval '30 days' <= (g.effective_from::timestamp AT TIME ZONE 'Asia/Seoul')
+         AND (g.effective_from::timestamp AT TIME ZONE 'Asia/Seoul') < u.sale_restricted_until, false)
+UNION ALL -- [ADR-0007 §5.3·§6.4] 리베이트·정산서는 그 달이 닫힌 뒤에 만든다: created_at ≥ 닫힘 시각(그 달 마지막 월요일 L + 7일 00:00 KST)
+SELECT 'a23_created_after_close', count(*) FROM (
+  SELECT month, created_at FROM fee_rebates UNION ALL SELECT month, created_at FROM monthly_statements) r
+ CROSS JOIN LATERAL (SELECT (r.month + interval '1 month')::date - 1 AS lm) x
+ WHERE (SELECT seed_only FROM v_flags) = 1
+   AND r.created_at < ((x.lm - (extract(isodow FROM x.lm)::int - 1) + 7)::timestamp AT TIME ZONE 'Asia/Seoul')
+UNION ALL -- [ADR-0007 §5.3·§15] fee_base = 그 달(period_start) 정산 fee_total 합
+SELECT 'a2_rebate_base', count(*) FROM fee_rebates r
+ LEFT JOIN v_set_month v ON v.seller_id = r.seller_id AND v.month = r.month
+ WHERE (SELECT seed_only FROM v_flags) = 1 AND r.fee_base <> coalesce(v.fee_total, 0)
+UNION ALL -- [ADR-0007 §5.3] rebate-settlement 완전성: 닫힌 달의 등급 행 ⇔ 리베이트 행(등급 같음), 리베이트는 닫힌 달·등급 행이 있는 달에만
+SELECT 'a2_rebate_complete', count(*) FROM (
+  SELECT g.id FROM seller_grades g JOIN v_mclosed c ON c.month = g.effective_from AND c.closed
+    LEFT JOIN fee_rebates r ON r.seller_id = g.seller_id AND r.month = g.effective_from
+   WHERE r.id IS NULL OR r.grade <> g.grade
+  UNION ALL
+  SELECT r.id FROM fee_rebates r
+    LEFT JOIN v_mclosed c ON c.month = r.month
+    LEFT JOIN seller_grades g ON g.seller_id = r.seller_id AND g.effective_from = r.month
+   WHERE g.id IS NULL OR c.closed IS NOT TRUE) x
+ WHERE (SELECT seed_only FROM v_flags) = 1
+UNION ALL -- [ADR-0007 §6.4] monthly-statement 완전성: 닫힌 달에 정산이 있는 판매자 ⇔ 정산서, 정산서는 닫힌 달에만
+SELECT 'a3_statement_complete', count(*) FROM (
+  SELECT v.seller_id FROM v_set_month v JOIN v_mclosed c ON c.month = v.month AND c.closed
+    LEFT JOIN monthly_statements ms ON ms.seller_id = v.seller_id AND ms.month = v.month
+   WHERE ms.id IS NULL
+  UNION ALL
+  SELECT ms.seller_id FROM monthly_statements ms LEFT JOIN v_mclosed c ON c.month = ms.month
+   WHERE c.closed IS NOT TRUE) x
+ WHERE (SELECT seed_only FROM v_flags) = 1
+UNION ALL -- [ADR-0007 §7.1·§14] deadline-reminder를 NOW에 돌렸다: 여섯 종류 대상마다 그 dedupe_key 알림
+          -- (+ §14: 2026-09-01 이후 지급분 SETTLEMENT_PAID 전부)
+SELECT 'a4_reminder_complete', count(*) FROM (
+  SELECT 'PAYMENT_DUE_SOON:' || id AS k FROM trades
+   WHERE status = 'AWAITING_PAYMENT' AND payment_due_at > (SELECT seed_now FROM v_flags)
+     AND payment_due_at <= (SELECT seed_now FROM v_flags) + interval '10 minutes'
+  UNION ALL
+  SELECT 'SHIPMENT_DUE_SOON:' || id FROM order_items
+   WHERE status = 'PAID' AND paid_at + interval '2 days' <= (SELECT seed_now FROM v_flags)
+     AND (SELECT seed_now FROM v_flags) < paid_at + interval '3 days'
+  UNION ALL
+  SELECT 'DISPUTE_WINDOW_CLOSING:' || id FROM order_items
+   WHERE status = 'CONFIRMED' AND confirmed_at + interval '12 days' <= (SELECT seed_now FROM v_flags)
+     AND (SELECT seed_now FROM v_flags) <= confirmed_at + interval '14 days'
+  UNION ALL
+  SELECT 'SETTLEMENT_PAID:' || id FROM settlements
+   WHERE status = 'PAID' AND paid_at <= (SELECT seed_now FROM v_flags)
+     AND (paid_at > (SELECT seed_now FROM v_flags) - interval '7 days' OR paid_at >= timestamptz '2026-09-01 00:00:00+09')
+  UNION ALL
+  SELECT 'PURCHASE_RESTRICTED:' || id || ':' || floor(extract(epoch FROM purchase_restricted_until))::bigint FROM users
+   WHERE purchase_restricted_until > (SELECT seed_now FROM v_flags)
+  UNION ALL
+  SELECT 'SALE_RESTRICTED:' || id || ':' || floor(extract(epoch FROM sale_restricted_until))::bigint FROM users
+   WHERE sale_restricted_until > (SELECT seed_now FROM v_flags)) x
+ WHERE (SELECT seed_only FROM v_flags) = 1 AND NOT EXISTS (SELECT 1 FROM notifications n WHERE n.dedupe_key = x.k)
+UNION ALL -- [ADR-0007 §7.1·§14] 반대 방향: NOW 리마인더 kind 알림(SETTLEMENT_PAID·PRICE_ALERT 제외)은 created_at = NOW이고
+          -- NOW에 그 대상 조건이 성립한다(시드는 deadline-reminder를 NOW에 한 번 돌렸다)
+SELECT 'a4_reminder_exact', count(*) FROM notifications n
+ CROSS JOIN v_flags f
+ LEFT JOIN trades t      ON n.kind = 'PAYMENT_DUE_SOON' AND t.id = n.ref_id
+ LEFT JOIN order_items i ON n.kind IN ('SHIPMENT_DUE_SOON','DISPUTE_WINDOW_CLOSING') AND i.id = n.ref_id
+ LEFT JOIN users u       ON n.kind IN ('PURCHASE_RESTRICTED','SALE_RESTRICTED') AND u.id = n.ref_id
+ WHERE f.seed_only = 1 AND n.kind NOT IN ('SETTLEMENT_PAID','PRICE_ALERT')
+   AND (n.created_at <> f.seed_now OR NOT coalesce(CASE n.kind
+         WHEN 'PAYMENT_DUE_SOON' THEN t.status = 'AWAITING_PAYMENT' AND t.payment_due_at > f.seed_now
+                                      AND t.payment_due_at <= f.seed_now + interval '10 minutes'
+         WHEN 'SHIPMENT_DUE_SOON' THEN i.status = 'PAID' AND i.paid_at + interval '2 days' <= f.seed_now
+                                       AND f.seed_now < i.paid_at + interval '3 days'
+         WHEN 'DISPUTE_WINDOW_CLOSING' THEN i.status = 'CONFIRMED' AND i.confirmed_at + interval '12 days' <= f.seed_now
+                                            AND f.seed_now <= i.confirmed_at + interval '14 days'
+         WHEN 'PURCHASE_RESTRICTED' THEN u.purchase_restricted_until > f.seed_now
+         WHEN 'SALE_RESTRICTED' THEN u.sale_restricted_until > f.seed_now END, false))
+UNION ALL -- [ADR-0007 §7.1] 제한 알림의 <E> = 지금 users 열의 floor(epoch) (시드에는 연장 이력이 없다 — 항상 켜는 쪽은 형식만)
+SELECT 'a4_restricted_key_current', count(*) FROM notifications n JOIN users u ON u.id = n.ref_id
+ WHERE (SELECT seed_only FROM v_flags) = 1 AND n.kind IN ('PURCHASE_RESTRICTED','SALE_RESTRICTED')
+   AND n.dedupe_key IS DISTINCT FROM n.kind || ':' || n.ref_id || ':' || floor(extract(epoch FROM
+         CASE n.kind WHEN 'PURCHASE_RESTRICTED' THEN u.purchase_restricted_until ELSE u.sale_restricted_until END))::bigint
+UNION ALL -- [ADR-0007 §8.3] 발동한(TRIGGERED) 가격 알림마다 PRICE_ALERT 알림(같은 트랜잭션)
+SELECT 'a5_trigger_notified', count(*) FROM price_alerts a
+ WHERE (SELECT seed_only FROM v_flags) = 1 AND a.status = 'TRIGGERED'
+   AND NOT EXISTS (SELECT 1 FROM notifications n WHERE n.dedupe_key = 'PRICE_ALERT:' || a.id
+                   AND n.kind = 'PRICE_ALERT' AND n.ref_id = a.id)
+UNION ALL -- [ADR-0007 §8.3] price-alert-scan을 NOW에 돌렸다: ACTIVE 알림은 만료 전이고, (구매 제한이 아니면) 발동할 SELL 입찰이 없다
+SELECT 'a5_active_alert_unmatched', count(*) FROM price_alerts a JOIN users u ON u.id = a.user_id
+ WHERE (SELECT seed_only FROM v_flags) = 1 AND a.status = 'ACTIVE'
+   AND (a.expires_at <= (SELECT seed_now FROM v_flags)
+        OR ((u.purchase_restricted_until > (SELECT seed_now FROM v_flags)) IS NOT TRUE
+            AND EXISTS (SELECT 1 FROM bids b WHERE b.product_size_id = a.product_size_id AND b.side = 'SELL'
+                        AND b.status = 'ACTIVE' AND b.expires_at > (SELECT seed_now FROM v_flags) AND b.price <= a.target_price)))
+UNION ALL -- [ADR-0007 §9.3] inquiry-auto-close를 NOW에 돌렸다: 답변 + 7일이 지난 ANSWERED 문의가 없다
+SELECT 'a6_auto_close_complete', count(*) FROM inquiries
+ WHERE (SELECT seed_only FROM v_flags) = 1 AND status = 'ANSWERED' AND answered_at + interval '7 days' <= (SELECT seed_now FROM v_flags)
+UNION ALL -- [ADR-0007 §10.2·§15] tax-invoice-issue를 NOW에 돌렸다: 지급일 지난 PAID 정산마다 ISSUED ISSUE 정확히 1(HOLD 없음),
+          -- CARRIED 정산마다 HOLD 1행만, 지급일 전 PAID 정산엔 계산서 없음
+SELECT 'a7_one_live_issue', count(*) FROM settlements s
+ LEFT JOIN (SELECT settlement_id, count(*) FILTER (WHERE kind = 'ISSUE' AND status = 'ISSUED') AS n_iss,
+                   count(*) FILTER (WHERE kind = 'HOLD') AS n_hold, count(*) AS n
+            FROM tax_invoices GROUP BY settlement_id) t ON t.settlement_id = s.id
+ WHERE (SELECT seed_only FROM v_flags) = 1
+   AND CASE WHEN s.status = 'PAID' AND s.paid_at <= (SELECT seed_now FROM v_flags)
+                 THEN coalesce(t.n_iss, 0) <> 1 OR coalesce(t.n_hold, 0) <> 0
+            WHEN s.status = 'CARRIED' THEN coalesce(t.n_hold, 0) <> 1 OR coalesce(t.n, 0) <> 1
+            ELSE coalesce(t.n, 0) <> 0 END
+UNION ALL -- [ADR-0007 §11.1·§14] 시세 행 ⇔ NOW 전 날짜(KST)별 PAID 체결 집계: 수·최저·최고·아래 중앙값(floor((n − 1) / 2)번째, 0부터)
+SELECT 'a8_price_stats_rule', count(*) FROM (
+  SELECT 1 FROM price_stats_daily p
+  FULL JOIN (SELECT product_size_id, matched_at::date AS d, count(*) AS n, min(price) AS mn, max(price) AS mx,
+                    (array_agg(price ORDER BY price))[((count(*) - 1) / 2 + 1)::int] AS med
+             FROM trades WHERE status = 'PAID' AND matched_at::date < ((SELECT seed_now FROM v_flags))::date
+             GROUP BY product_size_id, matched_at::date) t
+    ON t.product_size_id = p.product_size_id AND t.d = p.stat_date
+  WHERE p.id IS NULL OR t.n IS NULL OR p.trade_count <> t.n OR p.min_price <> t.mn OR p.max_price <> t.mx
+     OR p.median_price <> t.med) x
+ WHERE (SELECT seed_only FROM v_flags) = 1
+UNION ALL -- [ADR-0007 §2.7·§14] 시드의 관리자 쓰기 흔적마다 감사 행(답변은 ADMIN 메시지 수 = INQUIRY_ANSWER 수)
+SELECT 'a9_audit_coverage', count(*) FROM (
+  SELECT r.id FROM reviews r WHERE r.status = 'HIDDEN' AND r.hidden_reason = 'ADMIN'
+     AND NOT EXISTS (SELECT 1 FROM admin_audit_logs a WHERE a.action = 'REVIEW_HIDE' AND a.target_id = r.id)
+  UNION ALL
+  SELECT p.id FROM payout_account_requests p WHERE p.status <> 'PENDING'
+     AND NOT EXISTS (SELECT 1 FROM admin_audit_logs a WHERE a.action = 'PAYOUT_ACCOUNT_DECISION' AND a.target_id = p.id)
+  UNION ALL
+  SELECT coalesce(m.inquiry_id, a.target_id)
+    FROM (SELECT inquiry_id, count(*) AS n FROM inquiry_messages WHERE author = 'ADMIN' GROUP BY inquiry_id) m
+    FULL JOIN (SELECT target_id, count(*) AS n FROM admin_audit_logs WHERE action = 'INQUIRY_ANSWER' GROUP BY target_id) a
+      ON a.target_id = m.inquiry_id
+   WHERE m.n IS DISTINCT FROM a.n
+  UNION ALL
+  SELECT t.id FROM tax_invoices t WHERE t.kind = 'ISSUE' AND t.status = 'CANCELLED'
+     AND NOT EXISTS (SELECT 1 FROM admin_audit_logs a WHERE a.action = 'TAX_INVOICE_CORRECTION' AND a.target_id = t.id)
+  UNION ALL
+  SELECT e.id FROM shipment_tracking_events e
+   WHERE NOT EXISTS (SELECT 1 FROM admin_audit_logs a WHERE a.action = 'TRACKING_EVENT' AND a.target_id = e.id)
+  UNION ALL
+  SELECT s.id FROM inbound_slots s
+   WHERE NOT EXISTS (SELECT 1 FROM admin_audit_logs a WHERE a.action = 'INBOUND_SLOT_CREATE' AND a.target_id = s.id)
+  UNION ALL
+  SELECT r.id FROM inbound_reservations r WHERE r.status = 'CHECKED_IN'
+     AND NOT EXISTS (SELECT 1 FROM admin_audit_logs a WHERE a.action = 'INBOUND_CHECK_IN' AND a.target_id = r.id)) x
+ WHERE (SELECT seed_only FROM v_flags) = 1
+UNION ALL -- [ADR-0007 §12.2] delivery-delay-scan을 NOW에 돌렸다: 두 종류 대상마다 (항목, kind) 지연 행
+SELECT 'a11_delay_complete', count(*) FROM (
+  SELECT id, 'SHIPMENT_OVERDUE' AS kind FROM order_items
+   WHERE status = 'PAID' AND paid_at + interval '3 days' <= (SELECT seed_now FROM v_flags)
+  UNION ALL
+  SELECT id, 'DELIVERY_LATE' FROM order_items
+   WHERE status = 'DELIVERING' AND inspected_at + interval '5 days' <= (SELECT seed_now FROM v_flags)) x
+ WHERE (SELECT seed_only FROM v_flags) = 1
+   AND NOT EXISTS (SELECT 1 FROM shipment_delays d WHERE d.order_item_id = x.id AND d.kind = x.kind)
+UNION ALL -- [ADR-0007 §12.3] inbound-no-show를 NOW에 돌렸다: 슬롯 + 1시간이 지난 RESERVED 예약이 없다
+SELECT 'a12_no_show_complete', count(*) FROM inbound_reservations r JOIN inbound_slots s ON s.id = r.slot_id
+ WHERE (SELECT seed_only FROM v_flags) = 1 AND r.status = 'RESERVED' AND s.slot_start + interval '1 hour' <= (SELECT seed_now FROM v_flags);
 
 ------------------------------------------------------------------------------------------
 -- 결과표
 ------------------------------------------------------------------------------------------
 \echo '== 불변식 검사 (violations = 0 이어야 함) =='
+SELECT seed_only AS seed_build_checks_on, seed_now FROM v_flags;
 SELECT check_name, violations FROM v_result ORDER BY (violations = 0), check_name;
 
 ------------------------------------------------------------------------------------------
@@ -687,7 +1122,27 @@ SELECT 'point_allocations', count(*) FROM point_allocations UNION ALL
 SELECT 'point_balances', count(*) FROM point_balances UNION ALL
 SELECT 'settlements', count(*) FROM settlements UNION ALL
 SELECT 'settlement_items', count(*) FROM settlement_items UNION ALL
-SELECT 'seller_penalties', count(*) FROM seller_penalties;
+SELECT 'seller_penalties', count(*) FROM seller_penalties UNION ALL
+-- 단계 A 새 테이블 (ADR-0007 §3)
+SELECT 'reviews', count(*) FROM reviews UNION ALL
+SELECT 'seller_ratings', count(*) FROM seller_ratings UNION ALL
+SELECT 'seller_grades', count(*) FROM seller_grades UNION ALL
+SELECT 'fee_rebates', count(*) FROM fee_rebates UNION ALL
+SELECT 'payout_account_requests', count(*) FROM payout_account_requests UNION ALL
+SELECT 'monthly_statements', count(*) FROM monthly_statements UNION ALL
+SELECT 'notifications', count(*) FROM notifications UNION ALL
+SELECT 'wishlists', count(*) FROM wishlists UNION ALL
+SELECT 'price_alerts', count(*) FROM price_alerts UNION ALL
+SELECT 'inquiries', count(*) FROM inquiries UNION ALL
+SELECT 'inquiry_messages', count(*) FROM inquiry_messages UNION ALL
+SELECT 'tax_invoices', count(*) FROM tax_invoices UNION ALL
+SELECT 'price_stats_daily', count(*) FROM price_stats_daily UNION ALL
+SELECT 'admin_audit_logs', count(*) FROM admin_audit_logs UNION ALL
+SELECT 'seller_profiles', count(*) FROM seller_profiles UNION ALL
+SELECT 'shipment_tracking_events', count(*) FROM shipment_tracking_events UNION ALL
+SELECT 'shipment_delays', count(*) FROM shipment_delays UNION ALL
+SELECT 'inbound_slots', count(*) FROM inbound_slots UNION ALL
+SELECT 'inbound_reservations', count(*) FROM inbound_reservations;
 
 \echo '== 상태 분포 =='
 SELECT 'bids' AS tbl, side || ':' || status AS status, count(*) FROM bids GROUP BY 1, 2 UNION ALL
@@ -701,7 +1156,20 @@ SELECT 'disputes', status, count(*) FROM disputes GROUP BY 1, 2 UNION ALL
 SELECT 'point_ledger', kind || ':' || status, count(*) FROM point_ledger GROUP BY 1, 2 UNION ALL
 SELECT 'settlements', status, count(*) FROM settlements GROUP BY 1, 2 UNION ALL
 SELECT 'settlement_items', status, count(*) FROM settlement_items GROUP BY 1, 2 UNION ALL
-SELECT 'users.grade', grade, count(*) FROM users GROUP BY 1, 2
+SELECT 'users.grade', grade, count(*) FROM users GROUP BY 1, 2 UNION ALL
+-- 단계 A 새 테이블 (ADR-0007 §3)
+SELECT 'reviews', status || coalesce(':' || hidden_reason, ''), count(*) FROM reviews GROUP BY 1, 2 UNION ALL
+SELECT 'seller_grades', grade || CASE WHEN restricted THEN ':restricted' ELSE '' END, count(*) FROM seller_grades GROUP BY 1, 2 UNION ALL
+SELECT 'fee_rebates', status, count(*) FROM fee_rebates GROUP BY 1, 2 UNION ALL
+SELECT 'payout_account_requests', status, count(*) FROM payout_account_requests GROUP BY 1, 2 UNION ALL
+SELECT 'notifications', kind || CASE WHEN read_at IS NULL THEN ':unread' ELSE ':read' END, count(*) FROM notifications GROUP BY 1, 2 UNION ALL
+SELECT 'price_alerts', status, count(*) FROM price_alerts GROUP BY 1, 2 UNION ALL
+SELECT 'inquiries', status || coalesce(':' || close_reason, ''), count(*) FROM inquiries GROUP BY 1, 2 UNION ALL
+SELECT 'tax_invoices', kind || ':' || status, count(*) FROM tax_invoices GROUP BY 1, 2 UNION ALL
+SELECT 'admin_audit_logs', action, count(*) FROM admin_audit_logs GROUP BY 1, 2 UNION ALL
+SELECT 'shipment_tracking_events', event_type, count(*) FROM shipment_tracking_events GROUP BY 1, 2 UNION ALL
+SELECT 'shipment_delays', kind, count(*) FROM shipment_delays GROUP BY 1, 2 UNION ALL
+SELECT 'inbound_reservations', status, count(*) FROM inbound_reservations GROUP BY 1, 2
 ORDER BY 1, 2;
 
 \echo '== 금액 합 =='
@@ -743,7 +1211,10 @@ BEGIN
   IF total <> 0 THEN
     RAISE EXCEPTION 'verify: 불변식 위반 % 건 — %', total, failed;
   END IF;
-  RAISE NOTICE 'verify: % 개 검사 모두 통과 (위반 0)', n_checks;
+  -- 시드 빌드 전용 검사가 실제로 켜졌는지 함께 알린다(build-image.sh는 '켜짐' 표지가 없으면 실패 — 스위치 fail-open 차단).
+  -- judge.py·run.sh가 읽는 '% 개 검사 모두 통과' 문구는 그대로 둔다.
+  RAISE NOTICE 'verify: % 개 검사 모두 통과 (위반 0, 시드 빌드 전용 %)', n_checks,
+    CASE WHEN (SELECT seed_only FROM v_flags) = 1 THEN '켜짐' ELSE '꺼짐' END;
 END $$;
 
 ROLLBACK;

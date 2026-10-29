@@ -76,3 +76,75 @@ CREATE INDEX settlement_items_settle_idx ON settlement_items (settlement_id);
 CREATE INDEX settlement_items_item_idx   ON settlement_items (order_item_id);
 CREATE INDEX seller_penalties_seller_idx ON seller_penalties (seller_id, settlement_id);
 CREATE INDEX user_grade_history_user_idx ON user_grade_history (user_id);
+
+-- ===== 단계 A 새 테이블 (ADR-0007 §3) =====
+-- UNIQUE
+ALTER TABLE reviews           ADD CONSTRAINT reviews_order_item_key           UNIQUE (order_item_id);
+ALTER TABLE seller_grades     ADD CONSTRAINT seller_grades_seller_from_key    UNIQUE (seller_id, effective_from);
+ALTER TABLE fee_rebates       ADD CONSTRAINT fee_rebates_seller_month_key     UNIQUE (seller_id, month);
+ALTER TABLE monthly_statements ADD CONSTRAINT monthly_statements_seller_month_key UNIQUE (seller_id, month);
+ALTER TABLE notifications     ADD CONSTRAINT notifications_dedupe_key_key     UNIQUE (dedupe_key);
+ALTER TABLE wishlists         ADD CONSTRAINT wishlists_user_size_key          UNIQUE (user_id, product_size_id);
+ALTER TABLE price_stats_daily ADD CONSTRAINT price_stats_daily_size_date_key  UNIQUE (product_size_id, stat_date);
+ALTER TABLE shipment_delays   ADD CONSTRAINT shipment_delays_item_kind_key    UNIQUE (order_item_id, kind);
+ALTER TABLE inbound_slots     ADD CONSTRAINT inbound_slots_slot_start_key     UNIQUE (slot_start);
+
+-- 부분 UNIQUE(살아 있는 행만)
+CREATE UNIQUE INDEX payout_account_requests_live_user_key ON payout_account_requests (user_id) WHERE status = 'PENDING';
+CREATE UNIQUE INDEX price_alerts_live_user_size_key       ON price_alerts (user_id, product_size_id) WHERE status = 'ACTIVE';
+CREATE UNIQUE INDEX tax_invoices_live_settlement_key      ON tax_invoices (settlement_id) WHERE (kind = 'ISSUE' AND status = 'ISSUED') OR kind = 'HOLD';
+CREATE UNIQUE INDEX inbound_reservations_live_item_key    ON inbound_reservations (order_item_id) WHERE status IN ('RESERVED','CHECKED_IN');
+
+-- FK 27
+ALTER TABLE reviews                  ADD FOREIGN KEY (order_item_id) REFERENCES order_items(id);
+ALTER TABLE reviews                  ADD FOREIGN KEY (buyer_id) REFERENCES users(id);
+ALTER TABLE reviews                  ADD FOREIGN KEY (seller_id) REFERENCES users(id);
+ALTER TABLE seller_ratings           ADD FOREIGN KEY (seller_id) REFERENCES users(id);
+ALTER TABLE seller_grades            ADD FOREIGN KEY (seller_id) REFERENCES users(id);
+ALTER TABLE fee_rebates              ADD FOREIGN KEY (seller_id) REFERENCES users(id);
+ALTER TABLE payout_account_requests  ADD FOREIGN KEY (user_id) REFERENCES users(id);
+ALTER TABLE monthly_statements       ADD FOREIGN KEY (seller_id) REFERENCES users(id);
+ALTER TABLE notifications            ADD FOREIGN KEY (user_id) REFERENCES users(id);
+ALTER TABLE wishlists                ADD FOREIGN KEY (user_id) REFERENCES users(id);
+ALTER TABLE wishlists                ADD FOREIGN KEY (product_size_id) REFERENCES product_sizes(id);
+ALTER TABLE price_alerts             ADD FOREIGN KEY (user_id) REFERENCES users(id);
+ALTER TABLE price_alerts             ADD FOREIGN KEY (product_size_id) REFERENCES product_sizes(id);
+ALTER TABLE price_alerts             ADD FOREIGN KEY (triggered_bid_id) REFERENCES bids(id);
+ALTER TABLE inquiries                ADD FOREIGN KEY (user_id) REFERENCES users(id);
+ALTER TABLE inquiries                ADD FOREIGN KEY (order_item_id) REFERENCES order_items(id);
+ALTER TABLE inquiry_messages         ADD FOREIGN KEY (inquiry_id) REFERENCES inquiries(id);
+ALTER TABLE tax_invoices             ADD FOREIGN KEY (settlement_id) REFERENCES settlements(id);
+ALTER TABLE tax_invoices             ADD FOREIGN KEY (seller_id) REFERENCES users(id);
+ALTER TABLE tax_invoices             ADD FOREIGN KEY (ref_invoice_id) REFERENCES tax_invoices(id);
+ALTER TABLE price_stats_daily        ADD FOREIGN KEY (product_size_id) REFERENCES product_sizes(id);
+ALTER TABLE seller_profiles          ADD FOREIGN KEY (user_id) REFERENCES users(id);
+ALTER TABLE shipment_tracking_events ADD FOREIGN KEY (order_item_id) REFERENCES order_items(id);
+ALTER TABLE shipment_delays          ADD FOREIGN KEY (order_item_id) REFERENCES order_items(id);
+ALTER TABLE inbound_reservations     ADD FOREIGN KEY (slot_id) REFERENCES inbound_slots(id);
+ALTER TABLE inbound_reservations     ADD FOREIGN KEY (seller_id) REFERENCES users(id);
+ALTER TABLE inbound_reservations     ADD FOREIGN KEY (order_item_id) REFERENCES order_items(id);
+
+-- 조회·배치 대상 인덱스
+CREATE INDEX reviews_seller_idx              ON reviews (seller_id, status);                    -- 판매자 리뷰·rating-recalc
+CREATE INDEX reviews_buyer_idx               ON reviews (buyer_id);
+CREATE INDEX seller_grades_seller_idx        ON seller_grades (seller_id, effective_from);
+CREATE INDEX payout_account_requests_user_idx ON payout_account_requests (user_id, status);
+CREATE INDEX notifications_user_idx          ON notifications (user_id);
+CREATE INDEX wishlists_size_idx              ON wishlists (product_size_id);
+CREATE INDEX price_alerts_status_idx         ON price_alerts (status);                          -- price-alert-scan
+CREATE INDEX price_alerts_size_idx           ON price_alerts (product_size_id);
+CREATE INDEX price_alerts_user_idx           ON price_alerts (user_id);
+CREATE INDEX price_alerts_bid_idx            ON price_alerts (triggered_bid_id);
+CREATE INDEX inquiries_user_idx              ON inquiries (user_id);
+CREATE INDEX inquiries_status_idx            ON inquiries (status, answered_at);                -- inquiry-auto-close
+CREATE INDEX inquiries_item_idx              ON inquiries (order_item_id);
+CREATE INDEX inquiry_messages_inquiry_idx    ON inquiry_messages (inquiry_id);
+CREATE INDEX tax_invoices_settlement_idx     ON tax_invoices (settlement_id);                   -- tax-invoice-issue
+CREATE INDEX tax_invoices_seller_idx         ON tax_invoices (seller_id);
+CREATE INDEX tax_invoices_ref_idx            ON tax_invoices (ref_invoice_id);
+CREATE INDEX admin_audit_logs_action_idx     ON admin_audit_logs (action, target_id);
+CREATE INDEX shipment_tracking_item_idx      ON shipment_tracking_events (order_item_id);
+CREATE INDEX inbound_reservations_slot_idx   ON inbound_reservations (slot_id, status);
+CREATE INDEX inbound_reservations_seller_idx ON inbound_reservations (seller_id);
+CREATE INDEX inbound_reservations_item_idx   ON inbound_reservations (order_item_id);
+CREATE INDEX inbound_reservations_status_idx ON inbound_reservations (status);                  -- inbound-no-show

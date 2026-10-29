@@ -52,7 +52,7 @@ GRADLE_WARM = CACHE / "gradle-warm"
 
 CLI_VERSION = "2.1.308"
 IMAGE = f"ccle-agent:cli-{CLI_VERSION}"
-DB_IMAGE = "ccle-postgres-seed:1k-s42"
+DB_IMAGE = "ccle-postgres-seed:1k-s42-v2"
 PROXY_IMAGE = "ccle-proxy:1"          # experiment/runner/proxy — 허용 목록(api.anthropic.com) 밖 거부
 EGRESS_NET = "ccle-egress"            # 프록시만 붙는 외부 연결 네트워크(실행 네트워크는 --internal)
 GRADLE_VERSION = "8.14.4"

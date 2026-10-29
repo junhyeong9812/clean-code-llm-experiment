@@ -30,7 +30,12 @@ done
 
 "$here/load.sh" "$csv" "$name" ccle_seed
 echo "불변식 검증…"
-docker exec -i "$name" psql -U ccle -d ccle_seed -v ON_ERROR_STOP=1 -q < "$here/verify.sql"
+verify_log=$(docker exec -i -e PGOPTIONS="-c ccle.seed_build=1" "$name" psql -U ccle -d ccle_seed -v ON_ERROR_STOP=1 -q \
+  < "$here/verify.sql" 2>&1) || { printf '%s\n' "$verify_log" >&2; exit 1; }
+printf '%s\n' "$verify_log"
+# 시드 빌드 전용 검사가 실제로 켜졌는지(설정이 전달되지 않으면 그 검사들이 0으로 통과한다 — fail-open 차단)
+grep -qE 'verify: [0-9]+ 개 검사 모두 통과 \(위반 0, 시드 빌드 전용 켜짐\)' <<< "$verify_log" \
+  || { echo "verify: 시드 빌드 전용 검사가 켜지지 않았다(ccle.seed_build)" >&2; exit 1; }
 
 docker exec "$name" psql -U ccle -d postgres -qc "CHECKPOINT"
 old_id=$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || true)   # 같은 태그의 지금 이미지(라벨 도입 전 빌드도 지우기 위해)

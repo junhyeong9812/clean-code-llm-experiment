@@ -110,10 +110,10 @@ qs() { docker exec -i "$EQ_DB" psql -U ccle -d ccle_seed -q -v ON_ERROR_STOP=1 >
 
 # 일회용 1k 시드 DB + DB 문장 로그(log_statement=all, 접두 = application_name). 픽스처(psql)는 접두로 비교에서 빠진다.
 # EQ_PG_LOG=0 이면 문장 로그를 켜지 않는다(측정 도구 전용 — 비교에는 쓰지 않는다).
-# EQ_SEED_TAG로 시드 이미지 태그를 바꾼다(측정 도구 전용, 기본 1k-s42 — 비교 시나리오는 1k 기준 값을 덤프한다).
+# EQ_SEED_TAG로 시드 이미지 태그를 바꾼다(측정 도구 전용, 기본 1k-s42-v2 — 비교 시나리오는 1k 기준 값을 덤프한다).
 start_db() {
   docker rm -f "$EQ_DB" > /dev/null 2>&1 || true
-  "$root/tools/seedgen/run-db.sh" "${EQ_SEED_TAG:-1k-s42}" "$EQ_DB" "$EQ_DB_PORT" > /dev/null
+  "$root/tools/seedgen/run-db.sh" "${EQ_SEED_TAG:-1k-s42-v2}" "$EQ_DB" "$EQ_DB_PORT" > /dev/null
   [ "${EQ_PG_LOG:-1}" = 1 ] || return 0
   q "ALTER SYSTEM SET log_statement = 'all'" > /dev/null
   q "ALTER SYSTEM SET log_line_prefix = '%a|'" > /dev/null

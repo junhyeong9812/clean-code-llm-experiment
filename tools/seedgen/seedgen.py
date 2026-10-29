@@ -946,7 +946,7 @@ def main():
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    need = int(a.users * 11_000 * 1.3)                    # 1천 명 실측 CSV 11MB, 30% 여유
+    need = int(a.users * 14_000 * 1.3)                    # 1천 명 실측 CSV 14MB(단계 A 새 테이블 포함), 30% 여유
     free = shutil.disk_usage(out).free
     if free < need:
         raise SystemExit(f"디스크 부족: 여유 {free >> 30}GB, 필요 약 {need >> 30}GB")
@@ -954,17 +954,21 @@ def main():
     t0 = time.time()
     g = Gen(a.users, a.seed, a.out)
     g.run()
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # python3 -I 로 실행해도 stage_a 를 찾게
+    import stage_a                                       # 단계 A 새 테이블: 닫힌 22개 CSV를 다시 읽어 만든다(ADR-0007 §14)
+    rows = {**g.counts, **stage_a.run(a.out, a.seed)}
     sums = {}
-    for name in TABLES:
+    for name in rows:
         h = hashlib.sha256()
         with open(Path(a.out) / f"{name}.csv", "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
         sums[name] = h.hexdigest()
     manifest = {"seed": a.seed, "users": a.users, "start": ts(START), "now": ts(NOW),
-                "rows": g.counts, "sha256": sums}
+                "rows": rows, "sha256": sums}
     (Path(a.out) / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n")
-    print(json.dumps({"rows": g.counts, "seconds": round(time.time() - t0, 1)}, ensure_ascii=False))
+    print(json.dumps({"rows": rows, "seconds": round(time.time() - t0, 1)}, ensure_ascii=False))
 
 
 if __name__ == "__main__":
