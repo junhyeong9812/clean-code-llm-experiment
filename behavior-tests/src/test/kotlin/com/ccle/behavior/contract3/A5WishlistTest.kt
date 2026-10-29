@@ -5,10 +5,13 @@ import com.ccle.behavior.support.Contract3Test
 import com.ccle.behavior.support.Db
 import com.ccle.behavior.support.Db3
 import com.ccle.behavior.support.Flow
+import com.ccle.behavior.support.Resp
 import com.ccle.behavior.support.SlowTrigger
 import com.ccle.behavior.support.instantAt
 import com.ccle.behavior.support.longAt
 import org.junit.jupiter.api.Test
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -150,5 +153,29 @@ class A5WishlistTest {
         assertEquals(listOf(200, 404), rs.map { it.status }.sorted(), "응답: $rs")
         rs.single { it.status == 404 }.assertError(404, "NOT_FOUND")
         assertEquals(0, SB.wishRows(u, size).size)
+    }
+
+    /**
+     * §19의 10-2: 위시리스트 등록이 사용자 행을 쥔 채 멈춘 사이 같은 사용자·사이즈의 입찰 등록(사이즈 잠금 → bids INSERT의 사용자 FK)이
+     * 오면, 잠금 순서가 "사이즈 → 사용자"로 같아야 교착 없이 둘 다 성공한다(거꾸로면 한쪽이 교착으로 400 UNEXPECTED_ERROR).
+     */
+    @Test
+    fun `§19의 10-2·§2_3 위시 등록과 같은 사용자·사이즈 입찰 등록이 겹쳐도 교착 없이 둘 다 201`() {
+        val u = Db.createUser()
+        val size = Db.createProductSize()
+        val rs = SlowTrigger.on("wishlists", "INSERT", condition = "NEW.user_id = $u") {
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val wish = pool.submit<Resp> { SB.wishAdd(u, size) }
+                Thread.sleep(300)   // 위시 등록이 트리거에서 멈출 시간(그동안 입찰 등록은 아직 보내지 않는다)
+                val bid = Flow.bid(u, size, "BUY", 100_000)
+                listOf(wish.get(30, TimeUnit.SECONDS), bid)
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+        rs[0].assertStatus(201)
+        rs[1].assertStatus(201)
+        assertEquals(1, SB.wishRows(u, size).size)
     }
 }
