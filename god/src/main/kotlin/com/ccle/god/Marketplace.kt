@@ -2475,9 +2475,10 @@ class Marketplace(
         }!!
     }
 
-    /** 위시리스트 삭제(§8.1). 내 위시리스트에 없으면 404. 행을 지운다. */
+    /** 위시리스트 삭제(§8.1·§19의 10-1). 사용자 행 FOR UPDATE 뒤 다시 찾는다 — 내 위시리스트에 없으면 404(동시 삭제는 하나만 200). 행을 지운다. */
     fun removeWish(userId: Long, productSizeId: Long): WishlistEntryView =
         tx.execute {
+            lockUser(userId)
             val wish = wishOf(userId, productSizeId) ?: notFound("위시리스트에 없는 사이즈: $productSizeId")
             em.remove(wish)
             WishlistEntryView(wish.productSizeId, wish.createdAt)
