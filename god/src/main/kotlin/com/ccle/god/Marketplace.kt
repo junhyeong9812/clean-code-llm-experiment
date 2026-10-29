@@ -6,6 +6,10 @@ import com.ccle.god.entity.BidEvent
 import com.ccle.god.entity.BuyerWarning
 import com.ccle.god.entity.Dispute
 import com.ccle.god.entity.FeeRebate
+import com.ccle.god.entity.InboundReservation
+import com.ccle.god.entity.InboundSlot
+import com.ccle.god.entity.Inquiry
+import com.ccle.god.entity.InquiryMessage
 import com.ccle.god.entity.Inspection
 import com.ccle.god.entity.MonthlyStatement
 import com.ccle.god.entity.Notification
@@ -16,12 +20,14 @@ import com.ccle.god.entity.PointAllocation
 import com.ccle.god.entity.PointBalance
 import com.ccle.god.entity.PointLedgerEntry
 import com.ccle.god.entity.PriceAlert
+import com.ccle.god.entity.PriceStatDaily
 import com.ccle.god.entity.ProductSize
 import com.ccle.god.entity.PurchaseOrder
 import com.ccle.god.entity.Refund
 import com.ccle.god.entity.Review
 import com.ccle.god.entity.SellerGrade
 import com.ccle.god.entity.SellerPenalty
+import com.ccle.god.entity.SellerProfile
 import com.ccle.god.entity.SellerRating
 import com.ccle.god.entity.Settlement
 import com.ccle.god.entity.SettlementItem
@@ -31,7 +37,10 @@ import com.ccle.god.entity.TaxInvoice
 import com.ccle.god.entity.Trade
 import com.ccle.god.entity.User
 import com.ccle.god.entity.Wishlist
+import com.ccle.god.web.AdminDisputeView
+import com.ccle.god.web.AdminSettlementView
 import com.ccle.god.web.ApiException
+import com.ccle.god.web.AuditLogView
 import com.ccle.god.web.BatchResult
 import com.ccle.god.web.BidCancelled
 import com.ccle.god.web.BidPlaced
@@ -40,20 +49,32 @@ import com.ccle.god.web.BookView
 import com.ccle.god.web.DisputeOpened
 import com.ccle.god.web.DisputeView
 import com.ccle.god.web.FeeRebateView
+import com.ccle.god.web.InboundReservationView
+import com.ccle.god.web.InboundSlotView
+import com.ccle.god.web.InquiryDetailView
+import com.ccle.god.web.InquiryMessageView
+import com.ccle.god.web.InquiryOrderItemView
+import com.ccle.god.web.InquiryView
 import com.ccle.god.web.ItemView
 import com.ccle.god.web.MonthlyStatementView
 import com.ccle.god.web.NotificationView
 import com.ccle.god.web.OrderItemView
 import com.ccle.god.web.OrderView
+import com.ccle.god.web.PageView
 import com.ccle.god.web.PaymentResult
 import com.ccle.god.web.PayoutAccountView
 import com.ccle.god.web.PayoutRequestView
+import com.ccle.god.web.PenaltyView
 import com.ccle.god.web.PointsView
 import com.ccle.god.web.PriceAlertView
+import com.ccle.god.web.PriceStatView
+import com.ccle.god.web.RecentTradeView
 import com.ccle.god.web.RefundView
+import com.ccle.god.web.RestrictedUserView
 import com.ccle.god.web.ReviewView
 import com.ccle.god.web.SellerGradeView
 import com.ccle.god.web.SellerGradesView
+import com.ccle.god.web.SellerProfileView
 import com.ccle.god.web.SellerReviewsView
 import com.ccle.god.web.SettlementItemView
 import com.ccle.god.web.SettlementView
@@ -63,6 +84,8 @@ import com.ccle.god.web.TaxInvoiceView
 import com.ccle.god.web.TrackingEventView
 import com.ccle.god.web.TrackingView
 import com.ccle.god.web.TradeView
+import com.ccle.god.web.UserSummaryView
+import com.ccle.god.web.WarningView
 import com.ccle.god.web.WishlistEntryView
 import com.ccle.god.web.WishlistItemView
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -80,6 +103,8 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.time.format.DateTimeParseException
+import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
 
 /**
@@ -1318,6 +1343,9 @@ class Marketplace(
             "deadline-reminder" -> remindDeadlines(now)
             "price-alert-scan" -> scanPriceAlerts(now)
             "delivery-delay-scan" -> scanDeliveryDelays(now)
+            "inquiry-auto-close" -> autoCloseInquiries(now)
+            "price-stats" -> writePriceStats(now)
+            "inbound-no-show" -> markInboundNoShows(now)
             else -> badRequest("알 수 없는 배치: $name")
         }
         log.info(
@@ -2646,6 +2674,613 @@ class Marketplace(
             failed += result.failed
         }
         return BatchResult(processed, failed)
+    }
+
+    // ---- A6 고객 문의 (ADR-0007 §9) ----
+
+    private val inquiryCategories = setOf("ORDER", "PAYMENT", "SETTLEMENT", "ACCOUNT", "OTHER")
+
+    /** 문의 본문·추가 메시지·답변(§9.1): 앞뒤 공백을 뺀 값이 1~2,000자. */
+    private fun messageBody(body: String?): String {
+        if (body == null) badRequest("body가 필요하다")
+        if (textLength(body) !in 1..2_000) badRequest("body는 1~2,000자")
+        return body
+    }
+
+    /**
+     * 문의 작성(§9.1). category는 다섯 값 중 하나, title 1~100자, body 1~2,000자. orderItemId가 있으면 없는 항목 404,
+     * 그 체결의 구매자·판매자가 아니면 403. 문의 1행(OPEN, sla_due_at = 현재 + 48시간) + USER 메시지 1행.
+     */
+    fun createInquiry(userId: Long, category: String?, title: String?, body: String?, orderItemId: Long?): InquiryView {
+        if (category == null) badRequest("category가 필요하다")
+        if (category !in inquiryCategories) badRequest("알 수 없는 category: $category")
+        if (title == null) badRequest("title이 필요하다")
+        if (textLength(title) !in 1..100) badRequest("title은 1~100자")
+        val text = messageBody(body)
+
+        val now = clock.now()
+        return tx.execute {
+            if (orderItemId != null) {
+                val item = em.find(OrderItem::class.java, orderItemId) ?: notFound("없는 주문 항목: $orderItemId")
+                val trade = em.find(Trade::class.java, item.tradeId)
+                if (userId != trade.buyerId && userId != trade.sellerId) {
+                    throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "구매자도 판매자도 아닌 주문 항목: $orderItemId")
+                }
+            }
+            val inquiry = Inquiry(
+                userId = userId,
+                orderItemId = orderItemId,
+                category = category,
+                title = title,
+                status = "OPEN",
+                createdAt = now,
+                slaDueAt = now.plus(Duration.ofHours(48)),
+            )
+            em.persist(inquiry)
+            em.persist(InquiryMessage(inquiryId = inquiry.id!!, author = "USER", body = text, createdAt = now))
+            inquiryView(inquiry, now)
+        }!!
+    }
+
+    /**
+     * 상태를 바꾸는 문의 요청의 공통 단계(§9.1): 없는 문의 404 → (작성자 요청이면) 작성자가 아니면 403 → 문의 행 FOR UPDATE 뒤 CLOSED면 409.
+     * authorId = null이면 운영자 요청이다.
+     */
+    private fun lockOpenInquiry(inquiryId: Long, authorId: Long?): Inquiry {
+        val inquiry = em.find(Inquiry::class.java, inquiryId) ?: notFound("없는 문의: $inquiryId")
+        if (authorId != null && inquiry.userId != authorId) {
+            throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "작성자가 아닌 문의: $inquiryId")
+        }
+        lockRow("inquiries", inquiryId)
+        em.refresh(inquiry)
+        if (inquiry.status == "CLOSED") stateConflict("종결된 문의: $inquiryId")
+        return inquiry
+    }
+
+    /** 추가 메시지(§9.1·§19의 11). 작성자만, OPEN·ANSWERED → USER 메시지 1행, 상태 OPEN(answered_at·first_answered_at은 그대로). */
+    fun addInquiryMessage(userId: Long, inquiryId: Long, body: String?): InquiryView {
+        val text = messageBody(body)
+        val now = clock.now()
+        return tx.execute {
+            val inquiry = lockOpenInquiry(inquiryId, userId)
+            em.persist(InquiryMessage(inquiryId = inquiryId, author = "USER", body = text, createdAt = now))
+            inquiry.status = "OPEN"
+            inquiryView(inquiry, now)
+        }!!
+    }
+
+    /**
+     * 운영자 답변(§9.1). OPEN·ANSWERED → ADMIN 메시지 1행, ANSWERED, answered_at = 현재, first_answered_at이 NULL이면 현재
+     * + 감사 INQUIRY_ANSWER(detail null).
+     */
+    fun answerInquiry(inquiryId: Long, body: String?): InquiryView {
+        val text = messageBody(body)
+        val now = clock.now()
+        return tx.execute {
+            val inquiry = lockOpenInquiry(inquiryId, authorId = null)
+            em.persist(InquiryMessage(inquiryId = inquiryId, author = "ADMIN", body = text, createdAt = now))
+            inquiry.status = "ANSWERED"
+            inquiry.answeredAt = now
+            if (inquiry.firstAnsweredAt == null) inquiry.firstAnsweredAt = now
+            audit("INQUIRY_ANSWER", inquiryId, null, now)
+            inquiryView(inquiry, now)
+        }!!
+    }
+
+    /** 종결(§9.1). 작성자만, OPEN·ANSWERED → CLOSED, close_reason = USER, closed_at = 현재. */
+    fun closeInquiry(userId: Long, inquiryId: Long): InquiryView {
+        val now = clock.now()
+        return tx.execute {
+            val inquiry = lockOpenInquiry(inquiryId, userId)
+            inquiry.status = "CLOSED"
+            inquiry.closeReason = "USER"
+            inquiry.closedAt = now
+            inquiryView(inquiry, now)
+        }!!
+    }
+
+    /** `GET /me/inquiries`(§9.2): 내 문의 inquiryId 오름차순. */
+    fun inquiries(userId: Long): List<InquiryView> {
+        val now = clock.now()
+        return em.createQuery("SELECT i FROM Inquiry i WHERE i.userId = :user ORDER BY i.id", Inquiry::class.java)
+            .setParameter("user", userId).resultList.map { inquiryView(it, now) }
+    }
+
+    /** `GET /me/inquiries/{id}`(§9.2): 작성자만. 메시지는 id 순, orderItem은 지금의 항목 상태와 OPEN 분쟁 유무(읽기만). 한 스냅샷에서 읽는다. */
+    fun inquiryDetail(userId: Long, inquiryId: Long): InquiryDetailView = snapshotTx.execute {
+        val now = clock.now()
+        val inquiry = em.find(Inquiry::class.java, inquiryId) ?: notFound("없는 문의: $inquiryId")
+        if (inquiry.userId != userId) throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "작성자가 아닌 문의: $inquiryId")
+        val messages = em.createQuery(
+            "SELECT m FROM InquiryMessage m WHERE m.inquiryId = :inquiry ORDER BY m.id",
+            InquiryMessage::class.java,
+        ).setParameter("inquiry", inquiryId).resultList.map { InquiryMessageView(it.author, it.body, it.createdAt) }
+        val orderItem = inquiry.orderItemId?.let { itemId ->
+            val openDisputes = em.createQuery(
+                "SELECT count(d) FROM Dispute d WHERE d.orderItemId = :item AND d.status = 'OPEN'",
+                Long::class.javaObjectType,
+            ).setParameter("item", itemId).singleResult
+            InquiryOrderItemView(itemId, em.find(OrderItem::class.java, itemId).status, openDisputes > 0)
+        }
+        InquiryDetailView(inquiryView(inquiry, now), messages, orderItem)
+    }!!
+
+    /** 문의 모양(§9.1). slaBreached = (미답변이고 현재 > sla_due_at) 또는 first_answered_at > sla_due_at — 계산 값. */
+    private fun inquiryView(i: Inquiry, now: Instant): InquiryView {
+        val first = i.firstAnsweredAt
+        val breached = if (first == null) now.isAfter(i.slaDueAt) else first.isAfter(i.slaDueAt)
+        return InquiryView(
+            i.id!!, i.category, i.title, i.status, i.closeReason, i.orderItemId, i.createdAt, i.slaDueAt, breached,
+            i.firstAnsweredAt, i.answeredAt, i.closedAt,
+        )
+    }
+
+    /**
+     * inquiry-auto-close(§9.3): ANSWERED이고 answered_at + 7일 ≤ 현재(id 순). 문의 1건 = 그 행을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다.
+     * → CLOSED, close_reason = AUTO, closed_at = 현재(배치 시각). 반환 = 종결한 문의 수.
+     */
+    private fun autoCloseInquiries(now: Instant): BatchResult {
+        val due = now.minus(Duration.ofDays(7))
+        return forEachTarget(
+            "inquiries",
+            "t.status = 'ANSWERED' AND t.answered_at <= :due",
+            mapOf("due" to due),
+            isolatedAs = "inquiry-auto-close",
+        ) { inquiryId ->
+            tx.execute {
+                lockRow("inquiries", inquiryId)
+                val inquiry = em.find(Inquiry::class.java, inquiryId)
+                if (inquiry.status != "ANSWERED" || inquiry.answeredAt!!.isAfter(due)) return@execute false
+                inquiry.status = "CLOSED"
+                inquiry.closeReason = "AUTO"
+                inquiry.closedAt = now
+                true
+            }!!
+        }
+    }
+
+    // ---- A8 시세 (ADR-0007 §11.1·§11.2) ----
+
+    /** 쿼리의 날짜(§2.1 "YYYY-MM-DD"). 없으면 null, 형식이 틀리거나 없는 날짜면 400. */
+    private fun dateParam(name: String, raw: String?): LocalDate? {
+        if (raw == null) return null
+        return try {
+            LocalDate.parse(raw)
+        } catch (e: DateTimeParseException) {
+            badRequest("$name 는 YYYY-MM-DD 날짜여야 한다: $raw")
+        }
+    }
+
+    /**
+     * price-stats(§11.1): 대상 날짜 d = 오늘(KST) − 1일. 대상 = 상태 PAID이고 matched_at의 KST 날짜가 d인 체결이 있고 (사이즈, d) 행이 없는 사이즈
+     * (product_sizes id 순). 잠금 없음. 사이즈 1개: 건수·최저·최고·중앙값(오름차순 floor((n − 1) / 2)번째 — 짝수면 아래 중앙값). 반환 = 쓴 행 수.
+     */
+    private fun writePriceStats(now: Instant): BatchResult {
+        val d = LocalDate.ofInstant(now, kst).minusDays(1)
+        val params = mapOf<String, Any>(
+            "from" to d.atStartOfDay(kst).toInstant(),
+            "to" to d.plusDays(1).atStartOfDay(kst).toInstant(),
+            "d" to d,
+        )
+        return forEachTarget(
+            "product_sizes",
+            "EXISTS (SELECT 1 FROM trades tr WHERE tr.product_size_id = t.id AND tr.status = 'PAID'" +
+                " AND tr.matched_at >= :from AND tr.matched_at < :to)" +
+                " AND NOT EXISTS (SELECT 1 FROM price_stats_daily p WHERE p.product_size_id = t.id AND p.stat_date = :d)",
+            params,
+            isolatedAs = "price-stats",
+        ) { sizeId ->
+            tx.execute {
+                val prices = em.createQuery(
+                    "SELECT tr.price FROM Trade tr WHERE tr.productSizeId = :size AND tr.status = 'PAID'" +
+                        " AND tr.matchedAt >= :from AND tr.matchedAt < :to ORDER BY tr.price",
+                    Long::class.javaObjectType,
+                ).setParameter("size", sizeId).setParameter("from", params.getValue("from")).setParameter("to", params.getValue("to"))
+                    .resultList
+                if (prices.isEmpty()) return@execute false
+                em.persist(
+                    PriceStatDaily(
+                        productSizeId = sizeId,
+                        statDate = d,
+                        tradeCount = prices.size,
+                        minPrice = prices.first(),
+                        maxPrice = prices.last(),
+                        medianPrice = prices[(prices.size - 1) / 2],
+                        createdAt = now,
+                    ),
+                )
+                true
+            }!!
+        }
+    }
+
+    /** `GET /product-sizes/{id}/price-stats`(§11.2, 헤더 불필요): from·to 필수(양끝 포함), from ≤ to, 일수 ≤ 92(아니면 400) → 없는 사이즈 404. date 오름차순. */
+    fun priceStats(productSizeId: Long, from: String?, to: String?): List<PriceStatView> {
+        val fromDate = dateParam("from", from) ?: badRequest("from이 필요하다")
+        val toDate = dateParam("to", to) ?: badRequest("to가 필요하다")
+        if (fromDate.isAfter(toDate)) badRequest("from이 to보다 늦다: $fromDate > $toDate")
+        if (ChronoUnit.DAYS.between(fromDate, toDate) + 1 > 92) badRequest("기간은 92일 이하: $fromDate ~ $toDate")
+        em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+        return em.createQuery(
+            "SELECT p FROM PriceStatDaily p WHERE p.productSizeId = :size AND p.statDate >= :from AND p.statDate <= :to ORDER BY p.statDate",
+            PriceStatDaily::class.java,
+        ).setParameter("size", productSizeId).setParameter("from", fromDate).setParameter("to", toDate).resultList
+            .map { PriceStatView(it.statDate, it.tradeCount, it.minPrice, it.maxPrice, it.medianPrice) }
+    }
+
+    /** `GET /product-sizes/{id}/recent-trades`(§11.2, 헤더 불필요): 그 사이즈의 PAID 체결 최근 20건, matched_at 내림차순·같으면 id 내림차순. */
+    fun recentTrades(productSizeId: Long): List<RecentTradeView> {
+        em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+        return em.createQuery(
+            "SELECT t FROM Trade t WHERE t.productSizeId = :size AND t.status = 'PAID' ORDER BY t.matchedAt DESC, t.id DESC",
+            Trade::class.java,
+        ).setParameter("size", productSizeId).setMaxResults(20).resultList.map { RecentTradeView(it.id!!, it.price, it.matchedAt) }
+    }
+
+    // ---- A9 관리자 조회 (ADR-0007 §11.3 · §2.5 페이지) ----
+
+    /** 키셋 페이지(§2.5): limit 1~100(기본 50), after 0 이상(기본 0 = 처음부터). 정수가 아니거나 범위 밖이면 400. */
+    private class Page(val limit: Int, val after: Long)
+
+    private fun page(limit: String?, after: String?): Page {
+        val size = if (limit == null) 50 else limit.toIntOrNull() ?: badRequest("limit은 정수: $limit")
+        if (size !in 1..100) badRequest("limit은 1~100: $size")
+        val from = if (after == null) 0L else after.toLongOrNull() ?: badRequest("after는 정수: $after")
+        if (from < 0) badRequest("after는 0 이상: $from")
+        return Page(size, from)
+    }
+
+    /** 페이지 응답(§2.5): 받은 수가 limit과 같으면 마지막 id, 적으면 null. */
+    private fun <T> pageView(items: List<T>, page: Page, idOf: (T) -> Long): PageView<T> =
+        PageView(items, if (items.size == page.limit) idOf(items.last()) else null)
+
+    /** 날짜 범위 필터(§2.5): 양끝 포함, 둘 다 있을 때 from > to면 400. */
+    private fun dateRange(from: String?, to: String?): Pair<LocalDate?, LocalDate?> {
+        val fromDate = dateParam("from", from)
+        val toDate = dateParam("to", to)
+        if (fromDate != null && toDate != null && fromDate.isAfter(toDate)) badRequest("from이 to보다 늦다: $fromDate > $toDate")
+        return fromDate to toDate
+    }
+
+    private fun requireUserRow(userId: Long): User = em.find(User::class.java, userId) ?: notFound("없는 사용자: $userId")
+
+    /** `GET /admin/users/restricted`(§11.3): type = purchase|sale(필수), 그 제한 끝 > 현재인 사용자, id 순 페이지. */
+    fun restrictedUsers(type: String?, limit: String?, after: String?): PageView<RestrictedUserView> {
+        if (type == null) badRequest("type이 필요하다")
+        val column = when (type) {
+            "purchase" -> "purchaseRestrictedUntil"
+            "sale" -> "saleRestrictedUntil"
+            else -> badRequest("type은 purchase 또는 sale: $type")
+        }
+        val page = page(limit, after)
+        val users = em.createQuery(
+            "SELECT u FROM User u WHERE u.$column > :now AND u.id > :after ORDER BY u.id",
+            User::class.java,
+        ).setParameter("now", clock.now()).setParameter("after", page.after).setMaxResults(page.limit).resultList
+        val items = users.map {
+            RestrictedUserView(it.id!!, it.email, (if (type == "purchase") it.purchaseRestrictedUntil else it.saleRestrictedUntil)!!)
+        }
+        return pageView(items, page) { it.userId }
+    }
+
+    /** `GET /admin/users/{id}/summary`(§11.3·§19의 13): 경고·패널티 수는 전체 기간, sellerGrade = effective_from이 가장 늦은 행. 한 스냅샷에서 읽는다. */
+    fun userSummary(userId: Long): UserSummaryView = snapshotTx.execute {
+        val user = requireUserRow(userId)
+        val warnings = em.createQuery("SELECT count(w) FROM BuyerWarning w WHERE w.userId = :user", Long::class.javaObjectType)
+            .setParameter("user", userId).singleResult
+        val penalties = em.createQuery("SELECT count(p) FROM SellerPenalty p WHERE p.sellerId = :user", Long::class.javaObjectType)
+            .setParameter("user", userId).singleResult
+        val grade = em.createQuery(
+            "SELECT g FROM SellerGrade g WHERE g.sellerId = :seller ORDER BY g.effectiveFrom DESC",
+            SellerGrade::class.java,
+        ).setParameter("seller", userId).setMaxResults(1).resultList.firstOrNull()
+        UserSummaryView(
+            user.id!!, user.email, user.grade, user.purchaseRestrictedUntil, user.saleRestrictedUntil, warnings, penalties,
+            grade?.let { SellerGradeView(it.grade, it.effectiveFrom, it.basisAmount, it.restricted) },
+        )
+    }!!
+
+    /** `GET /admin/users/{id}/penalties`(§11.3): 그 판매자의 패널티, id 순 페이지. 없는 사용자 404. */
+    fun userPenalties(userId: Long, limit: String?, after: String?): PageView<PenaltyView> {
+        val page = page(limit, after)
+        requireUserRow(userId)
+        val items = em.createQuery(
+            "SELECT p FROM SellerPenalty p WHERE p.sellerId = :user AND p.id > :after ORDER BY p.id",
+            SellerPenalty::class.java,
+        ).setParameter("user", userId).setParameter("after", page.after).setMaxResults(page.limit).resultList
+            .map { PenaltyView(it.id!!, it.orderItemId, it.amount, it.settlementId, it.createdAt) }
+        return pageView(items, page) { it.penaltyId }
+    }
+
+    /** `GET /admin/users/{id}/warnings`(§11.3): 그 사용자의 경고, id 순 페이지. 없는 사용자 404. */
+    fun userWarnings(userId: Long, limit: String?, after: String?): PageView<WarningView> {
+        val page = page(limit, after)
+        requireUserRow(userId)
+        val items = em.createQuery(
+            "SELECT w FROM BuyerWarning w WHERE w.userId = :user AND w.id > :after ORDER BY w.id",
+            BuyerWarning::class.java,
+        ).setParameter("user", userId).setParameter("after", page.after).setMaxResults(page.limit).resultList
+            .map { WarningView(it.id!!, it.tradeId, it.createdAt) }
+        return pageView(items, page) { it.warningId }
+    }
+
+    /**
+     * `GET /admin/settlements`(§11.3·§19의 13): 선택 필터 status(PAID·CARRIED)·sellerId·from~to(period_start, 양끝 포함), id 순 페이지.
+     * 없는 sellerId는 빈 목록이다(필터).
+     */
+    fun adminSettlements(status: String?, sellerId: String?, from: String?, to: String?, limit: String?, after: String?): PageView<AdminSettlementView> {
+        if (status != null && status != "PAID" && status != "CARRIED") badRequest("알 수 없는 정산 상태: $status")
+        val seller = if (sellerId == null) null else sellerId.toLongOrNull() ?: badRequest("sellerId는 정수: $sellerId")
+        val (fromDate, toDate) = dateRange(from, to)
+        val page = page(limit, after)
+        val jpql = "SELECT s FROM Settlement s WHERE s.id > :after" +
+            (if (status != null) " AND s.status = :status" else "") +
+            (if (seller != null) " AND s.sellerId = :seller" else "") +
+            (if (fromDate != null) " AND s.periodStart >= :from" else "") +
+            (if (toDate != null) " AND s.periodStart <= :to" else "") +
+            " ORDER BY s.id"
+        val query = em.createQuery(jpql, Settlement::class.java).setParameter("after", page.after)
+        if (status != null) query.setParameter("status", status)
+        if (seller != null) query.setParameter("seller", seller)
+        if (fromDate != null) query.setParameter("from", fromDate)
+        if (toDate != null) query.setParameter("to", toDate)
+        val items = query.setMaxResults(page.limit).resultList
+            .map { AdminSettlementView(it.id!!, it.sellerId, it.periodStart, it.status, it.net, it.payout, it.paidAt) }
+        return pageView(items, page) { it.settlementId }
+    }
+
+    /** `GET /admin/disputes`(§11.3): 선택 필터 status(OPEN·ACCEPTED·REJECTED), id 순 페이지. */
+    fun adminDisputes(status: String?, limit: String?, after: String?): PageView<AdminDisputeView> {
+        if (status != null && status != "OPEN" && status != "ACCEPTED" && status != "REJECTED") badRequest("알 수 없는 분쟁 상태: $status")
+        val page = page(limit, after)
+        val query = em.createQuery(
+            "SELECT d FROM Dispute d WHERE d.id > :after" + (if (status != null) " AND d.status = :status" else "") + " ORDER BY d.id",
+            Dispute::class.java,
+        ).setParameter("after", page.after)
+        if (status != null) query.setParameter("status", status)
+        val items = query.setMaxResults(page.limit).resultList
+            .map { AdminDisputeView(it.id!!, it.orderItemId, it.status, it.openedAt, it.resolvedAt) }
+        return pageView(items, page) { it.disputeId }
+    }
+
+    private val auditActions = setOf(
+        "REVIEW_HIDE", "PAYOUT_ACCOUNT_DECISION", "INQUIRY_ANSWER", "TAX_INVOICE_CORRECTION", "TRACKING_EVENT",
+        "INBOUND_SLOT_CREATE", "INBOUND_CHECK_IN",
+    )
+
+    /** `GET /admin/audit-logs`(§11.3): 선택 필터 action(일곱 값), id 순 페이지. */
+    fun auditLogs(action: String?, limit: String?, after: String?): PageView<AuditLogView> {
+        if (action != null && action !in auditActions) badRequest("알 수 없는 action: $action")
+        val page = page(limit, after)
+        val query = em.createQuery(
+            "SELECT a FROM AdminAuditLog a WHERE a.id > :after" + (if (action != null) " AND a.action = :action" else "") + " ORDER BY a.id",
+            AdminAuditLog::class.java,
+        ).setParameter("after", page.after)
+        if (action != null) query.setParameter("action", action)
+        val items = query.setMaxResults(page.limit).resultList
+            .map { AuditLogView(it.id!!, it.action, it.targetId, it.detail, it.createdAt) }
+        return pageView(items, page) { it.auditId }
+    }
+
+    // ---- A10 판매자 프로필 (ADR-0007 §12.1) ----
+
+    /**
+     * 프로필 저장(§12.1·§19의 14). shopName 1~40자, intro 0~500자(필수 문자열), 휴가는 둘 다 null이거나 둘 다 있고 from ≤ to.
+     * 사용자 행 FOR UPDATE 뒤 없으면 INSERT(created_at), 있으면 UPDATE. updated_at = 현재. 휴가는 표시만 한다.
+     */
+    fun putSellerProfile(userId: Long, shopName: String?, intro: String?, vacationFrom: LocalDate?, vacationTo: LocalDate?): SellerProfileView {
+        if (shopName == null) badRequest("shopName이 필요하다")
+        if (textLength(shopName) !in 1..40) badRequest("shopName은 1~40자")
+        if (intro == null) badRequest("intro가 필요하다")
+        if (textLength(intro) > 500) badRequest("intro는 0~500자")
+        if ((vacationFrom == null) != (vacationTo == null)) badRequest("vacationFrom·vacationTo는 둘 다 있거나 둘 다 null")
+        if (vacationFrom != null && vacationFrom.isAfter(vacationTo)) badRequest("vacationFrom이 vacationTo보다 늦다")
+
+        val now = clock.now()
+        return tx.execute {
+            lockUser(userId)
+            val profile = em.find(SellerProfile::class.java, userId)
+            if (profile == null) {
+                val created = SellerProfile(
+                    userId = userId,
+                    shopName = shopName,
+                    intro = intro,
+                    vacationFrom = vacationFrom,
+                    vacationTo = vacationTo,
+                    createdAt = now,
+                    updatedAt = now,
+                )
+                em.persist(created)
+                sellerProfileView(created, now)
+            } else {
+                profile.shopName = shopName
+                profile.intro = intro
+                profile.vacationFrom = vacationFrom
+                profile.vacationTo = vacationTo
+                profile.updatedAt = now
+                sellerProfileView(profile, now)
+            }
+        }!!
+    }
+
+    /** `GET /sellers/{userId}/profile`(§12.1, 헤더 불필요): 사용자나 프로필이 없으면 404. */
+    fun sellerProfile(userId: Long): SellerProfileView {
+        requireUserRow(userId)
+        val profile = em.find(SellerProfile::class.java, userId) ?: notFound("프로필이 없는 사용자: $userId")
+        return sellerProfileView(profile, clock.now())
+    }
+
+    /** onVacation = 오늘(KST)이 [vacationFrom, vacationTo] 안(계산 값). */
+    private fun sellerProfileView(p: SellerProfile, now: Instant): SellerProfileView {
+        val today = LocalDate.ofInstant(now, kst)
+        val from = p.vacationFrom
+        val to = p.vacationTo
+        val onVacation = from != null && to != null && !today.isBefore(from) && !today.isAfter(to)
+        return SellerProfileView(p.userId, p.shopName, p.intro, from, to, onVacation)
+    }
+
+    // ---- A12 입고 예약 (ADR-0007 §12.3) ----
+
+    /**
+     * 슬롯 생성(§12.3). slotStart는 정시(분·초 0)이고 > 현재, capacity 1~100(아니면 400). 잠글 부모 행이 없으므로
+     * INSERT … ON CONFLICT (slot_start) DO NOTHING으로 쓰고 들어간 행이 0이면 409(같은 시각 — 동시 생성도). + 감사 INBOUND_SLOT_CREATE(detail null).
+     */
+    fun createInboundSlot(slotStart: Instant?, capacity: Long?): InboundSlotView {
+        if (slotStart == null) badRequest("slotStart가 필요하다")
+        if (capacity == null) badRequest("capacity가 필요하다")
+        if (capacity !in 1L..100L) badRequest("capacity는 1~100: $capacity")
+        if (slotStart.epochSecond % 3600 != 0L || slotStart.nano != 0) badRequest("slotStart는 정시여야 한다: $slotStart")
+        val now = clock.now()
+        if (!slotStart.isAfter(now)) badRequest("slotStart는 현재 뒤여야 한다: $slotStart")
+
+        return tx.execute {
+            val inserted = em.createNativeQuery(
+                "INSERT INTO inbound_slots (slot_start, capacity, created_at) VALUES (:start, :capacity, :now)" +
+                    " ON CONFLICT (slot_start) DO NOTHING",
+            ).setParameter("start", slotStart).setParameter("capacity", capacity.toInt()).setParameter("now", now).executeUpdate()
+            if (inserted == 0) stateConflict("같은 시각의 슬롯이 있다: $slotStart")
+            val slotId = (
+                em.createNativeQuery("SELECT id FROM inbound_slots WHERE slot_start = :start")
+                    .setParameter("start", slotStart).singleResult as Number
+                ).toLong()
+            audit("INBOUND_SLOT_CREATE", slotId, null, now)
+            InboundSlotView(slotId, slotStart, capacity.toInt(), 0)
+        }!!
+    }
+
+    /** `GET /inbound-slots?date=`(§12.3, 헤더 불필요): date 필수, 그 KST 날짜의 슬롯 slotStart 오름차순. */
+    fun inboundSlots(date: String?): List<InboundSlotView> {
+        val d = dateParam("date", date) ?: badRequest("date가 필요하다")
+        return snapshotTx.execute {
+            em.createQuery(
+                "SELECT s FROM InboundSlot s WHERE s.slotStart >= :from AND s.slotStart < :to ORDER BY s.slotStart",
+                InboundSlot::class.java,
+            ).setParameter("from", d.atStartOfDay(kst).toInstant()).setParameter("to", d.plusDays(1).atStartOfDay(kst).toInstant())
+                .resultList.map { InboundSlotView(it.id!!, it.slotStart, it.capacity, liveReservationsOfSlot(it.id!!)) }
+        }!!
+    }
+
+    private fun liveReservationsOfSlot(slotId: Long): Long =
+        em.createQuery(
+            "SELECT count(r) FROM InboundReservation r WHERE r.slotId = :slot AND r.status IN ('RESERVED', 'CHECKED_IN')",
+            Long::class.javaObjectType,
+        ).setParameter("slot", slotId).singleResult
+
+    /**
+     * 입고 예약(§12.3). 없는 슬롯·항목 404, 그 체결의 판매자가 아니면 403. 주문 행 → 슬롯 행 순서로 FOR UPDATE 한 뒤
+     * 1 항목이 PAID가 아니거나 그 항목의 살아 있는 예약(RESERVED·CHECKED_IN)이 있으면 409 2 살아 있는 예약 수 ≥ 정원이면 409
+     * 3 현재 > slot_start − 24시간이면 409 DEADLINE_PASSED → 1행(RESERVED, created_at = 현재).
+     */
+    fun reserveInbound(userId: Long, slotId: Long?, orderItemId: Long?): InboundReservationView {
+        if (slotId == null) badRequest("slotId가 필요하다")
+        if (orderItemId == null) badRequest("orderItemId가 필요하다")
+        val now = clock.now()
+        return tx.execute {
+            val slot = em.find(InboundSlot::class.java, slotId) ?: notFound("없는 슬롯: $slotId")
+            val item = em.find(OrderItem::class.java, orderItemId) ?: notFound("없는 주문 항목: $orderItemId")
+            if (em.find(Trade::class.java, item.tradeId).sellerId != userId) {
+                throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "판매자가 아닌 주문 항목: $orderItemId")
+            }
+            em.createNativeQuery("SELECT id FROM orders WHERE id = :id FOR UPDATE").setParameter("id", item.orderId).resultList
+            em.refresh(item)
+            lockRow("inbound_slots", slotId)
+            requireItemStatus(item, "PAID")
+            val liveOfItem = em.createQuery(
+                "SELECT count(r) FROM InboundReservation r WHERE r.orderItemId = :item AND r.status IN ('RESERVED', 'CHECKED_IN')",
+                Long::class.javaObjectType,
+            ).setParameter("item", orderItemId).singleResult
+            if (liveOfItem > 0) stateConflict("살아 있는 입고 예약이 있는 주문 항목: $orderItemId")
+            if (liveReservationsOfSlot(slotId) >= slot.capacity) stateConflict("정원이 찬 슬롯: $slotId")
+            val deadline = slot.slotStart.minus(Duration.ofHours(24))
+            if (now.isAfter(deadline)) {
+                throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "입고 예약 기한($deadline)이 지났다: 슬롯 $slotId")
+            }
+            val reservation = InboundReservation(
+                slotId = slotId,
+                sellerId = userId,
+                orderItemId = orderItemId,
+                status = "RESERVED",
+                createdAt = now,
+            )
+            em.persist(reservation)
+            reservationView(reservation)
+        }!!
+    }
+
+    /** 예약 취소(§12.3). 본인 것만, 예약 행 FOR UPDATE 뒤 RESERVED가 아니면 409, 현재 > slot_start − 2시간이면 409 DEADLINE_PASSED. */
+    fun cancelInboundReservation(userId: Long, reservationId: Long): InboundReservationView {
+        val now = clock.now()
+        return tx.execute {
+            val reservation = em.find(InboundReservation::class.java, reservationId) ?: notFound("없는 예약: $reservationId")
+            if (reservation.sellerId != userId) throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "남의 예약: $reservationId")
+            lockRow("inbound_reservations", reservationId)
+            em.refresh(reservation)
+            if (reservation.status != "RESERVED") stateConflict("RESERVED가 아닌 예약: $reservationId (${reservation.status})")
+            val deadline = em.find(InboundSlot::class.java, reservation.slotId).slotStart.minus(Duration.ofHours(2))
+            if (now.isAfter(deadline)) {
+                throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "입고 예약 취소 기한($deadline)이 지났다: $reservationId")
+            }
+            reservation.status = "CANCELLED"
+            reservation.closedAt = now
+            reservationView(reservation)
+        }!!
+    }
+
+    /**
+     * 체크인(§12.3). 예약 행 FOR UPDATE 뒤 RESERVED가 아니면 409, 현재 < slot_start면 409, 현재 ≥ slot_start + 1시간이면 409 DEADLINE_PASSED.
+     * → CHECKED_IN, closed_at = 현재 + 감사 INBOUND_CHECK_IN(detail null). 항목 상태는 바꾸지 않는다.
+     */
+    fun checkInInbound(reservationId: Long): InboundReservationView {
+        val now = clock.now()
+        return tx.execute {
+            val reservation = em.find(InboundReservation::class.java, reservationId) ?: notFound("없는 예약: $reservationId")
+            lockRow("inbound_reservations", reservationId)
+            em.refresh(reservation)
+            if (reservation.status != "RESERVED") stateConflict("RESERVED가 아닌 예약: $reservationId (${reservation.status})")
+            val slotStart = em.find(InboundSlot::class.java, reservation.slotId).slotStart
+            if (now.isBefore(slotStart)) stateConflict("슬롯 시작($slotStart) 전이다: $reservationId")
+            val deadline = slotStart.plus(Duration.ofHours(1))
+            if (!now.isBefore(deadline)) {
+                throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "체크인 기한($deadline)이 지났다: $reservationId")
+            }
+            reservation.status = "CHECKED_IN"
+            reservation.closedAt = now
+            audit("INBOUND_CHECK_IN", reservationId, null, now)
+            reservationView(reservation)
+        }!!
+    }
+
+    /** `GET /me/inbound-reservations`(§12.3): 내 예약 reservationId 오름차순. */
+    fun inboundReservations(userId: Long): List<InboundReservationView> =
+        em.createQuery("SELECT r FROM InboundReservation r WHERE r.sellerId = :seller ORDER BY r.id", InboundReservation::class.java)
+            .setParameter("seller", userId).resultList.map { reservationView(it) }
+
+    private fun reservationView(r: InboundReservation) =
+        InboundReservationView(
+            r.id!!, r.slotId, em.find(InboundSlot::class.java, r.slotId).slotStart, r.orderItemId, r.status, r.createdAt, r.closedAt,
+        )
+
+    /**
+     * inbound-no-show(§12.3): RESERVED이고 slot_start + 1시간 ≤ 현재(id 순). 예약 1건 = 그 행을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다.
+     * → NO_SHOW, closed_at = 현재. 패널티·판매 제한과 무관하다. 반환 = 바꾼 예약 수.
+     */
+    private fun markInboundNoShows(now: Instant): BatchResult {
+        val due = now.minus(Duration.ofHours(1))
+        return forEachTarget(
+            "inbound_reservations",
+            "t.status = 'RESERVED' AND EXISTS (SELECT 1 FROM inbound_slots s WHERE s.id = t.slot_id AND s.slot_start <= :due)",
+            mapOf("due" to due),
+            isolatedAs = "inbound-no-show",
+        ) { reservationId ->
+            tx.execute {
+                lockRow("inbound_reservations", reservationId)
+                val reservation = em.find(InboundReservation::class.java, reservationId)
+                if (reservation.status != "RESERVED") return@execute false
+                reservation.status = "NO_SHOW"
+                reservation.closedAt = now
+                true
+            }!!
+        }
     }
 
     // ---- 기동 (ADR-0003 §9의 7) ----

@@ -432,3 +432,82 @@ class ShipmentDelay(
     var kind: String,
     var detectedAt: Instant,
 )
+
+@Entity
+@Table(name = "inquiries")
+class Inquiry(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var userId: Long,
+    var orderItemId: Long? = null,
+    var category: String,
+    var title: String,
+    var status: String,
+    var closeReason: String? = null,
+    var createdAt: Instant,
+    var slaDueAt: Instant,
+    var firstAnsweredAt: Instant? = null,
+    var answeredAt: Instant? = null,
+    var closedAt: Instant? = null,
+)
+
+@Entity
+@Table(name = "inquiry_messages")
+class InquiryMessage(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var inquiryId: Long,
+    var author: String,
+    var body: String,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "price_stats_daily")
+class PriceStatDaily(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var productSizeId: Long,
+    var statDate: LocalDate,
+    var tradeCount: Int,
+    var minPrice: Long,
+    var maxPrice: Long,
+    var medianPrice: Long,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "seller_profiles")
+class SellerProfile(
+    @Id
+    var userId: Long,
+    var shopName: String,
+    var intro: String,
+    var vacationFrom: LocalDate? = null,
+    var vacationTo: LocalDate? = null,
+    var createdAt: Instant,
+    var updatedAt: Instant,
+)
+
+@Entity
+@Table(name = "inbound_slots")
+class InboundSlot(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var slotStart: Instant,
+    var capacity: Int,
+    var createdAt: Instant,
+)
+
+@Entity
+@Table(name = "inbound_reservations")
+class InboundReservation(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    var id: Long? = null,
+    var slotId: Long,
+    var sellerId: Long,
+    var orderItemId: Long,
+    var status: String,
+    var createdAt: Instant,
+    var closedAt: Instant? = null,
+)
