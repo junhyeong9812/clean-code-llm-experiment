@@ -141,7 +141,7 @@ grep -q "MARK concurrent" <<< "$pgl" || die "DB 문장 로그에 concurrent 표�
 n_dl=$(grep -c 'deadlock detected' <<< "$pgl" || true); n_unexp=$(grep -c '예상 못 한 오류' "$out/app.log" || true)
 need "교착 0" "$n_dl" 0
 printf '%s\n' "$n_dl" "$n_unexp" | dump_text log-counts
-dump inquiries "SELECT user_id-$base, order_item_id IS NOT NULL, status, count(*) FROM inquiries WHERE id>$mq GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
+dump inquiries "SELECT user_id-$base, order_item_id-$mi, status, count(*) FROM inquiries WHERE id>$mq GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
 dump inquiry_messages "SELECT author, body, count(*) FROM inquiry_messages WHERE id>$mm GROUP BY 1, 2 ORDER BY 1, 2"
 dump reviews "SELECT order_item_id-$mi, buyer_id-$base, seller_id-$base, rating, content, status FROM reviews WHERE id>$mw ORDER BY order_item_id"
 dump wishlists "SELECT count(*) FROM wishlists WHERE id>$mwl"

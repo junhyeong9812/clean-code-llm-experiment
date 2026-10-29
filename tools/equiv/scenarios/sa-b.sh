@@ -203,4 +203,9 @@ dump trades "SELECT id-$mt,status,matched_at,payment_due_at FROM trades WHERE id
 { q "SELECT id,status,triggered_bid_id,closed_at FROM price_alerts WHERE id<=$ma ORDER BY id" | md5sum
   q "SELECT id,read_at FROM notifications WHERE id<=$mn ORDER BY id" | md5sum
   q "SELECT id,status FROM order_items WHERE id<=$mi ORDER BY id" | md5sum; } | dump_text seed.md5
+# 격리 실패 로그(ADR-0003 §12의 2·ADR-0007 §2.6): 배치 응답 failed 합 = 격리 실패 ERROR 수(iso.sh와 같은 식 — 이 시나리오에 카드 취소 대상 없음)
+n_err=$(grep -c ': 대상 [0-9]* 실패(반영 안 됨' "$out/app.log" || true)
+sum_failed=$({ grep -o '/admin/batches/[a-z-]* key= → {"processed":[0-9]*,"failed":[0-9]*' "$out/responses.txt" || true; } | awk -F'"failed":' '{n += $2} END {print n + 0}')
+need "격리 실패 로그 = 응답 failed 합" "$n_err" "$sum_failed"
+printf '%s\n' "$n_err" "$sum_failed" | dump_text log-counts
 app_end

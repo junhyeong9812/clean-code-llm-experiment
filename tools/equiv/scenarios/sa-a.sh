@@ -225,4 +225,9 @@ dump refunds "SELECT id-$mr,order_item_id-$mi,card_amount,point_amount,reason,fa
   q "SELECT seller_id,review_count,rating_sum,recalculated_at FROM seller_ratings WHERE seller_id<$base ORDER BY seller_id" | md5sum
   q "SELECT id,status,paid_at FROM settlements WHERE id<=$ms ORDER BY id" | md5sum
   q "SELECT id,kind,status FROM tax_invoices WHERE id<=$mv ORDER BY id" | md5sum; } | dump_text seed.md5
+# 격리 실패 로그(ADR-0003 §12의 2·ADR-0007 §2.6): 배치 응답 failed 합 = 격리 실패 ERROR 수(iso.sh와 같은 식 — 이 시나리오에 카드 취소 대상 없음)
+n_err=$(grep -c ': 대상 [0-9]* 실패(반영 안 됨' "$out/app.log" || true)
+sum_failed=$({ grep -o '/admin/batches/[a-z-]* key= → {"processed":[0-9]*,"failed":[0-9]*' "$out/responses.txt" || true; } | awk -F'"failed":' '{n += $2} END {print n + 0}')
+need "격리 실패 로그 = 응답 failed 합" "$n_err" "$sum_failed"
+printf '%s\n' "$n_err" "$sum_failed" | dump_text log-counts
 app_end
