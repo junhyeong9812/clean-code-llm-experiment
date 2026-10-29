@@ -110,6 +110,7 @@ class A10SellerProfileTest {
         SC.putProfile(user, from = d.plusDays(1).toString(), to = d.toString()).assertError(400, "INVALID_REQUEST")
         SC.putProfile(user, from = "2026/11/01", to = "2026/11/02").assertError(400, "INVALID_REQUEST")
         SC.putProfile(user, from = d.toString(), to = "nope").assertError(400, "INVALID_REQUEST")
+        SC.putProfile(user, from = "+10000-01-01", to = "+10000-01-02").assertError(400, "INVALID_REQUEST")   // §19의 5: ISO 확장 연도 거부
         assertEquals(d, profileRow(user).date("vacation_from"))
         assertEquals(d, profileRow(user).date("vacation_to"))
 

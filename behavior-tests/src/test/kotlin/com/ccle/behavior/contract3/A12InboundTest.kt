@@ -130,6 +130,7 @@ class A12InboundTest {
         assertEquals(0L, list[1].longAt("reserved"))
         assertEquals(listOf(next), SC.array(Api.get("/inbound-slots?date=${d.plusDays(1)}").assertStatus(200)).map { it.longAt("slotId") })
         Api.get("/inbound-slots?date=2026-13-01").assertError(400, "INVALID_REQUEST")
+        Api.get("/inbound-slots?date=%2B999999999-12-31").assertError(400, "INVALID_REQUEST")   // §19의 5: ISO 확장 연도 거부
         Api.get("/inbound-slots?date=20261101").assertError(400, "INVALID_REQUEST")
         Api.get("/inbound-slots").assertError(400, "INVALID_REQUEST")            // §19의 4: date 필수
         // §19의 7: 헤더 불필요 — 잘못된 X-User-Id도 읽지 않는다
