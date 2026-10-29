@@ -2715,9 +2715,12 @@ class Marketplace(
         val now = clock.now()
         return tx.execute {
             if (orderItemId != null) {
-                // §19의 9-1: 항목 KEY SHARE를 INSERT(사용자 FK가 먼저 발동)보다 먼저 — 주문 → 항목 → 사용자 순서의 기존 항목 절차와 교착 방지
-                em.createNativeQuery("SELECT id FROM order_items WHERE id = :id FOR KEY SHARE").setParameter("id", orderItemId)
-                    .resultList.ifEmpty { notFound("없는 주문 항목: $orderItemId") }
+                // §19의 9-1: 주문 → 항목 KEY SHARE를 INSERT(사용자 FK가 먼저 발동)보다 먼저 — 기존 규약 "주문 → 항목 → 사용자"와 같은 순서.
+                // 주문을 FOR UPDATE가 아니라 KEY SHARE로 잡는 이유: pg-inquiry 등이 사용자 FU를 쥔 채 주문에 KEY SHARE를 건다(충돌하면 교착)
+                val orderId = em.createNativeQuery("SELECT order_id FROM order_items WHERE id = :id").setParameter("id", orderItemId)
+                    .resultList.firstOrNull() ?: notFound("없는 주문 항목: $orderItemId")
+                em.createNativeQuery("SELECT id FROM orders WHERE id = :id FOR KEY SHARE").setParameter("id", orderId).resultList
+                em.createNativeQuery("SELECT id FROM order_items WHERE id = :id FOR KEY SHARE").setParameter("id", orderItemId).resultList
                 val item = em.find(OrderItem::class.java, orderItemId) ?: notFound("없는 주문 항목: $orderItemId")
                 val trade = em.find(Trade::class.java, item.tradeId)
                 if (userId != trade.buyerId && userId != trade.sellerId) {
@@ -3203,8 +3206,8 @@ class Marketplace(
             }
             em.createNativeQuery("SELECT id FROM orders WHERE id = :id FOR UPDATE").setParameter("id", item.orderId).resultList
             em.refresh(item)
+            requireItemStatus(item, "PAID")   // 슬롯 잠금 전에 — 주문을 잠갔으니 판정은 같고, PAID 아닌 항목 요청이 슬롯을 기다리지 않는다(교착 고리 방지)
             lockRow("inbound_slots", slotId)
-            requireItemStatus(item, "PAID")
             val liveOfItem = em.createQuery(
                 "SELECT count(r) FROM InboundReservation r WHERE r.orderItemId = :item AND r.status IN ('RESERVED', 'CHECKED_IN')",
                 Long::class.javaObjectType,
