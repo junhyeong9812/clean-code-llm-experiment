@@ -11,12 +11,15 @@ import com.ccle.behavior.support.Db
 import com.ccle.behavior.support.Db3
 import com.ccle.behavior.support.FailTrigger
 import com.ccle.behavior.support.Flow
+import com.ccle.behavior.support.Resp
 import com.ccle.behavior.support.SlowTrigger
 import com.ccle.behavior.support.failed
 import com.ccle.behavior.support.instantAt
 import com.ccle.behavior.support.longAt
 import com.ccle.behavior.support.textAt
 import org.junit.jupiter.api.Test
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -385,5 +388,28 @@ class A6InquiryTest {
         assertEquals("AUTO", SC.inquiryRow(a).text("close_reason"))
         assertEquals(later, SC.inquiryRow(a).instant("closed_at"))
         assertEquals(at, SC.inquiryRow(b).instant("closed_at"))
+    }
+
+    /**
+     * §19의 9-1: 항목을 지정한 문의 작성이 INSERT 직전에 멈춘 사이 같은 구매자가 그 항목을 취소(주문 → 항목 FOR UPDATE → 사용자)하면,
+     * 문의 쪽이 항목 KEY SHARE를 먼저 쥐고 있어 취소는 항목 잠금에서 기다린다 — 교착 없이 문의 201·취소 200.
+     */
+    @Test
+    fun `§19의 9-1·§2_3 항목 문의 작성과 같은 항목의 구매자 취소가 겹쳐도 교착 없이 둘 다 성공`() {
+        val p = S2.purchase(30_000)
+        val rs = SlowTrigger.on("inquiries", "INSERT", condition = "NEW.order_item_id = ${p.item}") {
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val inquiry = pool.submit<Resp> { SC.createInquiry(p.buyer, orderItemId = p.item) }
+                Thread.sleep(300)   // 문의 작성이 트리거에서 멈출 시간
+                val cancel = S2.cancel(p.item, p.buyer)
+                listOf(inquiry.get(30, TimeUnit.SECONDS), cancel)
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+        rs[0].assertStatus(201)
+        rs[1].assertStatus(200)
+        assertEquals("CANCELLED_BY_BUYER", com.ccle.behavior.support.Db2.item(p.item).status)
     }
 }
