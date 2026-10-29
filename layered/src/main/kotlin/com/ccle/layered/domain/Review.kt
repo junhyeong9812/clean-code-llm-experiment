@@ -103,11 +103,11 @@ class Review(
          * 작성(§4.1): 항목이 CONFIRMED이고 리뷰가 아직 없고(어떤 상태든) 현재 ≤ confirmed_at + 30일. 순서는 상태 → 중복 → 기한.
          * 주문 행을 잠근 뒤의 항목·리뷰 수로 부른다. sellerId = 체결 판매자.
          */
-        fun write(item: OrderItem, existingReviews: Long, buyerId: Long, input: ReviewInput, now: Instant, sellerId: () -> Long): Review {
+        fun write(item: OrderItem, existingReviews: () -> Long, buyerId: Long, input: ReviewInput, now: Instant, sellerId: () -> Long): Review {
             if (item.status != "CONFIRMED") {
                 throw MarketException(Failure.ITEM_STATE_CONFLICT, "CONFIRMED가 아닌 주문 항목: ${item.id} (${item.status})")
             }
-            if (existingReviews > 0) throw MarketException(Failure.ITEM_STATE_CONFLICT, "리뷰가 이미 있는 주문 항목: ${item.id}")
+            if (existingReviews() > 0) throw MarketException(Failure.ITEM_STATE_CONFLICT, "리뷰가 이미 있는 주문 항목: ${item.id}")
             val deadline = item.confirmedAt!!.plus(WRITE_WITHIN)
             if (now.isAfter(deadline)) throw MarketException(Failure.DEADLINE_PASSED, "리뷰 작성 기간($deadline)이 지났다: ${item.id}")
             return Review(

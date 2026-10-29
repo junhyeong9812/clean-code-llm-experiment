@@ -53,7 +53,7 @@ class ReviewService(
             item.requireBuyer(orders.find(item.orderId)!!, userId)
             orders.lock(item.orderId)
             items.reload(item)
-            val review = Review.write(item, reviews.countOfItem(itemId), userId, input, now) { trades.find(item.tradeId)!!.sellerId }
+            val review = Review.write(item, { reviews.countOfItem(itemId) }, userId, input, now) { trades.find(item.tradeId)!!.sellerId }
             reviews.keyShareParties(userId, review.sellerId)
             reviews.add(review)
             review
