@@ -4,7 +4,7 @@
 
 ## 기준
 
-- 마지막 갱신: 2026-10-29 · 직전 완료 작업: `docs/plans/2026-10-29/layered-stage-a/`(layered 단계 A A1~A12 — contract3 168 green, layered 4,756→9,367줄, equiv 12/12) · 병합 상태: 병합 대기(사용자 확인)
+- 마지막 갱신: 2026-10-29 · 직전 완료 작업: `docs/plans/2026-10-29/layered-stage-a/`(layered 단계 A A1~A12 — contract3 168 green, layered 4,756→9,367줄, equiv 12/12) · 병합 상태: 병합·push(2026-10-29 사용자 결정)
 
 ## 다음 작업 후보 (우선순위순)
 

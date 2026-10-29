@@ -22,6 +22,7 @@
 | 2026-10-29 23:23 | 누적 1회차 codex 회수(bwrap 0): 지적 없음 — 묶음 사이 규칙·잠금 순서 역전 없음, 새 배치 11개 이름·격리·집계 god와 일치, 기존 파일 변경 허용 3파일·BatchTarget 기존 값 순서 유지, 엔티티·DTO 표본 4종 필드 차이 없음. 동적 판정(equiv·교착 실행)은 정적 리뷰 밖 | web 대기 |
 | 2026-10-29 23:23 | 누적 1회차 lz1-web 회수: 지적 없음 — 단계 A DTO 34/34 필드 이름·순서·타입 같음(스크립트 대조), @JsonUnwrapped 양쪽, 파싱·직렬화 도우미·ErrorHandling·401 메시지 같음, 엔드포인트 전부 판정 순서·400/404/403/409 메시지 글자 같음, 배치 이름 11개 같음. → LC-1 해소. **누적 1회차 신규 지적 0 → 루프 종료**(review.md 신규성 기준) | 회귀 대기 |
 | 2026-10-29 23:38 | 전체 회귀(c9e8bc1, 메인 실행 l7/reg): layered test rc 0(infra 28·contract 122), contract2 89/89, contract3 168/168(실패 0), verify 120 ×3, equiv all rc 0 같음 12/12. god는 이 브랜치 무변경(95cc1da의 god 168·239 그대로). §4 안전선: ①스모크=contract3 실행 ②테스트+불변식(fixcheck 33/33·allowcheck) ③diff self-review(누적 57파일 — 기존 파일은 허용 3파일만) ④rollback=브랜치 미병합·새 파일만이라 revert 쉬움 ⑤public contract=새 엔드포인트만(기존 21 무변경, equiv 12) ⑥반증: 동시 경로(잠금 그래프 누적 리뷰 지적 0)·빈 데이터(시드 shipment_delays 0 — 테스트가 직접 만듦)·권한 없는 사용자(403 경로 contract3) | 완료 요약 |
+| 2026-10-29 23:55 | 사용자 결정 '병합·push 후 다음으로' → main fast-forward 95cc1da..6a62f81 | push |
 
 ## 리뷰 ledger
 
