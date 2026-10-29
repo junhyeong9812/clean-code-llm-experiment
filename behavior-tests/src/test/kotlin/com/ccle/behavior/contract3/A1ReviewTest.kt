@@ -14,9 +14,12 @@ import com.ccle.behavior.support.FailTrigger
 import com.ccle.behavior.support.SlowTrigger
 import com.ccle.behavior.support.assertUnexpectedError
 import com.ccle.behavior.support.Flow
+import com.ccle.behavior.support.Resp
 import com.ccle.behavior.support.longAt
 import com.ccle.behavior.support.textAt
 import org.junit.jupiter.api.Test
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -378,5 +381,35 @@ class A1ReviewTest {
         assertEquals(user, Api.get("/sellers/$user/reviews", "abc").assertStatus(200).long("sellerId"))
         assertEquals(user, Api.get("/sellers/$user/reviews", Db.missingId("users")).assertStatus(200).long("sellerId"))
         assertEquals(0L, Db3.count("reviews", "seller_id = ?", user))
+    }
+
+    /**
+     * §19의 9-2: 리뷰 작성은 INSERT 전에 구매자·판매자를 id 순 KEY SHARE로 잡는다. 판매자 id < 구매자 id인 같은 두 사용자의 다른 주문에서
+     * 판매자 귀책(검수 불합격 — 두 사용자 id 순 FOR UPDATE)이 겹치면, 귀책 쪽이 사용자 잠금에서 리뷰를 기다리고 둘 다 성공한다.
+     * (사전 잠금이 없으면 리뷰가 트리거에서 멈춘 동안 귀책이 막히지 않아 경합 미관측으로 실패한다.)
+     */
+    @Test
+    fun `§19의 9-2·§2_3 리뷰 작성과 같은 두 사용자의 다른 주문 판매자 귀책이 겹쳐도 교착 없이 둘 다 성공`() {
+        val seller = Db.createUser()          // 먼저 만들어 id가 더 작다
+        val buyer = Db.createUser()
+        assertTrue(seller < buyer, "준비: 판매자 id < 구매자 id")
+        val p1 = S2.purchase(listOf(Line(30_000, null, seller)), buyer)
+        S2.toConfirmed(p1.item, seller, buyer)
+        val p2 = S2.purchase(listOf(Line(30_000, null, seller)), buyer)
+        S2.toInspecting(p2.item, seller)
+        val rs = SlowTrigger.on("reviews", "INSERT", condition = "NEW.order_item_id = ${p1.item}") {
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val review = pool.submit<Resp> { SA.writeReview(p1.item, buyer, 5, "좋아요") }
+                Thread.sleep(300)   // 리뷰 작성이 트리거에서 멈출 시간
+                val fault = S2.inspect(p2.item, "FAIL", "오염")
+                listOf(review.get(30, TimeUnit.SECONDS), fault)
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+        rs[0].assertStatus(201)
+        rs[1].assertStatus(200)
+        assertEquals("CANCELLED_SELLER_FAULT", Db2.item(p2.item).status)
     }
 }
