@@ -42,6 +42,33 @@ enum class BatchTarget {
 
     /** tax-invoice-issue(ADR-0007 §10.2): 계산서가 없는 정산 중 (PAID이고 paid_at ≤ 현재) 또는 CARRIED. */
     UNINVOICED_SETTLEMENTS,
+
+    /** deadline-reminder PAYMENT_DUE_SOON(ADR-0007 §7.1): AWAITING_PAYMENT, now < payment_due_at ≤ now + 10분, 같은 dedupe_key 알림 없음. */
+    PAYMENT_DUE_SOON_TRADES,
+
+    /** deadline-reminder SHIPMENT_DUE_SOON(§7.1): PAID, paid_at + 2일 ≤ now < paid_at + 3일, 같은 dedupe_key 알림 없음. */
+    SHIPMENT_DUE_SOON_ITEMS,
+
+    /** deadline-reminder DISPUTE_WINDOW_CLOSING(§7.1): CONFIRMED, confirmed_at + 12일 ≤ now ≤ confirmed_at + 14일, 같은 dedupe_key 알림 없음. */
+    DISPUTE_WINDOW_CLOSING_ITEMS,
+
+    /** deadline-reminder SETTLEMENT_PAID(§7.1): PAID, now − 7일 < paid_at ≤ now, 같은 dedupe_key 알림 없음. */
+    RECENTLY_PAID_SETTLEMENTS,
+
+    /** deadline-reminder PURCHASE_RESTRICTED(§7.1): purchase_restricted_until > now, 같은 dedupe_key 알림 없음. */
+    PURCHASE_RESTRICTED_USERS,
+
+    /** deadline-reminder SALE_RESTRICTED(§7.1): sale_restricted_until > now, 같은 dedupe_key 알림 없음. */
+    SALE_RESTRICTED_USERS,
+
+    /** price-alert-scan(ADR-0007 §8.3): ACTIVE 가격 알림. */
+    ACTIVE_PRICE_ALERTS,
+
+    /** delivery-delay-scan SHIPMENT_OVERDUE(ADR-0007 §12.2): PAID이고 paid_at + 3일 ≤ 현재, 같은 (항목, kind) 행 없음. */
+    SHIPMENT_OVERDUE_ITEMS,
+
+    /** delivery-delay-scan DELIVERY_LATE(§12.2): DELIVERING이고 inspected_at + 5일 ≤ 현재, 같은 (항목, kind) 행 없음. */
+    DELIVERY_LATE_ITEMS,
 }
 
 interface BatchTargets {

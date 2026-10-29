@@ -66,6 +66,12 @@ class KeysetBatchTargets(private val em: EntityManager) : BatchTargets {
                 " AND ((t.status = 'PAID' AND t.paid_at <= :now) OR t.status = 'CARRIED')",
             ::nowParam,
         )
+        BatchTarget.PAYMENT_DUE_SOON_TRADES, BatchTarget.SHIPMENT_DUE_SOON_ITEMS, BatchTarget.DISPUTE_WINDOW_CLOSING_ITEMS,
+        BatchTarget.RECENTLY_PAID_SETTLEMENTS, BatchTarget.PURCHASE_RESTRICTED_USERS, BatchTarget.SALE_RESTRICTED_USERS,
+        -> ReminderSql.of(target).let { Spec(it.table, it.targetCondition, it.params) }
+        BatchTarget.ACTIVE_PRICE_ALERTS -> Spec("price_alerts", "t.status = 'ACTIVE'") { emptyMap() }
+        BatchTarget.SHIPMENT_OVERDUE_ITEMS, BatchTarget.DELIVERY_LATE_ITEMS ->
+            DelaySql.of(target).let { Spec("order_items", it.targetCondition, it.params) }
     }
 
     private fun nowParam(now: Instant): Map<String, Any> = mapOf("now" to now)

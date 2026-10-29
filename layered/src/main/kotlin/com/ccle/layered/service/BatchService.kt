@@ -81,6 +81,9 @@ class BatchService(
     private val rebateSettlement: RebateSettlementBatch,
     private val monthlyStatement: MonthlyStatementBatch,
     private val taxInvoiceIssue: TaxInvoiceIssueBatch,
+    private val deadlineReminder: DeadlineReminderBatch,
+    private val priceAlertScan: PriceAlertScanBatch,
+    private val deliveryDelayScan: DeliveryDelayScanBatch,
 ) {
     private val log = LoggerFactory.getLogger(BatchService::class.java)
 
@@ -101,6 +104,9 @@ class BatchService(
             "rebate-settlement" -> rebateSettlement.run(now)
             "monthly-statement" -> monthlyStatement.run(now)
             "tax-invoice-issue" -> taxInvoiceIssue.run(now)
+            "deadline-reminder" -> deadlineReminder.run(now)
+            "price-alert-scan" -> priceAlertScan.run(now)
+            "delivery-delay-scan" -> deliveryDelayScan.run(now)
             else -> invalidRequest("알 수 없는 배치: $name")
         }
         log.info(
