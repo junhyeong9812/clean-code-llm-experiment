@@ -84,6 +84,7 @@ call POST /me/inquiries $B_ "{\"category\":\"ORDER\",\"title\":\"t\",\"body\":\"
 lock_seq lock-9-1 'from orders where id = .* for key share' 'from order_items where id = .* for key share' 'insert into inquiries'
 mark lock-9-1-missing
 call POST /me/inquiries $B_ '{"category":"ORDER","title":"t","body":"b","orderItemId":999999999}'   # 404(주문을 찾지 못함)
+need "9-1 없는 항목" "$(last_status)" "404 NOT_FOUND"
 mark lock-9-2
 call POST "/order-items/${SER[0]}/review" $B_ '{"rating":5,"content":"좋다"}'
 lock_seq lock-9-2 'from orders where id = .* for update' 'from users where id in .* order by id for key share' 'insert into reviews'
@@ -95,7 +96,9 @@ call POST /me/price-alerts $B_ "{\"productSizeId\":$Z0,\"targetPrice\":1000}"
 lock_seq lock-10-2-alert 'from product_sizes where id = .* for key share' 'from users where id = .* for update' 'insert into price_alerts'
 mark lock-10-2-missing
 call POST /me/wishlist $B_ '{"productSizeId":999999999}'       # 사이즈 KEY SHARE가 비어 404 — 사용자 잠금 전
+need "10-2 없는 사이즈 위시" "$(last_status)" "404 NOT_FOUND"
 call POST /me/price-alerts $B_ '{"productSizeId":999999999,"targetPrice":1000}'
+need "10-2 없는 사이즈 알림" "$(last_status)" "404 NOT_FOUND"
 lock_seq lock-10-2-missing 'from product_sizes where id = .* for key share' 'rollback' 'from product_sizes where id = .* for key share' 'rollback'
 # 문장 로그 받기 실패가 0건 통과가 되지 않게: 변수 대입(errexit)으로 받고, 위 lock_seq가 같은 구간을 읽어 확인한 뒤에 센다
 pgl=$(docker logs "$EQ_DB" 2>&1)
@@ -104,6 +107,7 @@ need "없는 사이즈는 사용자를 잠그지 않음" "$n_fu" 0
 mark lock-10-1
 call DELETE "/me/wishlist/$Z0" $B_                             # 200
 call DELETE "/me/wishlist/$Z0" $B_                             # 다시 찾기 → 404
+need "10-1 다시 찾기" "$(last_status)" "404 NOT_FOUND"
 lock_seq lock-10-1 'from users where id = .* for update' 'delete from wishlists' 'commit' 'from users where id = .* for update' 'rollback'
 
 # ---- 동시 구간 ----
@@ -140,6 +144,7 @@ pgl=$(docker logs "$EQ_DB" 2>&1)
 grep -q "MARK concurrent" <<< "$pgl" || die "DB 문장 로그에 concurrent 표식이 없음"
 n_dl=$(grep -c 'deadlock detected' <<< "$pgl" || true); n_unexp=$(grep -c '예상 못 한 오류' "$out/app.log" || true)
 need "교착 0" "$n_dl" 0
+need "예상 못 한 오류 0" "$n_unexp" 0
 printf '%s\n' "$n_dl" "$n_unexp" | dump_text log-counts
 dump inquiries "SELECT user_id-$base, order_item_id-$mi, status, count(*) FROM inquiries WHERE id>$mq GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
 dump inquiry_messages "SELECT author, body, count(*) FROM inquiry_messages WHERE id>$mm GROUP BY 1, 2 ORDER BY 1, 2"
