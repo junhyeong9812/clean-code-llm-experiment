@@ -466,6 +466,7 @@
 
 9. **§6.2** 반려 요청의 `reason` 키 누락은 null과 같아 400(1). 형식 검사는 `approve` 값과 무관하게 먼저 한다 — 승인 요청이어도 `reason`이 문자열도 null도 아니면(예: `5`) 400(2). 승인 시 "무시"는 형식이 맞는 문자열 값을 저장하지 않는다는 뜻이다.
 10. **§8.1** `activeAlert` = 그 사용자의 그 사이즈 `ACTIVE` 가격 알림(최대 1건 — 부분 UNIQUE).
+10-1. **§8.1** 위시리스트 삭제도 등록과 같이 **사용자 행 `FOR UPDATE`** 뒤 그 행을 다시 찾는다(없으면 404). 같은 행의 동시 삭제는 하나만 200, 다른 하나는 404(§2.3 — god 구현 리뷰 2026-10-29).
 11. **§9.1** `ANSWERED` 문의에 추가 메시지가 와서 `OPEN`이 될 때 `answered_at`·`first_answered_at`은 그대로 둔다(자동 종결 대상에서는 상태가 `ANSWERED`가 아니므로 빠진다).
 12. **§10.3** 정정 응답의 `cancelled`는 **새 `CANCEL` 행**이다. 원본은 `status`만 `CANCELLED`로 바뀌고 `issued_at`을 포함한 다른 열은 그대로다("시각은 모두 현재"는 새로 쓰는 두 행의 `issued_at`).
 13. **§11.3** `summary.sellerGrade` = `effective_from`이 가장 늦은 판매자 등급 행(§5.4 `current`와 같다). `GET /admin/settlements?sellerId=`의 사용자가 없으면 빈 목록이다(필터이므로 404가 아니다).
