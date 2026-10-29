@@ -4,7 +4,7 @@
 
 ## 기준
 
-- 마지막 갱신: 2026-10-29 · 직전 완료 작업: `docs/plans/2026-10-29/god-stage-a/`(god 단계 A A1~A12 — contract3 168 green, god 5,228줄, equiv 12/12) · 병합 상태: 사용자 결정 대기(리뷰 3루프 종료 조건 미충족)
+- 마지막 갱신: 2026-10-29 · 직전 완료 작업: `docs/plans/2026-10-29/god-stage-a/`(god 단계 A A1~A12 — contract3 168 green, god 5,228줄, equiv 12/12) · 병합 상태: 병합·push(2026-10-29 사용자 결정)
 
 ## 다음 작업 후보 (우선순위순)
 
@@ -54,7 +54,7 @@
 
 ## 완료 이력
 
-- 완료(병합 결정 대기) → `docs/plans/2026-10-29/god-stage-a/` (god A1~A12, contract3 168, 리뷰 묶음 1패스 ×3 + 누적 3루프 채택 14·기각 1 — 교착 5건 수정)
+- 완료 → `docs/plans/2026-10-29/god-stage-a/` (god A1~A12, contract3 168, 리뷰 묶음 1패스 ×3 + 누적 3루프 채택 14·기각 1 — 교착 5건 수정)
 - 완료 → `docs/plans/2026-10-29/stage-a-schema/` (스키마 19·시드 후처리·verify 120·`1k-s42-v2`·태그 5곳 — verify와 생성기를 맥락 분리 작성, 독립 일치 2회, 리뷰 3루프 채택 18·기각 1)
 - 완료 → `docs/plans/2026-10-29/contract3-tests/` (contract3 행동 테스트 162개 red · contract3Test · Db3·SlowTrigger · ADR-0007 개정 1 §19 · 리뷰 3루프 채택 21 + 사용자 결정 보강 1 — SlowTrigger 경합 관측)
 - 완료 → `docs/plans/2026-10-28/contract-a/` (ADR-0007 단계 A 동작 계약 채택 — 새 테이블 19·FK 27·배치 11·기존 오류 code만, ADR-0006 개정 1, 리뷰 반영 23)

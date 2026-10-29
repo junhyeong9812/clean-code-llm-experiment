@@ -30,6 +30,7 @@
 | 2026-10-29 18:15 | 누적 루프 3 회수: codex(bwrap 1, 남은 역전 0 확인 — minor 1: 9-2 전용 테스트 없음) · Opus(minor 3: GF-6 9-1 수정이 만든 3자 고리(문의 항목 KS → 사용자 / pg-inquiry 사용자 FU → 주문 KS / 항목 절차 주문 FU → 항목 FU), GF-7 입고 예약 같은 종류 고리(상태 판정이 슬롯 잠금 뒤), GF-8 = codex와 같은 9-2 테스트 공백) → 3건 채택·메인 수정: 문의는 주문 → 항목 KEY SHARE(주문은 KEY SHARE여야 — FU면 pg-inquiry와 2자 교착), 예약은 requireItemStatus를 슬롯 잠금 앞, 리뷰 사전 잠금 테스트(판매자 id < 구매자 id, 다른 주문 검수 FAIL 겹침 → 201·200) + ADR §19의 9-1·§12.3. contract3 **168/168**, verify 120, fixcheck 25/25 → 커밋 3개. **루프 3에 신규 채택 → 종료 조건 미충족(review unresolved)** | 타깃 재점검 |
 | 2026-10-29 18:45 | 타깃 재점검(codex, bwrap 0): GF-6·7·8 해소, **신규 0**(문의 경로의 2자·3자 순환 없음, 예약 판정 순서 = ADR, 리뷰 테스트는 사전 잠금 없으면 실패하는 구조) | - |
 | 2026-10-29 18:45 | 최종 회귀(`g7/runs-full4/`, HEAD d298178): god test 150·contract2 89·**contract3 168** 통과, **equiv 12/12 같음**, verify 120 ×3 · god **5,228줄**(+2,536) | 마감·사용자 결정 |
+| 2026-10-29 21:57 | 사용자 "병합·push 후 layered로 진행" — review unresolved 상태에서 사용자 결정으로 병합 | 병합·push |
 
 ## 리뷰 ledger
 
