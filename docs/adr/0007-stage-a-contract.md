@@ -341,7 +341,7 @@
 - 슬롯 생성 `POST /admin/inbound-slots` `{"slotStart", "capacity": 1~100}` → `slotStart`는 정시(분·초 0)이고 `> 현재`(아니면 400). 잠글 부모 행이 없으므로 `INSERT … ON CONFLICT (slot_start) DO NOTHING`으로 쓰고, 들어간 행이 0이면 409(같은 시각 슬롯 — 동시 생성도 409). 1행 + 감사 로그 `INBOUND_SLOT_CREATE`. 응답 `201` 슬롯 모양 `{"slotId", "slotStart", "capacity", "reserved"}`(`reserved` = `RESERVED`·`CHECKED_IN` 예약 수).
 - 슬롯 조회 `GET /inbound-slots?date=YYYY-MM-DD` (헤더 불필요) → 그 KST 날짜의 슬롯, `slotStart` 오름차순.
 - 예약 `POST /me/inbound-reservations` `{"slotId", "orderItemId"}` → 없는 슬롯·항목 404, 그 항목의 판매자가 아니면 403. 그 항목의 주문 행 → 슬롯 행 순서로 `FOR UPDATE` 한 뒤(같은 항목의 동시 예약은 주문 행에서, 같은 슬롯의 정원 경합은 슬롯 행에서 직렬이 된다):
-  1. 항목 상태가 `PAID`가 아니면 409 `ITEM_STATE_CONFLICT`. 그 항목의 살아 있는 예약(`RESERVED`·`CHECKED_IN`)이 있으면 409.
+  1. 항목 상태가 `PAID`가 아니면 409 `ITEM_STATE_CONFLICT`. 그 항목의 살아 있는 예약(`RESERVED`·`CHECKED_IN`)이 있으면 409. (항목 상태 판정은 슬롯 행 잠금 **전**에 한다 — 주문 행을 잠갔으므로 결과는 같고, PAID 아닌 항목의 요청이 슬롯을 기다리며 교착 고리에 끼지 않는다.)
   2. 살아 있는 예약 수 ≥ `capacity`면 409 `ITEM_STATE_CONFLICT`(정원 — 상태 위반으로 보아 기한보다 먼저, ADR-0004 §2.1).
   3. `현재 > slot_start − 24시간`이면 409 `DEADLINE_PASSED`(예약 기한 **[제안]**).
   → 1행(`RESERVED`, `seller_id`, `created_at` = 현재). 응답 `201` 예약 모양 `{"reservationId", "slotId", "slotStart", "orderItemId", "status", "createdAt", "closedAt"}`.
@@ -468,7 +468,7 @@
 10. **§8.1** `activeAlert` = 그 사용자의 그 사이즈 `ACTIVE` 가격 알림(최대 1건 — 부분 UNIQUE).
 10-2. **§8.1·§8.2** 위시리스트·가격 알림 등록의 "없는 사이즈 404"는 `SELECT id FROM product_sizes WHERE id = ? FOR KEY SHARE`로 판정하고 **사용자 행 잠금보다 먼저** 둔다 — 잠금 순서를 기존 입찰·결제 만료 경로와 같은 "사이즈 → 사용자"로 맞춘다(INSERT의 FK 검사가 사이즈에 KEY SHARE를 걸므로 사용자 → 사이즈면 입찰 등록과 교착 — god 누적 리뷰 2026-10-29).
 10-1. **§8.1** 위시리스트 삭제도 등록과 같이 **사용자 행 `FOR UPDATE`** 뒤 그 행을 다시 찾는다(없으면 404). 같은 행의 동시 삭제는 하나만 200, 다른 하나는 404(§2.3 — god 구현 리뷰 2026-10-29).
-9-1. **§9.1** `orderItemId`가 있는 문의 작성은 `SELECT id FROM order_items WHERE id = ? FOR KEY SHARE`(없으면 404)를 INSERT보다 먼저 둔다 — INSERT의 FK 검사가 사용자 → 항목 순으로 KEY SHARE를 걸면 주문 → 항목(FOR UPDATE) → 사용자(FOR UPDATE)인 기존 항목 절차(취소·확정·검수·배치)와 교착한다(god 누적 리뷰 2026-10-29).
+9-1. **§9.1** `orderItemId`가 있는 문의 작성은 그 항목의 **주문 행 → 항목 행을 `FOR KEY SHARE`**(없는 항목이면 404)로 INSERT보다 먼저 잡는다(주문은 FOR UPDATE가 아니라 KEY SHARE — pg-inquiry가 사용자 FU를 쥔 채 주문에 KEY SHARE를 걸기 때문) — INSERT의 FK 검사가 사용자 → 항목 순으로 KEY SHARE를 걸면 주문 → 항목(FOR UPDATE) → 사용자(FOR UPDATE)인 기존 항목 절차(취소·확정·검수·배치)와 교착한다(god 누적 리뷰 2026-10-29).
 9-2. **§4.1** 리뷰 작성은 INSERT 전에 구매자·판매자 행을 `SELECT id FROM users WHERE id IN (?, ?) ORDER BY id FOR KEY SHARE`로 잡는다 — INSERT의 FK 검사는 구매자 → 판매자 순(id 순 아님)이라, id 오름차순 FOR UPDATE를 쓰는 판매자 귀책(다른 주문의 같은 두 사용자)과 교착할 수 있다(god 누적 리뷰 2026-10-29). 같은 패턴이 기존 체결 INSERT(`trades` 구매자·판매자 FK)에도 있으나 기존 경로라 바꾸지 않는다(ADR-0006 §3의 2 — 잔여 위험으로 기록).
 11. **§9.1** `ANSWERED` 문의에 추가 메시지가 와서 `OPEN`이 될 때 `answered_at`·`first_answered_at`은 그대로 둔다(자동 종결 대상에서는 상태가 `ANSWERED`가 아니므로 빠진다).
 12. **§10.3** 정정 응답의 `cancelled`는 **새 `CANCEL` 행**이다. 원본은 `status`만 `CANCELLED`로 바뀌고 `issued_at`을 포함한 다른 열은 그대로다("시각은 모두 현재"는 새로 쓰는 두 행의 `issued_at`).
