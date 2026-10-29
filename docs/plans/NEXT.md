@@ -4,7 +4,7 @@
 
 ## 기준
 
-- 마지막 갱신: 2026-10-29 · 직전 완료 작업: `docs/plans/2026-10-29/contract3-tests/`(contract3 행동 테스트 162개 red + SlowTrigger 자체 검증 2 — 리뷰 3루프 뒤 사용자 결정으로 보강·병합) · 기준 커밋: `f431877`(브랜치 `test/contract3`) + docs · 병합 상태: 병합·push(2026-10-29 사용자 결정)
+- 마지막 갱신: 2026-10-29 · 직전 완료 작업: `docs/plans/2026-10-29/stage-a-schema/`(단계 A 스키마 19 테이블·시드 후처리·verify 120·이미지 `1k-s42-v2`·태그 5곳 — 리뷰 3루프 뒤 사용자 결정으로 병합) · 병합 상태: 병합·push(2026-10-29 사용자 결정)
 
 ## 다음 작업 후보 (우선순위순)
 
@@ -13,7 +13,8 @@
 - 순서(ADR-0006 §6.1): 계약 ADR-0007(A1~A12 동작 계약) → `contract3` 행동 테스트 → 스키마·verify·seedgen 후처리·1k 새 태그 이미지 → god → layered(새 파일) → 판정기 `contract3` 연결 + ADR-0005 §4.1 개정 → equiv 새 시나리오·기존 12개 재확인 → 크기 확인(god ≥ 5,500) → T1·C2 이식·재채택 → 파일럿 A(`results-pilot3`) → §6.3 사전 등록 규칙 적용.
 - 진행: 계약 ADR-0007 **채택**(2026-10-29, §16 [제안] 값 그대로 — 사용자 합의). 12개 한 번에, 기존 오류 code만, ADR-0006 §3의 1 개정 1(layered BatchTarget·KeysetBatchTargets.spec·forEachIsolated internal).
 - 진행: `contract3` 행동 테스트 162개 작성(red — 두 앱 모두 라우트·테이블·배치 없음 사유로만 실패, 기존 239 통과). ADR-0007 개정 1 §19(입력 규칙·응답 보완 14항목 [제안]).
-- 다음 착수: 스키마·verify·seedgen 후처리(1k-s42-v2) — 새 작업 폴더 spec부터. DDL이 생기면 contract3의 '테이블 없음' 35개가 다음 사유(404·400)로 바뀌는지 먼저 확인한다(Db3 열 이름 = ADR §3 표 대조).
+- 진행: 스키마·시드·verify 완료 — 새 테이블 19(FK 61)·`tools/seedgen/stage_a.py`(별도 RNG, 닫힌 CSV 재독, 기존 22 CSV 바이트 동일)·verify 120(새 44 — 시드 빌드 전용 17은 `ccle.seed_build` 설정으로만 켬, build-image가 켜짐을 단언)·이미지 `1k-s42-v2`(1k 실측 행 수는 작업 log — ADR §14 추정보다 seller_grades·fee_rebates·monthly_statements 약 65~75%, 예약 110/≈250, shipment_delays 0). contract3 '테이블 없음' 사유 사라짐.
+- 다음 착수: **god 구현(A1~A12)** — 새 작업 폴더 spec부터. contract3 162개가 처음 실행 검증되는 단계라 실패는 ADR과 대조해 테스트 결함인지 먼저 판정.
 - 구현 때 확인할 [구현 검증]: 새 FK 27(verify 34 → 61) 재계수 · 시드 행 수(§14 표) · verify '시드 빌드에서만' 검사를 켜는 psql 변수 이름 · god 증가 실측(ADR-0007 추정 ≈ 3,390).
 - 발생 가능 문제: contract3 162개는 실행으로 한 번도 green이 된 적 없다 — 구현 때 실패가 나오면 ADR과 대조해 테스트 결함인지 먼저 판정(리뷰 3루프에서 정답 구현도 실패할 결함이 루프마다 1~2개씩 나왔다: 예약 수 산수·'없음' 단언 범위·PUT 기본값 덮어쓰기) · contract3 픽스처가 T1·C2 회귀에 묶일 위험(ADR-0007 §18 지침) · 세금계산서 정정의 UPDATE→INSERT 순서(ORM flush, §10.3) · 줄 수 추정(≈3,230)이 외삽이라 5,500 미만이면 묶음 추가 개정 · 판정기 결과 경로가 contract2Test 고정(judge.py 결과 수집부) · Marketplace.kt 4천 줄 전후의 Read·출력 절단(ADR-0006 위협 7) · seedgen 후처리의 CSV 재독 비용(1k는 작음).
 - 이월(1차 결론에서): `--max-budget-usd` 중단 미확인 · Bash 해석 휴리스틱 긴 꼬리 · Q3-2·Q3-3 · 앱·테스트 컨테이너 loopback 공유 · app_died 감지 지연.
@@ -30,6 +31,7 @@
   | d. 대상 1건 = 트랜잭션 1개 비용(요청 평균 8~12ms/건) | 전 배치 | ADR 계약(격리 단위) | 묶음 커밋 시 크게 줄 수 있음 | 격리 계약(ADR-0003 §12의 2)과 충돌 — 사실상 비채택 |
   | e. 배치 비동기화(요청은 접수만) | 몰아 처리 | API 계약 | 43분 동기 요청 해소 | 계약 밖 — 이 실험 범위 아님 |
 - 발생 가능 문제: a·c는 스키마/잠금 순서에 닿아 변경이 확산된다 — 착수 시 높음 stakes. b가 가장 국소적.
+- 단계 A 뒤 재개 조건 추가(2026-10-29 stage-a-schema): 500k를 다시 만들려면 새 CSV부터(새 테이블이 빈 CSV는 시드 빌드 verify 실패) · `stage_a.py`가 큰 테이블을 통째로 읽음(1k 41.8MB → 500k 약 21GB+ 추정 — bids·order_items 스트리밍 필요) · verify 새 검사의 500k 성능 미측정.
 - 측정 한계(그대로 승계): 반복 1회·순서 편향, 페이지별 시간 미측정, EXPLAIN은 첫 페이지 리터럴 custom plan, 가짜 PG 지연 0(실 PG면 shipment-deadline이 카드 취소 호출 수 × 지연만큼 더), 같은 달 grade-recalc 재실행 비용 미측정, 포인트 묶음 누적 시나리오 미측정(ADR-0003 §12의 7은 "현 시드 최대 100개에서 0.5초"까지만 근거).
 
 ## 보류·이월
@@ -50,6 +52,7 @@
 
 ## 완료 이력
 
+- 완료 → `docs/plans/2026-10-29/stage-a-schema/` (스키마 19·시드 후처리·verify 120·`1k-s42-v2`·태그 5곳 — verify와 생성기를 맥락 분리 작성, 독립 일치 2회, 리뷰 3루프 채택 18·기각 1)
 - 완료 → `docs/plans/2026-10-29/contract3-tests/` (contract3 행동 테스트 162개 red · contract3Test · Db3·SlowTrigger · ADR-0007 개정 1 §19 · 리뷰 3루프 채택 21 + 사용자 결정 보강 1 — SlowTrigger 경합 관측)
 - 완료 → `docs/plans/2026-10-28/contract-a/` (ADR-0007 단계 A 동작 계약 채택 — 새 테이블 19·FK 27·배치 11·기존 오류 code만, ADR-0006 개정 1, 리뷰 반영 23)
 - 완료 → `docs/plans/2026-10-28/scale-up-design/` (ADR-0006 규모 확장 — 기능 12개·불변식 7·T1·C2 이식·사전 등록 다음 단계 규칙, 리뷰 반영 20)

@@ -59,12 +59,13 @@ tools/equiv/measure-expiry.sh    # bid-expiry 소요 시간 측정(판정 없음
 ### 합성 데이터와 시드 이미지
 
 ```bash
-python3 tools/seedgen/seedgen.py --users 500000 --out ~/ccle-csv/500k   # CSV + manifest.json(행 수·sha256), 시드 고정
-tools/seedgen/build-image.sh ~/ccle-csv/500k 500k-s42                    # 적재 → 제약 → VACUUM FREEZE → verify.sql → 이미지
-tools/seedgen/run-db.sh 500k-s42 ccle-run-001 15433                      # 실행 1회용 DB, DB_URL 출력
+python3 tools/seedgen/seedgen.py --users 1000 --out ~/ccle-csv/1k-v2     # CSV 41개 + manifest.json(행 수·sha256), 시드 고정
+tools/seedgen/build-image.sh ~/ccle-csv/1k-v2 1k-s42-v2                  # 적재 → 제약 → VACUUM FREEZE → verify.sql(시드 빌드 전용 검사 켜짐) → 이미지
+tools/seedgen/run-db.sh 1k-s42-v2 ccle-run-001 15433                     # 실행 1회용 DB, DB_URL 출력
+# 같은 태그로 다시 빌드하면 그 태그의 이전 이미지를 지운다 — 기존 디렉터리·태그(1k·1k-s42·500k·500k-s42)에 쓰지 말 것
 ```
 
-- 시드 이미지는 태그(규모)마다 하나씩 둔다(테스트용 `1k-s42`, 과제용 `500k-s42`). 이미지 안에는 DB `ccle_seed` 하나만 있다. 실행마다 컨테이너를 따로 띄우고, 앱은 `DB_URL`로 그 컨테이너에 붙는다.
+- 시드 이미지는 태그(규모)마다 하나씩 둔다(행동 테스트·equiv·과제 러너용 `1k-s42-v2` — 단계 A 새 테이블 포함, ADR-0007 §14 · 1차 결론 재현용 `1k-s42` · 배치 측정용 `500k-s42`). 현행 `tools/seedgen/verify.sql`은 단계 A 새 테이블을 검사하므로 `1k-s42`·`500k-s42`(새 테이블 없음)에는 그 이미지를 만든 커밋의 verify.sql을 쓴다. 500k를 다시 만들려면 새 CSV부터 다시 생성해야 한다(새 테이블이 빈 CSV로는 시드 빌드 검사가 실패). 이미지 안에는 DB `ccle_seed` 하나만 있다. 실행마다 컨테이너를 따로 띄우고, 앱은 `DB_URL`로 그 컨테이너에 붙는다.
 - `verify.sql`은 ADR-0002의 불변식(§6.1·§9)을 검사하고, 위반이 있으면 실패한다.
 - 실행 컨테이너는 처음 건드린 테이블 파일을 쓰기층에 통째로 복사한다(최대 약 14GB). 실행이 끝나면 `docker rm -f <이름>`으로 바로 지운다. 규모 실측은 [ADR-0002 §7](docs/adr/0002-domain-and-database.md).
 
