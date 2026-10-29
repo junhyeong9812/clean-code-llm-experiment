@@ -62,7 +62,17 @@ class Expected(unittest.TestCase):
         self.assertEqual({k: e[k] for k in judge.REGRESSION_STAGES}, {"contract": 122, "contract2": 89, "contract3": 168})
 
     def test_with_exclude(self):
+        """제외 패턴이 닿는 단계만 기준 수 검사를 끈다(C2처럼 contract2 메서드 하나만 빼면 contract·contract3 기준은 남는다)."""
         e = self._expected("com.ccle.behavior.contract3.A1ReviewTest.x*  # 사유\n")
+        self.assertEqual({k: e.get(k) for k in judge.REGRESSION_STAGES}, {"contract": 122, "contract2": 89, "contract3": None})
+        e = self._expected("com.ccle.behavior.contract2.PenaltyTest.판매 제한*  # 사유\n")
+        self.assertEqual({k: e.get(k) for k in judge.REGRESSION_STAGES}, {"contract": 122, "contract2": None, "contract3": 168})
+        e = self._expected("com.ccle.behavior.contract.BidTest.x*  # 사유\n")
+        self.assertEqual({k: e.get(k) for k in judge.REGRESSION_STAGES}, {"contract": None, "contract2": 89, "contract3": 168})
+
+    def test_with_unscoped_exclude(self):
+        """패키지로 시작하지 않는 패턴은 어느 단계에 닿을지 모르므로 회귀 기준 수 전부 끈다."""
+        e = self._expected("*PenaltyTest*  # 사유\n")
         for k in judge.REGRESSION_STAGES:
             self.assertNotIn(k, e)
 
@@ -231,12 +241,13 @@ class StageScript(unittest.TestCase):
         subprocess.run(["bash", str(work / ".judge" / "stage.sh"), stage], env=env, check=True, timeout=60)
         out = work / ".judge" / "out"
         calls = (work / "calls").read_text()
+        self.work = work
         return calls, out
 
     def test_contract3_task_and_verify(self):
         calls, out = self._run("contract3")
         self.assertIn(":behavior-tests:contract3Test --rerun --continue", calls)
-        self.assertIn("-I", calls)  # regression-exclude 초기화 스크립트
+        self.assertIn(f"-I {self.work}/.judge/exclude.gradle", calls)  # regression-exclude 초기화 스크립트
         self.assertIn("psql", calls)
         self.assertEqual((out / "contract3.status").read_text().strip(), "ran")
         self.assertEqual((out / "contract3.rc").read_text().strip(), "0")

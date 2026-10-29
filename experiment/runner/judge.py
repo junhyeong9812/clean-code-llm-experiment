@@ -193,6 +193,14 @@ REGRESSION_BASELINE = {"contract": 122, "contract2": 89, "contract3": 168}
 TEST_ANNOTATION = re.compile(r"@Test\b")
 
 
+def excl_touches(excl: list[str], stage: str) -> bool:
+    """regression-exclude 패턴이 그 회귀 단계의 테스트에 닿을 수 있나. 다른 회귀 단계 패키지(com.ccle.behavior.<패키지>.)로
+    시작하는 패턴만 닿지 않는다고 본다 — 와일드카드 등 다른 모양은 보수적으로 닿는다(그 단계 기준 수 검사를 끈다)."""
+    pkg = {s: f"com.ccle.behavior.{t[:-len('Test')]}." for s, t in REGRESSION_TASKS.items()}
+    others = [v for s, v in pkg.items() if s != stage]
+    return any(not any(p.startswith(o) for o in others) for p in excl)
+
+
 def remove_extra_build_scripts(pristine: Path, work: Path) -> list:
     """원본에 없는 Gradle 스크립트(*.gradle·*.gradle.kts·gradle.properties)와 buildSrc/ 를 지운다 — 에이전트가 하위
     프로젝트 빌드 스크립트로 테스트를 끄거나 결과를 꾸미는 경로 차단. 지운 경로를 돌려준다."""
@@ -294,7 +302,7 @@ def prepare(case: str, structure: str, work: Path, jd: Path) -> dict:
     excl = read_list(R.ORACLE / case / "regression-exclude.txt")
     expected = {"public": count_tests(pristine / "checks" / "src" / "test" / "kotlin" / "pub"),
                 "hidden": count_tests(hidden),
-                **({k: v for k, v in REGRESSION_BASELINE.items()} if not excl else {})}
+                **{k: v for k, v in REGRESSION_BASELINE.items() if not excl_touches(excl, k)}}
     return {"tampered": tam, "hidden_present": hidden.is_dir(), "build_files_changed": changed_build,
             "escaping_links_removed": links,
             "expected_tests": expected}
