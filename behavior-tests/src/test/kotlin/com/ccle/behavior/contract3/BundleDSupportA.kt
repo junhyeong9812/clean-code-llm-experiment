@@ -42,6 +42,21 @@ object SDA {
     fun rearm(): Resp = S2.runBatch("price-alert-rearm")
     fun scan(): Resp = S2.runBatch("price-alert-scan")
 
+    /**
+     * §20.3.3 대상 SQL 문장 그대로(별칭 t = price_alerts)로 센 지금 대상 수. `:due = 현재 − 7일`·`:now = 현재`를 배치와 같은 시각으로 바인드한다.
+     * 공유 DB라 processed 고정값 대신 실행 직전 이 수와 맞춰 본다(SG-1).
+     */
+    fun rearmTargetCount(now: Instant): Long = Db.long(
+        "SELECT count(*) FROM price_alerts t WHERE " +
+            "t.status = 'TRIGGERED' AND t.closed_at >= ? " +
+            "AND EXISTS (SELECT 1 FROM bids b WHERE b.id = t.triggered_bid_id AND b.status IN ('CANCELLED', 'EXPIRED')) " +
+            "AND EXISTS (SELECT 1 FROM wishlists w WHERE w.user_id = t.user_id AND w.product_size_id = t.product_size_id) " +
+            "AND NOT EXISTS (SELECT 1 FROM price_alerts n WHERE n.user_id = t.user_id AND n.product_size_id = t.product_size_id " +
+            "AND (n.id > t.id OR n.status = 'ACTIVE')) " +
+            "AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.purchase_restricted_until > ?)",
+        now.minus(days(7)), now,
+    )
+
     fun alertRow(id: Long): Row3 = Db3.row("price_alerts", id)
     fun alertsOf(user: Long, size: Long): List<Row3> = Db3.rows("price_alerts", "user_id = ? AND product_size_id = ?", user, size)
 

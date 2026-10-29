@@ -387,4 +387,35 @@ class A14PriceAlertRenewTest {
         assertEquals("ACTIVE", rs[1].text("status"))
         assertEquals(1L, Db3.count("price_alerts", "user_id = ? AND product_size_id = ? AND status = 'ACTIVE'", u, size))
     }
+
+    /**
+     * §20.12·§19의 10-2 역방향 인터리빙(SG-2): 입찰 등록이 사이즈 FU를 쥔 채 bids INSERT 직전(FK 검사 전)에 먼저 멈춘 사이 재등록이 오면,
+     * 정답 순서(사이즈 KS → 사용자 FU)의 재등록은 사이즈 행에서 기다렸다가 입찰 커밋 뒤 진행한다 — 둘 다 201·새 알림.
+     * 역순(사용자 FU → 사이즈 KS)이면 재등록이 사용자 FU를 쥔 채 사이즈에서 기다리고 입찰의 FK 검사(사용자 KS)가 그 FU에 막혀 교착한다.
+     */
+    @Test
+    fun `§20_12·§19의 10-2 입찰 등록이 먼저 사이즈를 잡고 멈춘 사이 재등록이 와도 교착 없이 둘 다 201(역방향 인터리빙)`() {
+        val u = Db.createUser()
+        val size = Db.createProductSize()
+        val (ids, _) = SDA.expiredAlerts(listOf(u to size))
+        val now = Flow.advance(HOUR)
+        val rs = SlowTrigger.on("bids", "INSERT", condition = "NEW.user_id = $u") {
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val bid = pool.submit<Resp> { Flow.bid(u, size, "BUY", 10_000) }   // 반대편 SELL 없음 → ACTIVE
+                SDA.awaitTriggerWait()
+                val renew = SDA.renew(u, ids.single())
+                listOf(bid.get(30, TimeUnit.SECONDS), renew)
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+        rs[0].assertStatus(201)
+        assertEquals("ACTIVE", rs[0].text("status"))
+        rs[1].assertStatus(201)
+        val newer = SDA.alertsOf(u, size).filter { it.id > ids.single() }
+        assertEquals(1, newer.size, "새 알림 1행: $newer")
+        SDA.assertNewAlert(newer.single(), u, size, 100_000, now)
+        SB.assertAlertBody(rs[1].json, newer.single())
+    }
 }

@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
  * ADR-0007 §20.3.3 배치 `price-alert-rearm`: TRIGGERED · closed_at ≥ 현재 − 7일 · 발동 입찰의 저장 상태가 CANCELLED·EXPIRED ·
  * 위시리스트 있음 · 그 쌍에 더 큰 id·ACTIVE 알림 없음 · 구매 제한 아님인 알림마다 새 ACTIVE 알림 1행(같은 target, expires_at = 현재 + 60일).
  * 알림(notifications)·입찰·옛 알림은 쓰지 않는다, 재실행 0, 건별 격리(§2.6).
- * 배치는 다른 테스트 행도 처리하므로 processed는 하한(≥)만 보고 자기 행을 단언한다. 같은 시각 재실행은 processed = 0(§20.1).
+ * 배치는 다른 테스트 행도 처리하므로 첫 실행 processed는 실행 직전 같은 대상 조건으로 센 수와 맞추고(그 밖은 하한 ≥), 자기 행을 단언한다. 같은 시각 재실행은 processed = 0(§20.1).
  * 발동 입찰은 DELETE /bids 또는 bid-expiry로 끝낸다 — 판매 제한으로 만들지 않는다(§20.12 C2). 구매 제한은 픽스처로 두고 그 사용자는 입찰이 없다.
  */
 @Contract3Test
@@ -37,9 +37,12 @@ class A14PriceAlertRearmTest {
         val notifBefore = Db3.notificationsOf(t.owner).size
         val audit = SDA.maxAuditId()
         val now = Flow.advance(HOUR)
+        val expected = SDA.rearmTargetCount(now)                              // 실행 직전 같은 대상 조건(§20.3.3)으로 센 수
+        assertTrue(expected >= 1, "준비: 이 알림이 대상: $expected")
 
         val r = SDA.rearm()
-        assertTrue(r.long("processed") >= 1, "processed = 만든 새 알림 수: $r")
+        assertEquals(expected, r.long("processed"), "processed = 만든 새 알림 수 = 실행 직전 대상 수: $r")
+        assertEquals(0L, r.failed(), "실패 없음: $r")
         val n = SDA.assertRearmed(t, now)
         assertEquals(oldAlert, SDA.alertRow(t.alertId).toString(), "옛 알림은 그대로")
         assertEquals(bidsBefore, Db.bidsOfSize(t.size), "입찰은 읽기만 한다")
@@ -232,5 +235,60 @@ class A14PriceAlertRearmTest {
         rs[1].assertStatus(201)
         assertEquals("ACTIVE", rs[1].text("status"))
         SDA.assertRearmed(t, now)
+    }
+
+    /**
+     * §20.12·§19의 10-2 역방향 인터리빙(SG-2): 입찰 등록이 사이즈 FU를 쥔 채 bids INSERT 직전(FK 검사 전)에 먼저 멈춘 사이 재무장이 오면,
+     * 정답 순서(사이즈 KS → 사용자 FU)의 재무장은 사이즈 행에서 기다렸다가 입찰 커밋 뒤 진행한다 — 배치 200(failed 0, 그 알림 재무장)·입찰 201.
+     * 역순(사용자 FU → 사이즈 KS)이면 입찰의 FK 검사(사용자 KS)와 교착한다.
+     */
+    @Test
+    fun `§20_12·§19의 10-2 입찰 등록이 먼저 사이즈를 잡고 멈춘 사이 재무장이 와도 교착 없이 재무장·입찰 201(역방향 인터리빙)`() {
+        val t = SDA.triggered()
+        SDA.cancelBid(t)
+        val now = Flow.advance(HOUR)
+        val rs = SlowTrigger.on("bids", "INSERT", condition = "NEW.user_id = ${t.owner}") {
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val bid = pool.submit<Resp> { Flow.bid(t.owner, t.size, "BUY", 10_000) }   // 반대편 ACTIVE SELL 없음 → ACTIVE
+                SDA.awaitTriggerWait()
+                val batch = Flow.batch("price-alert-rearm")
+                listOf(bid.get(60, TimeUnit.SECONDS), batch)
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+        rs[0].assertStatus(201)
+        assertEquals("ACTIVE", rs[0].text("status"))
+        rs[1].assertStatus(200)
+        assertEquals(0L, rs[1].failed(), "교착 없음(실패 0): ${rs[1]}")
+        SDA.assertRearmed(t, now)
+    }
+
+    /**
+     * §20.3.3 잠근 뒤 재확인(SG-3): 위시리스트 삭제가 사용자 FU를 쥔 채 DELETE 직전에 멈춘 사이 재무장이 오면, 대상 조회는 아직 위시를 보지만
+     * 재무장은 사용자 FU에서 기다린다. 삭제가 커밋된 뒤의 재확인은 위시가 없음을 보고 건너뛴다 — 삭제 200, 새 ACTIVE 알림 없음.
+     */
+    @Test
+    fun `§20_3_3 잠근 뒤 재확인 - 위시리스트 삭제가 사용자 행을 쥐고 멈춘 사이 재무장이 오면 삭제 200·그 알림은 재무장하지 않는다`() {
+        val t = SDA.triggered()
+        SDA.cancelBid(t)
+        Flow.advance(HOUR)
+        val rs = SlowTrigger.on("wishlists", "DELETE", condition = "OLD.user_id = ${t.owner}") {
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val del = pool.submit<Resp> { SB.wishDel(t.owner, t.size) }
+                SDA.awaitTriggerWait()
+                val batch = Flow.batch("price-alert-rearm")
+                listOf(del.get(60, TimeUnit.SECONDS), batch)
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+        rs[0].assertStatus(200)
+        rs[1].assertStatus(200)
+        assertEquals(0L, Db3.count("wishlists", "user_id = ? AND product_size_id = ?", t.owner, t.size), "위시리스트 삭제됨")
+        SDA.assertNotRearmed(t, "잠근 뒤 재확인에서 위시리스트 없음")
+        assertEquals(0L, Db3.count("price_alerts", "user_id = ? AND product_size_id = ? AND status = 'ACTIVE'", t.owner, t.size), "새 ACTIVE 없음")
     }
 }

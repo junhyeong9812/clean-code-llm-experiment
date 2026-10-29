@@ -107,6 +107,10 @@ object SDB {
         return rows
     }
 
+    /** §20.6.3 대상 조건 문장 그대로(`:due = 현재 − 30일`, 배치와 같은 시각 바인드)로 센 지금 대상 수(SG-1 — 공유 DB라 실행 직전 수와 맞춘다). */
+    fun purgeTargetCount(now: Instant): Long =
+        Db.long("SELECT count(*) FROM notifications t WHERE t.read_at IS NOT NULL AND t.read_at <= ?", now.minus(days(30)))
+
     fun notif(id: Long): Row3 = Db3.row("notifications", id)
     fun notifExists(id: Long): Boolean = Db3.count("notifications", "id = ?", id) > 0
 

@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
  * ADR-0007 §20.6.3 배치 `notification-purge`: 대상 = read_at IS NOT NULL AND read_at ≤ 현재 − 30일(정각 포함), 안 읽은 알림은 지우지 않는다,
  * 알림 1건 = DELETE 1문장(잠금 없음), 같은 시각 재실행 processed 0(§20.1), 건별 격리(§2.6),
  * 지운 알림은 dedupe로 다시 생기지 않는다 — §20.12가 정한 종류(PAYMENT_DUE_SOON·SETTLEMENT_PAID)를 실제 deadline-reminder로 만든다.
- * 배치는 시드·다른 테스트 행도 처리하므로 자기 행의 존재로만 단언하고 processed 정확값은 재실행 0에서만 본다.
+ * 배치는 시드·다른 테스트 행도 처리하므로 자기 행의 존재로 단언하고, processed 정확값은 격리 실행(실행 직전 같은 대상 조건으로 센 수 − 실패 1)과 재실행 0에서 본다.
  */
 @Contract3Test
 class A17NotificationPurgeTest {
@@ -64,19 +64,21 @@ class A17NotificationPurgeTest {
     }
 
     @Test
-    fun `§20_6_3·§2_6 격리 - A 삭제가 실패해도 failed ≥ 1·B는 지운다, 다시 돌리면 A도 지운다`() {
+    fun `§20_6_3·§2_6 격리 - A 삭제가 실패해도 failed = 1·processed = 직전 대상 수 − 1·B는 지운다, 다시 돌리면 A도 지운다`() {
         val u = Db.createUser()
         val (a, b) = SDB.restrictionNotifs(u, 2)
         assertTrue(a.id < b.id)
         Flow.advance(HOUR)
         SDB.readAll(u).assertStatus(200)
         val readAt = SDB.notif(a.id).instant("read_at")
-        Flow.moveTo(readAt.plus(retention))
+        val at = Flow.moveTo(readAt.plus(retention))
+        val expected = SDB.purgeTargetCount(at)                               // 실행 직전 같은 대상 조건(§20.6.3)으로 센 수 — A·B 포함
+        assertTrue(expected >= 2, "준비: A·B가 대상: $expected")
 
         SDB.failOnDelete("notifications", "OLD.id = ${a.id}") {
             val r = purge()
-            assertTrue(r.failed() >= 1, "A 실패를 failed에 센다: $r")
-            assertTrue(r.long("processed") >= 1, "B는 커밋된다: $r")
+            assertEquals(1L, r.failed(), "A 실패만 failed에 센다: $r")
+            assertEquals(expected - 1, r.long("processed"), "processed = 지운 행 수 = 대상 수 − 실패한 A: $r")
         }
         assertTrue(SDB.notifExists(a.id), "실패한 A는 남는다")
         assertFalse(SDB.notifExists(b.id), "B는 지운다")

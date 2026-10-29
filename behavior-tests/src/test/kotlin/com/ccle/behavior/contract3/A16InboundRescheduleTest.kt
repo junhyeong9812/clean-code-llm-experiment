@@ -324,7 +324,7 @@ class A16InboundRescheduleTest {
             val pool = Executors.newSingleThreadExecutor()
             try {
                 val change = pool.submit<Resp> { SDB.reschedule(res, p.seller, newSlot) }
-                Thread.sleep(300)   // 변경이 트리거에서 멈출 시간
+                SDA.awaitTriggerWait()   // 변경이 트리거(advisory 잠금)에서 멈춘 것을 관측한 뒤 취소를 보낸다
                 val cancel = S2.cancel(p.item, p.buyer)
                 listOf(change.get(30, TimeUnit.SECONDS), cancel)
             } finally {
