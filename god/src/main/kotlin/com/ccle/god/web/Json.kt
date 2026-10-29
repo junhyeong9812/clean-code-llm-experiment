@@ -93,6 +93,7 @@ fun JsonNode.instantOrNull(field: String): Instant? {
 /** 날짜 필드(ADR-0004 §2.1 "YYYY-MM-DD"). 없거나 null이면 null, 그 형식의 실제 날짜 문자열이 아니면 400. */
 fun JsonNode.dateOrNull(field: String): LocalDate? {
     val text = textOrNull(field) ?: return null
+    if (!Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}").matches(text)) invalid("$field 는 YYYY-MM-DD 날짜여야 한다: $text")   // ISO 확장 연도 거부
     return try {
         LocalDate.parse(text)
     } catch (e: DateTimeParseException) {

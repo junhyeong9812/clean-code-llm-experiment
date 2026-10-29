@@ -2843,8 +2843,11 @@ class Marketplace(
     // ---- A8 시세 (ADR-0007 §11.1·§11.2) ----
 
     /** 쿼리의 날짜(§2.1 "YYYY-MM-DD"). 없으면 null, 형식이 틀리거나 없는 날짜면 400. */
+    private val ymd = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
     private fun dateParam(name: String, raw: String?): LocalDate? {
         if (raw == null) return null
+        if (!ymd.matches(raw)) badRequest("$name 는 YYYY-MM-DD 날짜여야 한다: $raw")   // ISO 확장 연도(+10000-…·-0001-…) 거부
         return try {
             LocalDate.parse(raw)
         } catch (e: DateTimeParseException) {
