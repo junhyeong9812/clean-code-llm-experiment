@@ -364,7 +364,7 @@ class TestConjunction(unittest.TestCase):
     K = ("public", "hidden")
 
     def test_stages_constant(self):
-        self.assertEqual(judge.STAGES, ("public", "hidden", "contract", "contract2"))
+        self.assertEqual(judge.STAGES, ("public", "hidden", "contract", "contract2", "contract3"))  # 계약 갱신(ADR-0005 §4.1 개정 3)
 
     def test_all_pass(self):
         self.assertIs(judge.conjunction({"public": "pass", "hidden": "pass"}, self.K, []), True)

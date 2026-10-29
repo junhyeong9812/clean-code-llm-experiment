@@ -1,5 +1,5 @@
 """판정 단계 (ADR-0005 §4.1). 에이전트 실행이 끝난 사본을 복제해, 실행마다 새 판정 컨테이너에서 단계별로 돌린다:
-변조 검사 → 빌드(네트워크 없음) → 공개 → 숨은 → 회귀(contractTest·contract2Test − regression-exclude, verify.sql −
+변조 검사 → 빌드(네트워크 없음) → 공개 → 숨은 → 회귀(contractTest·contract2Test·contract3Test − regression-exclude, verify.sql −
 verify-exclude). 단계마다 새 1k DB + 새 앱 + 가짜 PG(테스트가 시계를 앞으로만 옮기므로).
 success = 빌드 ∧ 공개 ∧ 숨은 ∧ 변조 없음 ∧ 회귀. 판정 불가(인프라)는 judge_error 로 따로 — 무음 성공·실패 금지.
 """
@@ -11,7 +11,10 @@ import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-STAGES = ("public", "hidden", "contract", "contract2")
+STAGES = ("public", "hidden", "contract", "contract2", "contract3")
+# 회귀 단계 → behavior-tests Gradle 태스크(결과 XML 디렉터리 이름과 같다). judge-stage.sh 의 매핑과 맞춘다
+REGRESSION_TASKS = {"contract": "contractTest", "contract2": "contract2Test", "contract3": "contract3Test"}
+REGRESSION_STAGES = tuple(REGRESSION_TASKS)
 PROTECTED = ("TASK.md", "test.sh")          # + checks/ 전체(지원 코드·공개 테스트)
 VERIFY_FAILED = re.compile(r"verify: 불변식 위반 \d+ 건 — (.+)")
 VERIFY_OK = re.compile(r"verify: \d+ 개 검사 모두 통과")
@@ -184,8 +187,9 @@ BUILD_FILES = ("build.gradle.kts", "settings.gradle.kts", "gradlew", "gradlew.ba
 
 
 GRADLE_SCRIPT = re.compile(r"(\.gradle(\.kts)?|gradle\.properties|\.versions\.toml)$")
-# 회귀 기준 실행 수(기준 사본 실측 2026-10-26 — behavior-tests 는 이 작업에서 바뀌지 않는다, 매개변수화 테스트 포함)
-REGRESSION_BASELINE = {"contract": 122, "contract2": 89}
+# 회귀 기준 실행 수(기준 사본 실측 2026-10-26 — behavior-tests 는 이 작업에서 바뀌지 않는다, 매개변수화 테스트 포함).
+# contract3 = 단계 A 계약(ADR-0007) 168(SlowTriggerSelfTest 포함 — ADR-0005 §4.1 개정 3)
+REGRESSION_BASELINE = {"contract": 122, "contract2": 89, "contract3": 168}
 TEST_ANNOTATION = re.compile(r"@Test\b")
 
 
@@ -371,7 +375,7 @@ def judge(case: str, structure: str, work: Path, jd: Path, name: str, log=print,
         if infra:
             out["judge_error"] = f"판정 불가 단계: {infra}"
         out["success_without_regression"] = conjunction(oc, ("public", "hidden"), out["tampered"])
-        out["regression_pass"] = conjunction(oc, ("contract", "contract2"), [])
+        out["regression_pass"] = conjunction(oc, REGRESSION_STAGES, [])
         out["success"] = conjunction(oc, STAGES, out["tampered"])
         if tuple(stages_to_run) != STAGES:  # 과제 검증(check)용 부분 판정 — success 는 돌린 단계만의 AND
             out["partial_stages"] = list(stages_to_run)
@@ -465,12 +469,12 @@ def run_stage_once(R, case, st, tw, appd, name, mounts, env, user, excl_verify, 
     rc_txt = rf(f"{st}.rc")
     rc = int(rc_txt.strip()) if rc_txt and rc_txt.strip().lstrip("-").isdigit() else None
     rdirs = [tw / "checks" / "build" / "test-results" / "test"] if st in ("public", "hidden") else \
-        [tw / "behavior-tests" / "build" / "test-results" / ("contractTest" if st == "contract" else "contract2Test")]
+        [tw / "behavior-tests" / "build" / "test-results" / REGRESSION_TASKS.get(st, f"unknown-{st}")]
     res = junit_results(rdirs)
     sr = {"status": status, "rc": rc, **res, "outcome": stage_outcome(status, rc, res)}
     if res["failed"]:
         sr["failure_messages"] = failure_messages(rdirs)
-    if st in ("contract", "contract2") and status == "ran":
+    if st in REGRESSION_STAGES and status == "ran":
         vtxt = rf(f"{st}.verify") or ""
         vrc_txt = rf(f"{st}.verify.rc")
         vrc = int(vrc_txt.strip()) if vrc_txt and vrc_txt.strip().lstrip("-").isdigit() else -1
