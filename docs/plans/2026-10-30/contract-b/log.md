@@ -11,20 +11,23 @@
 | 2026-10-30 05:59 | 초안(cb-02, Opus) 회수: ADR-0007 §20(A13~A17 — 공통·기능 5·배치 일람·잠금 순서 표·스키마/verify 대조 표·본보기 배제 표·시드 영향·contract3 지침·[제안] 목록·god 추정), ADR-0006 개정 2(§3의 1 해석 — 기존 파일 = 95cc1da 시점 layered 55파일, §6.1-7 실측·보충 결정). 커밋 `d650652`. 메인 시드 실측(1k-s42-v2): TRIGGERED 0·read_at ≤ NOW−30일 0 → 새 배치 두 개의 NOW 대상 0(§20.11에 기록, 배치 실행 확인만 구현 스모크로) · 커밋 `0d94468`. 미결 4: 상태 줄 확정(합의 뒤), A15 컨트롤러 위치, §2.5·§19의 7 본문 동기화, A13 평점 배치 반영 | 듀얼 1패스(+설계 선검증 렌즈) |
 | 2026-10-30 06:04 | codex 회수(effort high, bwrap 0): blocker 0·major 1(§2.3 '동시 수정 하나만 성공'과 A13·A14 동시 수정 둘 다 200 충돌)·minor 3(§2.5 'A9에만'·§19의 7 헤더 목록 미동기화, 크기 추정 하한 ≈5,650과 목표 5,800 사이 판단 규칙 없음). 잠금 렌즈: 입찰 상태 변경이 모두 사이즈 FU 아래(Marketplace.kt:191·238·286·326·1407·1444) — A14 재확인 근거 성립, A16 flush·A17 재생성 논증 성립(정적) | Opus 대기 |
 | 2026-10-30 06:09 | Opus 회수: blocker 0·major 0·minor 8 — 잠금 대조표 20경로(Marketplace.kt 실코드) 고리 없음, A14 재확인 근거·A16 flush(IDENTITY persist 즉시 INSERT, 더티 UPDATE는 flush까지)·A17 dedupe 6종 성립. 종합 → CB-1~9 채택, 초안 작성자(cb-02)에게 반영 위임 | 반영 대기 |
+| 2026-10-30 06:16 | 반영(cb-02) 회수 → 커밋 `9e15c14`. post-fix 재점검(codex high, bwrap 0): CB-2~5·7~9 지적 없음, 새 지적 2(CB-10 major: §2.3 '상태 소모 전환 하나만 성공'이 서로 다른 전환(숨김 ∥ 삭제 → 둘 다 200)에 틀림 — 같은 전환으로 한정 · CB-11 minor: 재무장 설명 'bid-expiry 전 ACTIVE 입찰은 다음 실행의 대상'이 대상 SQL과 반대) → 메인 수정, 커밋 `2896939`. 설계 문서 상한(듀얼 1패스 + 재점검 1회) 도달 — CB-10·11 수정은 셀프 확인 | 채택 확인 |
 
 ## 리뷰 ledger
 
 | ID | 출처 | 지적 | 판정 | 처리 |
 |---|---|---|---|---|
-| CB-1 | codex major | §2.3 '동시 수정 하나만 성공'과 A13·A14 동시 수정(둘 다 200) 충돌 | 채택 | §2.3을 상태 소모 전환으로 한정, A13·A14 동시 수정 = 둘 다 200·나중 잠금 값 |
-| CB-2 | codex minor·opus minor | §2.5 'A9에만'·§19의 7 헤더 목록 본문 미동기화 | 채택 | 본문에 A15·GET /inbound-slots/{id} 추가 |
-| CB-3 | codex minor·opus minor | 크기 하한(75% 보정 ≈5,650 — 실측 단가 외삽에 또 곱한 이중 할인 가능)과 5,800 목표 사이 판단 규칙 없음 | 채택 | 보정 삭제·출처 통일, 기준 = 5,500(5,800은 여유 목표) |
-| CB-4 | opus minor | §20.8 '모두 사이즈 → 사용자'는 C2 정답 코드(판매자 귀책: 사용자 FU → 사이즈 FU)에선 틀림 | 채택 | 잔여 위험(ADR-0005 §9의 13) 명시 |
-| CB-5 | opus minor | A13·A16 대조 집합에 pg-inquiry·승인 반영·scan 입찰 KS 누락 | 채택 | 근거 보강 |
-| CB-6 | opus minor | 재무장이 MATCHED 발동 입찰도 대상 → payment-due가 ACTIVE로 되돌리면 같은 입찰로 재발동 | 채택 | 대상을 CANCELLED·EXPIRED로 좁힘[제안] |
-| CB-7 | opus minor | §20.7 layered 파일 범위 와일드카드가 95cc1da 시점 파일(Dtos·Order·User 등)과 겹침 | 채택 | 기존 파일은 호출만 명시 |
-| CB-8 | opus minor | '배치 이름 13개' 모호(runBatch 전체는 더 많음) | 채택 | 단계 A 13·전체 수 |
-| CB-9 | opus minor | A17 재생성 테스트가 deadline-reminder 종류에 따라 T1·C2 회귀 픽스처 규칙에 걸림 | 채택 | 테스트용 종류 지정 + §18 재진술 |
+| CB-1 | codex major | §2.3 '동시 수정 하나만 성공'과 A13·A14 동시 수정(둘 다 200) 충돌 | 채택 | fixed 9e15c14 — §2.3을 상태 소모 전환으로 한정, A13·A14 동시 수정 = 둘 다 200·나중 잠금 값 |
+| CB-2 | codex minor·opus minor | §2.5 'A9에만'·§19의 7 헤더 목록 본문 미동기화 | 채택 | fixed 9e15c14 — 본문에 A15·GET /inbound-slots/{id} 추가 |
+| CB-3 | codex minor·opus minor | 크기 하한(75% 보정 ≈5,650 — 실측 단가 외삽에 또 곱한 이중 할인 가능)과 5,800 목표 사이 판단 규칙 없음 | 채택 | fixed 9e15c14 — 보정 삭제·출처 통일, 기준 = 5,500(5,800은 여유 목표) |
+| CB-4 | opus minor | §20.8 '모두 사이즈 → 사용자'는 C2 정답 코드(판매자 귀책: 사용자 FU → 사이즈 FU)에선 틀림 | 채택 | fixed 9e15c14 — 잔여 위험(ADR-0005 §9의 13) 명시 |
+| CB-5 | opus minor | A13·A16 대조 집합에 pg-inquiry·승인 반영·scan 입찰 KS 누락 | 채택 | fixed 9e15c14 — 근거 보강 |
+| CB-6 | opus minor | 재무장이 MATCHED 발동 입찰도 대상 → payment-due가 ACTIVE로 되돌리면 같은 입찰로 재발동 | 채택 | fixed 9e15c14 — 대상을 CANCELLED·EXPIRED로 좁힘[제안] |
+| CB-7 | opus minor | §20.7 layered 파일 범위 와일드카드가 95cc1da 시점 파일(Dtos·Order·User 등)과 겹침 | 채택 | fixed 9e15c14 — 기존 파일은 호출만 명시 |
+| CB-8 | opus minor | '배치 이름 13개' 모호(runBatch 전체는 더 많음) | 채택 | fixed 9e15c14 — 단계 A 13·전체 수 |
+| CB-9 | opus minor | A17 재생성 테스트가 deadline-reminder 종류에 따라 T1·C2 회귀 픽스처 규칙에 걸림 | 채택 | fixed 9e15c14 — 테스트용 종류 지정 + §18 재진술 |
+| CB-10 | codex major(post-fix) | CB-1의 §2.3 한정이 서로 다른 상태 전환 겹침(숨김 ∥ 삭제 = 둘 다 200)에 틀림 | 채택 | fixed 2896939 — '같은 전환' 한정 + 예시 |
+| CB-11 | codex minor(post-fix) | §20.3.3 'bid-expiry 전 ACTIVE 입찰은 다음 실행의 대상' — 대상 SQL(CANCELLED·EXPIRED)과 반대 | 채택 | fixed 2896939 |
 
 ## 완료 요약
 
