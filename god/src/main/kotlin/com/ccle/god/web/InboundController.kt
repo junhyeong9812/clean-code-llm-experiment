@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
-/** 입고 슬롯 생성(관리자)·조회, 입고 예약·취소·체크인(관리자)·조회(ADR-0007 §12.3). */
+/** 입고 슬롯 생성(관리자)·조회, 입고 예약·취소·체크인(관리자)·조회(ADR-0007 §12.3), 예약 변경·슬롯·예약 상세(§20.5). */
 @RestController
 class InboundController(private val marketplace: Marketplace) {
 
@@ -26,6 +26,10 @@ class InboundController(private val marketplace: Marketplace) {
     /** 헤더 불필요 — X-User-Id를 읽지 않는다(ADR-0007 §19의 7). */
     @GetMapping("/inbound-slots")
     fun slots(@RequestParam(required = false) date: String?): List<InboundSlotView> = marketplace.inboundSlots(date)
+
+    /** 헤더 불필요 — X-User-Id를 읽지 않는다(ADR-0007 §19의 7). */
+    @GetMapping("/inbound-slots/{slotId}")
+    fun slot(@PathVariable slotId: String): InboundSlotView = marketplace.inboundSlot(pathId(slotId))
 
     @PostMapping("/me/inbound-reservations")
     fun reserve(
@@ -49,6 +53,26 @@ class InboundController(private val marketplace: Marketplace) {
 
     @PostMapping("/admin/inbound-reservations/{reservationId}/check-in")
     fun checkIn(@PathVariable reservationId: String): InboundReservationView = marketplace.checkInInbound(pathId(reservationId))
+
+    @PostMapping("/me/inbound-reservations/{reservationId}/reschedule")
+    fun reschedule(
+        @RequestHeader("X-User-Id", required = false) userHeader: String?,
+        @PathVariable reservationId: String,
+        @RequestBody(required = false) body: String?,
+    ): InboundRescheduled {
+        val userId = marketplace.requireUser(userHeader)
+        val json = parseObject(body)
+        return marketplace.rescheduleInbound(userId, pathId(reservationId), json.longOrNull("slotId"))
+    }
+
+    @GetMapping("/me/inbound-reservations/{reservationId}")
+    fun reservation(
+        @RequestHeader("X-User-Id", required = false) userHeader: String?,
+        @PathVariable reservationId: String,
+    ): InboundReservationView {
+        val userId = marketplace.requireUser(userHeader)
+        return marketplace.inboundReservation(userId, pathId(reservationId))
+    }
 
     @GetMapping("/me/inbound-reservations")
     fun mine(@RequestHeader("X-User-Id", required = false) userHeader: String?): List<InboundReservationView> =

@@ -5,6 +5,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PatchMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -12,7 +13,7 @@ import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
-/** 알림 조회·읽음(ADR-0007 §7.2), 위시리스트·가격 알림(§8.1·§8.2). */
+/** 알림 조회·읽음(ADR-0007 §7.2)·일괄 읽음·안 읽은 수(§20.6), 위시리스트·가격 알림(§8.1·§8.2)·목표가 변경·재등록(§20.3). */
 @RestController
 class NotificationController(private val marketplace: Marketplace) {
 
@@ -33,6 +34,14 @@ class NotificationController(private val marketplace: Marketplace) {
         val userId = marketplace.requireUser(userHeader)
         return marketplace.readNotification(userId, pathId(notificationId))
     }
+
+    @PostMapping("/me/notifications/read-all")
+    fun readAll(@RequestHeader("X-User-Id", required = false) userHeader: String?): ReadAllView =
+        marketplace.readAllNotifications(marketplace.requireUser(userHeader))
+
+    @GetMapping("/me/notifications/unread-count")
+    fun unreadCount(@RequestHeader("X-User-Id", required = false) userHeader: String?): UnreadCountView =
+        marketplace.unreadNotificationCount(marketplace.requireUser(userHeader))
 
     @PostMapping("/me/wishlist")
     fun addWish(
@@ -76,6 +85,26 @@ class NotificationController(private val marketplace: Marketplace) {
     ): PriceAlertView {
         val userId = marketplace.requireUser(userHeader)
         return marketplace.cancelPriceAlert(userId, pathId(alertId))
+    }
+
+    @PatchMapping("/me/price-alerts/{alertId}")
+    fun changeAlert(
+        @RequestHeader("X-User-Id", required = false) userHeader: String?,
+        @PathVariable alertId: String,
+        @RequestBody(required = false) body: String?,
+    ): PriceAlertView {
+        val userId = marketplace.requireUser(userHeader)
+        val json = parseObject(body)
+        return marketplace.changePriceAlertTarget(userId, pathId(alertId), json.longOrNull("targetPrice"))
+    }
+
+    @PostMapping("/me/price-alerts/{alertId}/renew")
+    fun renewAlert(
+        @RequestHeader("X-User-Id", required = false) userHeader: String?,
+        @PathVariable alertId: String,
+    ): ResponseEntity<PriceAlertView> {
+        val userId = marketplace.requireUser(userHeader)
+        return ResponseEntity.status(HttpStatus.CREATED).body(marketplace.renewPriceAlert(userId, pathId(alertId)))
     }
 
     @GetMapping("/me/price-alerts")

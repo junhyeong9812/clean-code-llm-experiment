@@ -320,3 +320,31 @@ data class InboundReservationView(
     val createdAt: Instant,
     val closedAt: Instant?,
 )
+
+// ---- 단계 A 보충 (ADR-0007 §20) ----
+
+/** 쓸 수 있는 항목(§20.2.2). reviewDeadline = confirmed_at + 30일(계산 값). */
+data class ReviewableItemView(val orderItemId: Long, val sellerId: Long, val confirmedAt: Instant, val reviewDeadline: Instant)
+
+/** 내 리뷰 모양(§20.2.3) = 리뷰 모양 + hiddenReason·updatedAt·reviewDeadline(수정 기한, 계산 값). */
+data class MyReviewView(
+    @get:JsonUnwrapped val review: ReviewView,
+    val hiddenReason: String?,
+    val updatedAt: Instant,
+    val reviewDeadline: Instant,
+)
+
+/** 관리자 문의함 항목(§20.4.2) = 문의 모양 + userId. */
+data class AdminInquiryView(@get:JsonUnwrapped val inquiry: InquiryView, val userId: Long)
+
+/** 관리자 문의 상세(§20.4.2) = 상세 모양(§9.2) + userId. */
+data class AdminInquiryDetailView(@get:JsonUnwrapped val detail: InquiryDetailView, val userId: Long)
+
+/** 예약 변경 응답(§20.5.1): cancelled = 옛 예약, reserved = 새 예약. */
+data class InboundRescheduled(val cancelled: InboundReservationView, val reserved: InboundReservationView)
+
+/** 일괄 읽음 응답(§20.6.1). */
+data class ReadAllView(val readCount: Long)
+
+/** 안 읽은 수(§20.6.2). */
+data class UnreadCountView(val unreadCount: Long)
