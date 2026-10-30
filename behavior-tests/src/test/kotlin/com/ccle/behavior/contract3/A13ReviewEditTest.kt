@@ -349,6 +349,7 @@ class A13ReviewEditTest {
         rs[1].assertError(409, "ITEM_STATE_CONFLICT")
         assertEquals("DISPUTED", Db2.item(p.item).status)
         assertEquals(3L, SA.review(id).long("rating"))
+        assertEquals("처음", SA.review(id).text("content"))
     }
 
     // ---- §20.2.2 쓸 수 있는 항목 ----
