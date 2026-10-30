@@ -1,6 +1,6 @@
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -1597,7 +1597,7 @@
+@@ -1672,7 +1672,7 @@
       * CLAWBACK: REFUNDED_AFTER_CONFIRM이고 cancelled_at < cutoff, INCLUDED 수 > CLAWBACK 수.
       */
      private val settlementTargetSql =

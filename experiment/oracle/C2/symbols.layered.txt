@@ -5,21 +5,21 @@ app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:40-45 fix  # �
 app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt:33-35 fix  # 일괄 취소 컴포넌트 삽입 hunk(파일 끝)
 app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:73-78 fix  # SellerFaults 생성자 주입
 app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:81-86 fix  # 판매 제한이 걸리는 곳(SellerFaults.apply 끝)
-app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:143-148 fix  # PaymentDueBatch 생성자 주입
-app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:161-167 fix  # 구매 제한이 걸리는 곳(PaymentDueBatch.expire — 재매칭 전)
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:169-174 fix  # PaymentDueBatch 생성자 주입
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:187-193 fix  # 구매 제한이 걸리는 곳(PaymentDueBatch.expire — 재매칭 전)
 app/src/main/kotlin/com/ccle/layered/domain/User.kt:1-142 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
 app/src/main/kotlin/com/ccle/layered/domain/Bid.kt:1-188 edit  # 〃
 app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:1-81 edit  # 〃
 app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt:1-35 edit  # 〃
 app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:1-86 edit  # 〃
-app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:1-357 edit  # 〃
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:1-383 edit  # 〃
 app/src/main/kotlin/com/ccle/layered/domain/User.kt:38-46 read  # 제한은 새 입찰에만(등록 시 403)
 app/src/main/kotlin/com/ccle/layered/domain/Bid.kt:20-28 read  # 사이즈 잠금 포트
 app/src/main/kotlin/com/ccle/layered/domain/Bid.kt:88-93 read  # Bid.cancel(ACTIVE → CANCELLED 이벤트)
 app/src/main/kotlin/com/ccle/layered/service/CancelBidService.kt:12-35 read  # 사용자 입찰 취소(단건)
-app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:104-127 read  # bid-expiry(가장 가까운 본보기: 사이즈 잠금 → 상태 변경 + 이벤트)
-app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:129-176 read  # PaymentDueBatch — 경고·구매 제한·판매 입찰 복구·재매칭
-app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:215-238 read  # shipment-deadline 진입(→ SellerFaults)
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:130-153 read  # bid-expiry(가장 가까운 본보기: 사이즈 잠금 → 상태 변경 + 이벤트)
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:155-202 read  # PaymentDueBatch — 경고·구매 제한·판매 입찰 복구·재매칭
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:241-264 read  # shipment-deadline 진입(→ SellerFaults)
 app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:66-86 read  # SellerFaults — 패널티·판매 제한
 app/src/main/kotlin/com/ccle/layered/service/FulfillmentService.kt:76-96 read  # 검수 불합격 진입(→ SellerFaults)
 app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:66-75 read  # 호가

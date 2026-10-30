@@ -1,6 +1,6 @@
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -873,7 +873,8 @@
+@@ -935,7 +935,8 @@
              val item = lockOrderOf(itemId)
              requireBuyer(item, userId)
              requireItemStatus(item, "DELIVERED")
@@ -10,7 +10,7 @@
              itemView(item)
          }!!
      }
-@@ -1504,7 +1505,7 @@
+@@ -1579,7 +1580,7 @@
                  if (item.status != "DELIVERED" || due!!.isAfter(now)) {
                      false
                  } else {

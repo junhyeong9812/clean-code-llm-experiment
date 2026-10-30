@@ -1,6 +1,6 @@
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -873,7 +873,8 @@
+@@ -935,7 +935,8 @@
              val item = lockOrderOf(itemId)
              requireBuyer(item, userId)
              requireItemStatus(item, "DELIVERED")

@@ -55,7 +55,7 @@
  }
 --- a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
 +++ b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
-@@ -238,7 +238,7 @@
+@@ -264,7 +264,7 @@
  }
  
  /**
@@ -64,7 +64,7 @@
   * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
   * 단독 배치(run)는 격리하고, weekly-settlement 안(runStoppingOnFailure)에서는 격리하지 않는다(ADR-0004 §15의 1 — 실패하면 정산하지 않는다).
   */
-@@ -314,7 +314,7 @@
+@@ -340,7 +340,7 @@
  }
  
  /**

@@ -1,13 +1,13 @@
 # C2 symbols — fix = 정답 패치 hunk 의 원래 쪽 줄 범위(문맥 3줄 포함, 두 구조 같은 규칙 — import·주석만 바꾸는 hunk 는 제외). edit = 정답 패치가 고치는 기존 파일 전체(첫 편집 적중 전용). read = 읽어야 할 곳. 새 파일은 기준 사본에 없어 제외
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:191-196 fix  # 일괄 취소 도우미 삽입 hunk(cancelBid 뒤)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:963-969 fix  # 판매 제한이 걸리는 곳(sellerFault 끝)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1400-1406 fix  # 구매 제한이 걸리는 곳(expireUnpaidTrade — 재매칭 전)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1-1772 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:136-144 read  # 제한은 새 입찰에만(등록 시 403)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:175-191 read  # 사용자 입찰 취소(단건 — 이벤트 형식)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:213-235 read  # 호가·사이즈 잠금
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:785-806 read  # 검수 불합격 진입(→ sellerFault)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:947-967 read  # sellerFault — 패널티·판매 제한
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1340-1355 read  # bid-expiry(가장 가까운 본보기: 사이즈 잠금 → 상태 변경 + 이벤트)
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1373-1420 read  # expireUnpaidTrade — 경고·구매 제한·판매 입찰 복구·재매칭
-app/src/main/kotlin/com/ccle/god/Marketplace.kt:1467-1488 read  # shipment-deadline 진입(→ sellerFault)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:253-258 fix  # 일괄 취소 도우미 삽입 hunk(cancelBid 뒤)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1025-1031 fix  # 판매 제한이 걸리는 곳(sellerFault 끝)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1475-1481 fix  # 구매 제한이 걸리는 곳(expireUnpaidTrade — 재매칭 전)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1-3667 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:198-206 read  # 제한은 새 입찰에만(등록 시 403)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:237-253 read  # 사용자 입찰 취소(단건 — 이벤트 형식)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:275-297 read  # 호가·사이즈 잠금
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:847-868 read  # 검수 불합격 진입(→ sellerFault)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1009-1029 read  # sellerFault — 패널티·판매 제한
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1415-1430 read  # bid-expiry(가장 가까운 본보기: 사이즈 잠금 → 상태 변경 + 이벤트)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1448-1495 read  # expireUnpaidTrade — 경고·구매 제한·판매 입찰 복구·재매칭
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1542-1563 read  # shipment-deadline 진입(→ sellerFault)

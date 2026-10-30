@@ -1,7 +1,7 @@
 diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -191,6 +191,25 @@
+@@ -253,6 +253,25 @@
          }!!
      }
  
@@ -27,7 +27,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotli
      /** 입찰 조회(§3.4). 등록자만. tradeId = 살아 있는 체결. */
      fun getBid(userId: Long, bidId: Long): BidView {
          val bid = em.find(Bid::class.java, bidId) ?: notFound("없는 입찰: $bidId")
-@@ -951,7 +970,7 @@
+@@ -1013,7 +1032,7 @@
       * §7 환불(fault SELLER, 전액 — 판매자 행도 잠근다) → 패널티 1행(floor(체결가 × 10%)) → 판매 제한:
       * 최근 30일 안이면서 마지막 제한을 건 시각(sale_restricted_until − 30일) 뒤의 패널티가 3건 이상이면 현재 + 30일.
       */
@@ -36,7 +36,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotli
          refundItem(item, fault = "SELLER", reason = reason, now = now)
          val sellerId = em.find(Trade::class.java, item.tradeId).sellerId
          em.persist(SellerPenalty(sellerId = sellerId, orderItemId = item.id!!, amount = mulDiv(item.price, 10, 100), createdAt = now))
-@@ -963,7 +982,9 @@
+@@ -1025,7 +1044,9 @@
              Instant::class.java,
          ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
              .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
@@ -47,7 +47,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotli
      }
  
      // ---- 환불 (ADR-0004 §7) ----
-@@ -1400,7 +1421,11 @@
+@@ -1475,7 +1496,11 @@
              Instant::class.java,
          ).setParameter("user", trade.buyerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
              .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
@@ -60,7 +60,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotli
  
          // 구매 입찰 MATCHED → CANCELLED (판매 입찰 이벤트보다 먼저)
          val buy = em.find(Bid::class.java, trade.buyBidId)
-@@ -1481,7 +1506,9 @@
+@@ -1556,7 +1581,9 @@
                  if (item.status != "PAID" || item.paidAt!!.plus(Duration.ofDays(3)).isAfter(now)) {
                      false
                  } else {

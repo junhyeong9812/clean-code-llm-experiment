@@ -1,7 +1,7 @@
 diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -191,6 +191,25 @@
+@@ -253,6 +253,25 @@
          }!!
      }
  
@@ -27,7 +27,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotli
      /** 입찰 조회(§3.4). 등록자만. tradeId = 살아 있는 체결. */
      fun getBid(userId: Long, bidId: Long): BidView {
          val bid = em.find(Bid::class.java, bidId) ?: notFound("없는 입찰: $bidId")
-@@ -963,7 +982,10 @@
+@@ -1025,7 +1044,10 @@
              Instant::class.java,
          ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
              .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
@@ -39,7 +39,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotli
      }
  
      // ---- 환불 (ADR-0004 §7) ----
-@@ -1400,7 +1422,8 @@
+@@ -1475,7 +1497,8 @@
              Instant::class.java,
          ).setParameter("user", trade.buyerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
              .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
@@ -49,7 +49,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotli
  
          // 구매 입찰 MATCHED → CANCELLED (판매 입찰 이벤트보다 먼저)
          val buy = em.find(Bid::class.java, trade.buyBidId)
-@@ -1418,6 +1441,8 @@
+@@ -1493,6 +1516,8 @@
              val counter = findBestCounterBid(sell.productSizeId, "SELL", sell.userId, sell.price, now)
              if (counter != null) matchBids(sell, counter, now)
          }

@@ -30,7 +30,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt b/a
 diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
 --- a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
 +++ b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
-@@ -143,6 +143,7 @@
+@@ -169,6 +169,7 @@
      private val bids: BidRepository,
      private val events: BidEventRepository,
      private val matches: MatchRecorder,
@@ -38,7 +38,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt b/app/s
  ) {
      fun run(now: Instant): BatchResult =
          targets.forEachIsolated("payment-due", BatchTarget.OVERDUE_TRADES, now) { tradeId -> tx.execute { expire(tradeId, now) }!! }
-@@ -162,6 +163,7 @@
+@@ -188,6 +189,7 @@
          val buyer = users.find(trade.buyerId)!!
          users.reload(buyer)
          buyer.restrictIfWarned(warnings.createdAtAfter(trade.buyerId, User.warningWindowStart(now)), now)

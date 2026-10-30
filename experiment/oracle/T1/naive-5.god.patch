@@ -1,6 +1,6 @@
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -1612,7 +1612,7 @@
+@@ -1687,7 +1687,7 @@
          autoConfirmItems(now, isolatedAs = null)
          val latest = LocalDate.ofInstant(now, kst).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
          val lastPeriodStart = em.createQuery("SELECT max(s.periodStart) FROM Settlement s", LocalDate::class.java).singleResult

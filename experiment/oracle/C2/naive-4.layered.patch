@@ -66,7 +66,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt b/a
 diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
 --- a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
 +++ b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
-@@ -143,6 +143,7 @@
+@@ -169,6 +169,7 @@
      private val bids: BidRepository,
      private val events: BidEventRepository,
      private val matches: MatchRecorder,
@@ -74,7 +74,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt b/app/s
  ) {
      fun run(now: Instant): BatchResult =
          targets.forEachIsolated("payment-due", BatchTarget.OVERDUE_TRADES, now) { tradeId -> tx.execute { expire(tradeId, now) }!! }
-@@ -161,7 +162,7 @@
+@@ -187,7 +188,7 @@
          warnings.add(BuyerWarning.issue(trade, now))
          val buyer = users.find(trade.buyerId)!!
          users.reload(buyer)
@@ -83,7 +83,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt b/app/s
  
          // 구매 입찰 이벤트가 판매 입찰 이벤트보다 먼저
          events.add(bids.find(trade.buyBidId)!!.cancelForUnpaid(trade, now))
-@@ -171,6 +172,8 @@
+@@ -197,6 +198,8 @@
              val counter = bids.bestCounter(sell.productSizeId, "SELL", sell.userId, sell.price, now)
              if (counter != null) matches.record(sell, counter, now)
          }

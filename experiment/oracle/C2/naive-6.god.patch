@@ -1,7 +1,7 @@
 diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -216,9 +216,10 @@
+@@ -278,9 +278,10 @@
          em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
          val row = em.createNativeQuery(
              """
@@ -15,7 +15,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotli
              """,
          ).setParameter("size", productSizeId).setParameter("now", clock.now()).singleResult as Array<*>
          return BookView(bestBuy = (row[0] as Number?)?.toLong(), bestSell = (row[1] as Number?)?.toLong())
-@@ -248,10 +249,12 @@
+@@ -310,10 +311,12 @@
              else -> " AND price >= :limit"
          }
          val order = if (side == "BUY") "price ASC" else "price DESC"

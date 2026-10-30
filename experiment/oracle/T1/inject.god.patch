@@ -1,6 +1,6 @@
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -866,15 +866,14 @@
+@@ -928,15 +928,14 @@
  
      // ---- 구매자 절차 (ADR-0004 §4) ----
  
@@ -18,7 +18,7 @@
              itemView(item)
          }!!
      }
-@@ -1488,7 +1487,7 @@
+@@ -1563,7 +1562,7 @@
          }
  
      /**
@@ -27,7 +27,7 @@
       * 항목 1건 = 주문 → 항목을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다(그 사이 구매자가 확정했으면 건너뜀).
       * 단독 배치는 격리하고(isolatedAs), weekly-settlement 안에서는 격리하지 않는다(ADR-0004 §15의 1 — 실패하면 정산하지 않는다).
       */
-@@ -1505,7 +1504,7 @@
+@@ -1580,7 +1579,7 @@
                  if (item.status != "DELIVERED" || due!!.isAfter(now)) {
                      false
                  } else {
@@ -36,7 +36,7 @@
                      true
                  }
              }!!
-@@ -1605,7 +1604,7 @@
+@@ -1680,7 +1679,7 @@
              "      FROM settlement_items s WHERE s.order_item_id = i.id) > 0)"
  
      /**

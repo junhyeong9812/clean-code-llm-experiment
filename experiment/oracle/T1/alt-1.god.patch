@@ -1,6 +1,6 @@
 --- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
 +++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
-@@ -883,8 +883,8 @@
+@@ -945,8 +945,8 @@
          val buyerId = em.find(PurchaseOrder::class.java, item.orderId).buyerId
          lockUser(buyerId)
          item.status = "CONFIRMED"
