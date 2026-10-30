@@ -112,7 +112,7 @@ class Review(
         /** 작성·수정 기한(§4.1·§20.2): confirmed_at + 30일 — 비교와 표시에만 쓴다(저장하지 않는다). */
         fun deadlineOf(confirmedAt: Instant): Instant = confirmedAt.plus(WRITE_WITHIN)
 
-        /** 쓸 수 있는 항목(§20.2.2)의 확정 시각 하한: 현재 ≤ confirmed_at + 30일 ⇔ confirmed_at ≥ 현재 − 30일. */
+        /** 쓸 수 있는 항목(§20.2.2)의 하한: 현재 ≤ confirmed_at + 30일 ⇔ confirmed_at ≥ 현재 − 30일. */
         fun writableCutoff(now: Instant): Instant = now.minus(WRITE_WITHIN)
 
         /**

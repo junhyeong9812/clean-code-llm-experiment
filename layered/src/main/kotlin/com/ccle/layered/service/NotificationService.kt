@@ -70,7 +70,7 @@ class NotificationPurgeBatch(
 
 /**
  * deadline-reminder(ADR-0007 §7.1): 여섯 종류를 표의 행 순서대로 하나씩 끝까지 훑는다(종류마다 그 표의 id 순).
- * 대상 1건 = 알림 1행 INSERT 트랜잭션 하나(잠금 없음). 기한·제한은 저장된 열을 비교만 한다 — 입찰·체결·항목에는 아무것도 하지 않는다.
+ * 대상 1건 = 알림 1행 INSERT 트랜잭션 하나(잠금 없음). 기한·제한은 저장된 열을 비교만 한다.
  * processed = 만든 알림 수.
  */
 @Component
