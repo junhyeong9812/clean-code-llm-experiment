@@ -1,4 +1,4 @@
-"""판정 회귀 contract3 단계(ADR-0005 §4.1 개정 3 — 단계 A 계약 contract3Test, 기준 251).
+"""판정 회귀 contract3 단계(ADR-0005 §4.1 개정 3 — 단계 A 계약 contract3Test, 기준 252).
 
 계약: 회귀 = contract ∧ contract2 ∧ contract3(각 단계 새 DB·앱·가짜 PG, 결과 XML 은 그 단계 태스크 디렉터리만,
 verify.sql 도 단계마다), regression-exclude 패턴이 닿는 단계만 기준 수 검사를 끔, 부분 판정은 돌린 단계만의 AND.
@@ -34,7 +34,7 @@ def junit(n: int, failed: int = 0) -> str:
 class Constants(unittest.TestCase):
     def test_stage_and_baseline(self):
         self.assertEqual(judge.STAGES[-1], "contract3")
-        self.assertEqual(judge.REGRESSION_BASELINE, {"contract": 122, "contract2": 89, "contract3": 251})
+        self.assertEqual(judge.REGRESSION_BASELINE, {"contract": 122, "contract2": 89, "contract3": 252})
         self.assertEqual(judge.REGRESSION_STAGES, ("contract", "contract2", "contract3"))
         self.assertEqual(judge.REGRESSION_TASKS["contract3"], "contract3Test")
         self.assertEqual(judge.REGRESSION_TASKS["contract"], "contractTest")
@@ -42,7 +42,7 @@ class Constants(unittest.TestCase):
 
 
 class Expected(unittest.TestCase):
-    """prepare 의 expected_tests: regression-exclude 가 비면 contract3 251 포함, 있으면 제외 패턴이 닿는 단계만 기준 수 없음(ADR-0005 §4.1-4)."""
+    """prepare 의 expected_tests: regression-exclude 가 비면 contract3 252 포함, 있으면 제외 패턴이 닿는 단계만 기준 수 없음(ADR-0005 §4.1-4)."""
 
     def _expected(self, excl_lines):
         with tempfile.TemporaryDirectory() as d:
@@ -59,16 +59,16 @@ class Expected(unittest.TestCase):
 
     def test_no_exclude(self):
         e = self._expected(None)
-        self.assertEqual({k: e[k] for k in judge.REGRESSION_STAGES}, {"contract": 122, "contract2": 89, "contract3": 251})
+        self.assertEqual({k: e[k] for k in judge.REGRESSION_STAGES}, {"contract": 122, "contract2": 89, "contract3": 252})
 
     def test_with_exclude(self):
         """제외 패턴이 닿는 단계만 기준 수 검사를 끈다(C2처럼 contract2 메서드 하나만 빼면 contract·contract3 기준은 남는다)."""
         e = self._expected("com.ccle.behavior.contract3.A1ReviewTest.x*  # 사유\n")
         self.assertEqual({k: e.get(k) for k in judge.REGRESSION_STAGES}, {"contract": 122, "contract2": 89, "contract3": None})
         e = self._expected("com.ccle.behavior.contract2.PenaltyTest.판매 제한*  # 사유\n")
-        self.assertEqual({k: e.get(k) for k in judge.REGRESSION_STAGES}, {"contract": 122, "contract2": None, "contract3": 251})
+        self.assertEqual({k: e.get(k) for k in judge.REGRESSION_STAGES}, {"contract": 122, "contract2": None, "contract3": 252})
         e = self._expected("com.ccle.behavior.contract.BidTest.x*  # 사유\n")
-        self.assertEqual({k: e.get(k) for k in judge.REGRESSION_STAGES}, {"contract": None, "contract2": 89, "contract3": 251})
+        self.assertEqual({k: e.get(k) for k in judge.REGRESSION_STAGES}, {"contract": None, "contract2": 89, "contract3": 252})
 
     def test_with_unscoped_exclude(self):
         """패키지로 시작하지 않는 패턴은 어느 단계에 닿을지 모르므로 회귀 기준 수 전부 끈다."""
@@ -111,9 +111,9 @@ class StageOnce(unittest.TestCase):
             return judge.run_stage_once(self.R, "_smoke", st, tw, Path(self.td.name, "app"), "n", [], [], [], set(), True)
 
     def test_contract3_pass_reads_own_dir(self):
-        sr = self._run("contract3", {"contract3Test": junit(251), "contract2Test": junit(89, failed=3)})
+        sr = self._run("contract3", {"contract3Test": junit(252), "contract2Test": junit(89, failed=3)})
         self.assertEqual(sr["outcome"], "pass")
-        self.assertEqual(sr["tests"], 251)
+        self.assertEqual(sr["tests"], 252)
         self.assertEqual(sr["failed"], [])
         self.assertIs(sr["verify"]["ok"], True)
 
@@ -122,29 +122,29 @@ class StageOnce(unittest.TestCase):
         self.assertEqual(sr["outcome"], "no_results")
 
     def test_contract3_test_failure(self):
-        sr = self._run("contract3", {"contract3Test": junit(251, failed=1)}, rc=1)
+        sr = self._run("contract3", {"contract3Test": junit(252, failed=1)}, rc=1)
         self.assertEqual(sr["outcome"], "fail")
         self.assertIn("com.ccle.behavior.contract3.T.t0", sr["failure_messages"])
 
     def test_contract3_verify_violation_fails(self):
-        sr = self._run("contract3", {"contract3Test": junit(251)}, verify=VERIFY_BAD, verify_rc=3)
+        sr = self._run("contract3", {"contract3Test": junit(252)}, verify=VERIFY_BAD, verify_rc=3)
         self.assertEqual(sr["outcome"], "fail")
         self.assertEqual(sr["verify"]["violations"], {"ledger_balance": 2})
 
     def test_contract3_verify_unreadable_is_infra(self):
-        sr = self._run("contract3", {"contract3Test": junit(251)}, verify="garbage", verify_rc=1)
+        sr = self._run("contract3", {"contract3Test": junit(252)}, verify="garbage", verify_rc=1)
         self.assertEqual(sr["outcome"], "infra")
 
     def test_existing_stages_still_read_their_dirs(self):  # 기존 판정 불변
-        sr = self._run("contract", {"contractTest": junit(122), "contract3Test": junit(251, failed=2)})
+        sr = self._run("contract", {"contractTest": junit(122), "contract3Test": junit(252, failed=2)})
         self.assertEqual((sr["outcome"], sr["tests"]), ("pass", 122))
         self.assertIn("verify", sr)
-        sr = self._run("contract2", {"contract2Test": junit(89), "contract3Test": junit(251, failed=2)})
+        sr = self._run("contract2", {"contract2Test": junit(89), "contract3Test": junit(252, failed=2)})
         self.assertEqual((sr["outcome"], sr["tests"]), ("pass", 89))
         self.assertIn("verify", sr)
 
     def test_unknown_stage_not_counted(self):
-        sr = self._run("contract4", {"contract3Test": junit(251)})
+        sr = self._run("contract4", {"contract3Test": junit(252)})
         self.assertEqual(sr["outcome"], "no_results")
         self.assertNotIn("verify", sr)
 
@@ -165,7 +165,7 @@ class JudgeCombination(unittest.TestCase):
 
             def stage(R, case, st, *a, **k):
                 ran.append(st)
-                return {"outcome": outcomes[st], "tests": {"contract": 122, "contract2": 89, "contract3": 251}.get(st, 1)}
+                return {"outcome": outcomes[st], "tests": {"contract": 122, "contract2": 89, "contract3": 252}.get(st, 1)}
 
             with mock.patch.object(judge, "prepare", return_value=prep), \
                     mock.patch.object(judge, "run_stage", side_effect=stage), \
@@ -230,7 +230,7 @@ class JudgeCombination(unittest.TestCase):
     def test_count_mismatch_on_contract3_fails(self):
         res, _ = self._judge(self.ALL_PASS, expected={**judge.REGRESSION_BASELINE, "contract3": 999})
         self.assertEqual(res["stages"]["contract3"]["outcome"], "fail")
-        self.assertEqual(res["stages"]["contract3"]["count_mismatch"], {"expected": 999, "ran": 251})
+        self.assertEqual(res["stages"]["contract3"]["count_mismatch"], {"expected": 999, "ran": 252})
         self.assertIs(res["success"], False)
 
     def test_partial_regression_only(self):

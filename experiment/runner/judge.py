@@ -188,8 +188,8 @@ BUILD_FILES = ("build.gradle.kts", "settings.gradle.kts", "gradlew", "gradlew.ba
 
 GRADLE_SCRIPT = re.compile(r"(\.gradle(\.kts)?|gradle\.properties|\.versions\.toml)$")
 # 회귀 기준 실행 수(기준 사본 실측 2026-10-26 — behavior-tests 는 이 작업에서 바뀌지 않는다, 매개변수화 테스트 포함).
-# contract3 = 단계 A 계약(ADR-0007) 251(단계 A 168 + §20 보충 83, SlowTriggerSelfTest 포함 — ADR-0005 §4.1 개정 3)
-REGRESSION_BASELINE = {"contract": 122, "contract2": 89, "contract3": 251}
+# contract3 = 단계 A 계약(ADR-0007) 252(단계 A 168 + §20 보충 84, SlowTriggerSelfTest 포함 — ADR-0005 §4.1 개정 3)
+REGRESSION_BASELINE = {"contract": 122, "contract2": 89, "contract3": 252}
 TEST_ANNOTATION = re.compile(r"@Test\b")
 
 
