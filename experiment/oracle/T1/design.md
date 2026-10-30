@@ -4,6 +4,8 @@
 > 작성 기준: 브랜치 `feat/tasks-redesign`, HEAD `0fe3f36`. 앱 원본은 main `5131584`와 같다.
 > 줄 번호: "원본"은 저장소의 `god/`·`layered/` 소스, 표시가 없으면 **주입 사본** 기준이다. 주입은 지점 1에서 한 줄을 지운다. 그래서 god `Marketplace.kt`의 원본 :877 뒤 줄과 layered `domain/Order.kt`의 원본 :327 뒤 줄은 주입 사본에서 원본 −1이다. 다른 파일은 줄 수가 그대로다. symbols도 주입 사본 기준이다.
 
+> **좌표 기준(2026-10-30 추가):** 이 문서 본문의 줄 번호는 첫 채택 당시 코드(`ae6deda`, 규모 확장 전) 기준이다. 규모 확장 단계 A·보충(ADR-0006·0007) 뒤 현재 좌표의 정본은 `symbols.god.txt`·`symbols.layered.txt`이다(패치는 줄 위치만 이식 — 의미 변경 0, `docs/plans/2026-10-30/tasks-port/`).
+
 ## 1. 의도
 
 - 규칙(ADR-0004 §4.1·§5, ADR-0002 §9.7):
@@ -215,3 +217,18 @@
 | god·layered | naive-3·4·5·6 | hidden 2/2 fail(naive-4·6은 **public pass**) |
 
 - 변조 0, build 실패 0, 잔여 컨테이너 0. 두 구조의 숨은 실패 개수가 naive마다 같다. **T1 채택 확정.** 위 §10·§10.1의 dirty 기록은 이 표로 대체된다.
+
+### 10.3 규모 확장 뒤 재채택(고정 SHA, 2026-10-30 11:41 ~ 21:39)
+
+모든 행: `code_sha` 33a4fc3, `code_dirty` False — 30행(이 과제), check 3레인 동시(메모리 부족 중단 뒤 남은 몫은 2레인), 결과 행 = 작업 scratchpad `checks.jsonl`. 정답·alt-1은 전 단계, none·naive는 숨은 단계만(ADR-0006 §5 조건에 맞춘 최소 — 사용자 결정 2026-10-30).
+
+| 구조 | 패치 | 결과 |
+|---|---|---|
+| god·layered | none | hidden 2/2 fail |
+| god·layered | fix ×5 | True 5/5(전 단계: contract 122, contract2 89, contract3 252, verify 위반 0) |
+| god·layered | alt-1 | True(전 단계 같음) |
+| god·layered | naive-1·2·7 | hidden 1/2 fail |
+| god·layered | naive-3·4·5·6 | hidden 2/2 fail |
+
+- 숨은 실패 개수가 §10.2와 naive마다 같고, 두 구조도 같다. 변조 0, build 실패 0. 부하 중 contract3 타이밍 실패 0. **T1 재채택 확정.**
+- 지점 거리(위협 12): god :938 → :1582 = **644줄**(§6 표의 631줄에서 +13 — 사이에 보충 기능 코드), layered :326 → :346 = 20줄 그대로.
