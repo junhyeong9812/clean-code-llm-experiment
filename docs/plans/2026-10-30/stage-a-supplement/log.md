@@ -32,6 +32,7 @@
 | 2026-10-30 09:46 | 누적 3회차 codex 회수(bwrap 0): 지적 없음 — SZ-6 트리거가 분쟁의 주문 잠금 이후(god Marketplace.kt:966·layered ItemLocker.kt:18), @Test 252·문서/코드 숫자 일치, 신규 0 | Opus 대기 |
 | 2026-10-30 09:49 | 누적 3회차 Opus 회수: SZ-6·숫자 252 재점검 지적 없음(경합 관측이 수정의 주문 대기임을 SlowTrigger 코드로 확인), 신규 minor 1(SZ-8 역방향 테스트가 '리뷰 행 그대로'를 rating만 단언) + 관찰 1(judge.py:190 옛 날짜 주석 — 비차단). **루프 상한 3 도달** — SZ-8은 content 단언 1줄 추가 후 두 앱 contract3 재실행(셀프 확인) | 마감 |
 | 2026-10-30 09:58 | SZ-8 확인: god·layered contract3 252/252, verify 120. 커밋 `7d95aab` | 완료 요약 |
+| 2026-10-30 10:51 | 사용자 결정 '병합·push 후 다음으로' → main fast-forward 1cbe468..2262d25 | push |
 
 ## 리뷰 ledger
 
