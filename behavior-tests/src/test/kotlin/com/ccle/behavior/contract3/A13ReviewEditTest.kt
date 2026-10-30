@@ -324,6 +324,33 @@ class A13ReviewEditTest {
         SDA.patchReview(id, p.buyer, 2, "a").assertError(409, "ITEM_STATE_CONFLICT")
     }
 
+    /**
+     * §20.2.1·§20.8(역방향): 분쟁 제기가 주문 → 항목 FU를 쥔 채 항목 UPDATE 직전에 멈춘 사이 같은 항목의 리뷰 수정이 오면,
+     * 수정은 주문 행에서 기다렸다가 잠근 뒤 항목을 다시 읽어 DISPUTED를 본다 — 분쟁 201·수정 409, 리뷰 행 그대로.
+     * (수정이 주문을 잠그기 전에 읽은 항목 상태로 판정하면 200이 나와 실패한다.)
+     */
+    @Test
+    fun `§20_2_1·§20_8 분쟁 제기가 먼저 주문을 쥐고 멈춘 사이 수정이 오면 분쟁 201·수정 409(역방향)`() {
+        val p = SA.confirmedSale(Db.createUser(), 100_000)
+        val id = reviewOf(p, 3, "처음")
+        Flow.advance(HOUR)
+        val rs = SlowTrigger.on("order_items", "UPDATE", condition = "OLD.id = ${p.item}") {
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val dispute = pool.submit<Resp> { S2.dispute(p.item, p.buyer) }
+                SDA.awaitTriggerWait()
+                val patch = SDA.patchReview(id, p.buyer, 1, "분쟁 중 수정")
+                listOf(dispute.get(30, TimeUnit.SECONDS), patch)
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+        rs[0].assertStatus(201)
+        rs[1].assertError(409, "ITEM_STATE_CONFLICT")
+        assertEquals("DISPUTED", Db2.item(p.item).status)
+        assertEquals(3L, SA.review(id).long("rating"))
+    }
+
     // ---- §20.2.2 쓸 수 있는 항목 ----
 
     @Test
