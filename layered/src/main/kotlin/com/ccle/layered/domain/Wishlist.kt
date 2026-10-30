@@ -149,7 +149,7 @@ class PriceAlert(
         /** 재무장 대상(§20.3.3)의 종결 시각 하한: closed_at ≥ 현재 − 7일(재등록 기한과 같은 창, 정각 포함). */
         fun rearmCutoff(now: Instant): Instant = now.minus(RENEW_WITHIN)
 
-        /** 등록(§8.2): 사용자 행을 잠근 뒤 센 같은 사이즈 ACTIVE 수가 0이어야 한다. expires_at = 현재 + 60일. 구매 제한 중에도 등록한다. */
+        /** 등록(§8.2): 사용자 행을 잠근 뒤 센 같은 사이즈 ACTIVE 수가 0이어야 한다. expires_at = 현재 + 60일. */
         fun open(userId: Long, input: PriceAlertInput, activeCount: Long, now: Instant): PriceAlert {
             if (activeCount > 0) {
                 throw MarketException(Failure.ITEM_STATE_CONFLICT, "같은 사이즈의 ACTIVE 가격 알림이 있다: ${input.productSizeId}")

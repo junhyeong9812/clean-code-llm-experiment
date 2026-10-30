@@ -6,7 +6,7 @@ import jakarta.persistence.Table
 import java.time.Instant
 import java.time.LocalDate
 
-// A10 판매자 프로필(ADR-0007 §12.1). 휴가는 표시만 한다 — 입찰·체결·발송 기한에 영향이 없다.
+// A10 판매자 프로필(ADR-0007 §12.1). 휴가는 표시만 한다.
 
 /** 프로필 저장 요청의 값(§12.1·§19의 14): shopName 1~40자, intro 0~500자(필수 문자열), 휴가는 둘 다 null이거나 둘 다 있고 from ≤ to. */
 class SellerProfileInput private constructor(
