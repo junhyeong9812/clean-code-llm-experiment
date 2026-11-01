@@ -5,6 +5,7 @@
 app/src/main/kotlin/com/ccle/layered/service/AdminQueryService.kt:75 fix  # disputes 의 KeysetPage.of 호출(fix: limit ?: "20", alt-1: defaultLimit = 20)
 app/src/main/kotlin/com/ccle/layered/domain/AdminQuery.kt:16 fix  # alt-1: KeysetPage.of 시그니처에 defaultLimit 인자
 app/src/main/kotlin/com/ccle/layered/domain/AdminQuery.kt:17 fix  # alt-1: limit 생략 시 defaultLimit 사용
+app/src/main/kotlin/com/ccle/layered/api/AdminQueryController.kt:121 fix  # [alt-2] 컨트롤러에서 분쟁 위임에만 limit ?: "20"(빈 limit= 은 그대로 검사 → 400)
 app/src/main/kotlin/com/ccle/layered/service/AdminQueryService.kt:1-86 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
 app/src/main/kotlin/com/ccle/layered/service/AdminQueryService.kt:73-77 read  # disputes 서비스
 app/src/main/kotlin/com/ccle/layered/domain/AdminQuery.kt:8-24 read  # 공유 KeysetPage.of(DEFAULT_LIMIT 50 — 호출 7곳 공용, 고칠 곳 아님)

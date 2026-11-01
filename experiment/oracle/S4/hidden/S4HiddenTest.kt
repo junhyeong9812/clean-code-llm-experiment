@@ -14,6 +14,7 @@ import kotlin.test.assertNull
  *  - B: limit을 주면 그 값 그대로(50·100·21·1).
  *  - C: 다른 관리자 목록(감사 로그)의 limit 생략은 그대로 50건.
  *  - D: 분쟁 목록의 limit 범위(1~100)·정수 검사는 그대로 — 0·101·abc는 400 INVALID_REQUEST, 100은 200.
+ *  - E: 빈 limit(`limit=`)은 생략이 아니다 — 지금처럼 400 INVALID_REQUEST.
  */
 class S4HiddenTest {
 
@@ -73,6 +74,13 @@ class S4HiddenTest {
             assertEquals("INVALID_REQUEST", r.json["code"].asText(), "$q: $r")
         }
         assertEquals(200, Api.get("/admin/disputes?limit=100").status, "limit=100")
+    }
+
+    @Test
+    fun `E - 분쟁 목록의 빈 limit은 생략이 아니라 지금처럼 400`() {
+        val r = Api.get("/admin/disputes?limit=")
+        assertEquals(400, r.status, "limit=: $r")
+        assertEquals("INVALID_REQUEST", r.json["code"].asText(), "limit=: $r")
     }
 
     // ---- 도우미 ----

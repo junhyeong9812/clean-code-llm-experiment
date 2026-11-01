@@ -5,7 +5,7 @@
          @RequestParam(required = false) limit: String?,
          @RequestParam(required = false) after: String?,
 -    ): PageView<AdminDisputeView> = PageView(queries.disputes(status, limit, after).map { AdminDisputeView(it) })
-+    ): PageView<AdminDisputeView> = PageView(queries.disputes(status, "20", after).map { AdminDisputeView(it) })
++    ): PageView<AdminDisputeView> = PageView(queries.disputes(status, limit ?: "20", after).map { AdminDisputeView(it) })
  
      @GetMapping("/audit-logs")
      fun auditLogs(

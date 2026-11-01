@@ -4,6 +4,7 @@
 # read = 읽어야 할 곳.
 app/src/main/kotlin/com/ccle/god/Marketplace.kt:3324 fix  # adminDisputes 의 page() 호출(fix: limit ?: "20", alt-1: defaultLimit = 20)
 app/src/main/kotlin/com/ccle/god/Marketplace.kt:3214 fix  # alt-1: page() 시그니처에 defaultLimit 인자(같은 hunk 의 삽입 줄은 3214 로 잡힌다)
+app/src/main/kotlin/com/ccle/god/web/AdminQueryController.kt:54 fix  # [alt-2] 컨트롤러에서 분쟁 위임에만 limit ?: "20"(빈 limit= 은 그대로 검사 → 400)
 app/src/main/kotlin/com/ccle/god/Marketplace.kt:1-3667 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
 app/src/main/kotlin/com/ccle/god/Marketplace.kt:3321-3333 read  # adminDisputes(GET /admin/disputes)
 app/src/main/kotlin/com/ccle/god/Marketplace.kt:3211-3224 read  # 공유 키셋 페이지 page()·pageView(기본 50 — 호출 7곳 공용, 고칠 곳 아님)

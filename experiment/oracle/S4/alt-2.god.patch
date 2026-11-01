@@ -5,7 +5,7 @@
          @RequestParam(required = false) limit: String?,
          @RequestParam(required = false) after: String?,
 -    ): PageView<AdminDisputeView> = marketplace.adminDisputes(status, limit, after)
-+    ): PageView<AdminDisputeView> = marketplace.adminDisputes(status, "20", after)
++    ): PageView<AdminDisputeView> = marketplace.adminDisputes(status, limit ?: "20", after)
  
      @GetMapping("/audit-logs")
      fun auditLogs(
