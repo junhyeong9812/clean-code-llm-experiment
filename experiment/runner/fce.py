@@ -519,6 +519,11 @@ def fmt(v):
     return "+inf" if v == INF else v
 
 
+def _is_test_path(p: str) -> bool:
+    """§5.3 개정 2 — all_fix_fallback 이 세지 않는 테스트 쪽 파일(공개 테스트·test.sh)."""
+    return "/src/test/" in p or p.startswith("checks/") or p.rsplit("/", 1)[-1] == "test.sh"
+
+
 def evaluate(cs: list, turns: int, base: Path, ranges: dict, groups, recorded: bytes, success: bool,
              scratch: Path) -> dict:
     """기준 사본 base 의 복사본(scratch/replay)에서 재생하고 자기 검사(§5.4)와 §5.1·§5.3 값을 낸다. groups = group_lines 결과
@@ -554,8 +559,9 @@ def evaluate(cs: list, turns: int, base: Path, ranges: dict, groups, recorded: b
                 all_turn = INF
             elif not missing:
                 all_turn = max(res.group_turns.values())
-            else:  # 성공했지만 닿지 않은 그룹 — 등록하지 못한 대안 정답(ADR-0008 §5.3 개정 1): 마지막 편집 사건 턴
-                all_turn = max((e["turn"] for e in res.edits), default=None)
+            else:  # 성공했지만 닿지 않은 그룹 — 등록하지 못한 대안 정답(ADR-0008 §5.3 개정 1·2): 테스트 밖 마지막 편집 사건 턴
+                all_turn = max((e["turn"] for e in res.edits if any(not _is_test_path(p) for p in e["lines"])),
+                               default=None)
                 all_fallback = True
     return {
         "turns": turns, "unknown": unknown, "unknown_reasons": reasons, "replay_matches_diff": match,
@@ -624,15 +630,16 @@ def summarize(rows: list) -> str:
                      f"{r['typo_turns']} | {r['sleep_turns']} | {r['reads_before_correct']} |")
     ok = [r for r in rows if not r["unknown"] and r["primary"] is not None]
     lines.append("")
-    lines.append("| 묶음 | n | 성공 중앙값 | 보수 중앙값(실패 +inf) | 값 | fallback | 모름 |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| 묶음 | n | 성공 중앙값 | 보수 중앙값(실패 +inf) | 값 | fallback | 모름 | 값 없음 |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for label, sel in [("전체", rows)] + [(s, [r for r in rows if r["structure"] == s]) for s in R.STRUCTURES]:
         good = [r for r in sel if r in ok]
         succ = [_num(r["primary"]) for r in good if r["success"]]
         cons = [_num(r["primary"]) for r in good]
         lines.append(f"| {label} | {len(sel)} | {median_str(succ)} | {median_str(cons)} | "
                      f"{[r['primary'] for r in good]} | {sum(r['fce_fallback'] or bool(r.get('all_fix_fallback')) for r in sel)} | "
-                     f"{sum(r['unknown'] for r in sel)} |")
+                     f"{sum(r['unknown'] for r in sel)} | "
+                     f"{sum(not r['unknown'] and r['primary'] is None for r in sel)} |")  # 성공·편집 사건 없음(§5.3 개정 2)
     return "\n".join(lines)
 
 

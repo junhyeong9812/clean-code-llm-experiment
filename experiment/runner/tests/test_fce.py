@@ -239,5 +239,22 @@ class PatchRanges(unittest.TestCase):
         self.assertEqual(fce.patch_ranges(p), {"app/B.kt": {1}})
 
 
+class Revision2(unittest.TestCase):
+    """ADR-0008 §5.3 개정 2 — fallback 은 테스트 쪽 편집을 세지 않고, 성공·편집 없음은 '값 없음'으로 센다."""
+
+    def test_test_paths(self):
+        self.assertTrue(fce._is_test_path("app/src/test/kotlin/pub/S3Test.kt"))
+        self.assertTrue(fce._is_test_path("test.sh"))
+        self.assertFalse(fce._is_test_path("app/src/main/kotlin/A.kt"))
+        self.assertFalse(fce._is_test_path("app/A.kt"))
+
+    def test_summary_counts_no_value(self):
+        row = {"run_id": "r1", "structure": fce.R.STRUCTURES[0], "success": True, "unknown": False, "primary": None,
+               "first_correct_edit_turn": None, "fce_fallback": True, "first_edit_turn": None, "turns": 3,
+               "typo_turns": 0, "sleep_turns": 0, "reads_before_correct": None}
+        total = [l for l in fce.summarize([row]).splitlines() if l.startswith("| 전체 |")][0]
+        self.assertTrue(total.rstrip().endswith("| 0 | 1 |"), total)  # 모름 0 · 값 없음 1
+
+
 if __name__ == "__main__":
     unittest.main()
