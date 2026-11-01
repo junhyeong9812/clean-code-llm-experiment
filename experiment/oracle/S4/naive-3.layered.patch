@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/api/AdminQueryController.kt
++++ b/app/src/main/kotlin/com/ccle/layered/api/AdminQueryController.kt
+@@ -118,7 +118,7 @@
+         @RequestParam(required = false) status: String?,
+         @RequestParam(required = false) limit: String?,
+         @RequestParam(required = false) after: String?,
+-    ): PageView<AdminDisputeView> = PageView(queries.disputes(status, limit, after).map { AdminDisputeView(it) })
++    ): PageView<AdminDisputeView> = PageView(queries.disputes(status, "20", after).map { AdminDisputeView(it) })
+ 
+     @GetMapping("/audit-logs")
+     fun auditLogs(

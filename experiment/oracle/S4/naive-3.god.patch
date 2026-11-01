@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/web/AdminQueryController.kt
++++ b/app/src/main/kotlin/com/ccle/god/web/AdminQueryController.kt
+@@ -51,7 +51,7 @@
+         @RequestParam(required = false) status: String?,
+         @RequestParam(required = false) limit: String?,
+         @RequestParam(required = false) after: String?,
+-    ): PageView<AdminDisputeView> = marketplace.adminDisputes(status, limit, after)
++    ): PageView<AdminDisputeView> = marketplace.adminDisputes(status, "20", after)
+ 
+     @GetMapping("/audit-logs")
+     fun auditLogs(

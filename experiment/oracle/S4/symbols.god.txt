@@ -1,0 +1,10 @@
+# S4 symbols — 줄 번호는 기준 소스 좌표(주입 없음 — change).
+# fix = 정답·대안 정답 패치가 실제로 바꾼 줄만(ADR-0008 §5.2 — 문맥 줄 없음). :3215(공유 기본값 50)·:3216(최대 100)은 오답 자리라 넣지 않는다.
+# edit = 정답 패치가 고치는 파일 전체(ADR-0005 §5.2 첫 편집 적중 전용 — ADR-0008 주 지표에는 쓰지 않는다).
+# read = 읽어야 할 곳.
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:3324 fix  # adminDisputes 의 page() 호출(fix: limit ?: "20", alt-1: defaultLimit = 20)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:3214 fix  # alt-1: page() 시그니처에 defaultLimit 인자(같은 hunk 의 삽입 줄은 3214 로 잡힌다)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1-3667 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:3321-3333 read  # adminDisputes(GET /admin/disputes)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:3211-3224 read  # 공유 키셋 페이지 page()·pageView(기본 50 — 호출 7곳 공용, 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/god/web/AdminQueryController.kt:49-54 read  # /admin/disputes 컨트롤러(Marketplace 로 위임)

@@ -1,0 +1,21 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -3211,7 +3211,8 @@
+     /** 키셋 페이지(§2.5): limit 1~100(기본 50), after 0 이상(기본 0 = 처음부터). 정수가 아니거나 범위 밖이면 400. */
+     private class Page(val limit: Int, val after: Long)
+ 
+-    private fun page(limit: String?, after: String?): Page {
++    private fun page(limit: String?, after: String?, defaultLimit: Int = 50): Page {
++        if (limit == null) return page(defaultLimit.toString(), after)
+         val size = if (limit == null) 50 else limit.toIntOrNull() ?: badRequest("limit은 정수: $limit")
+         if (size !in 1..100) badRequest("limit은 1~100: $size")
+         val from = if (after == null) 0L else after.toLongOrNull() ?: badRequest("after는 정수: $after")
+@@ -3321,7 +3322,7 @@
+     /** `GET /admin/disputes`(§11.3): 선택 필터 status(OPEN·ACCEPTED·REJECTED), id 순 페이지. */
+     fun adminDisputes(status: String?, limit: String?, after: String?): PageView<AdminDisputeView> {
+         if (status != null && status != "OPEN" && status != "ACCEPTED" && status != "REJECTED") badRequest("알 수 없는 분쟁 상태: $status")
+-        val page = page(limit, after)
++        val page = page(limit, after, defaultLimit = 20)
+         val query = em.createQuery(
+             "SELECT d FROM Dispute d WHERE d.id > :after" + (if (status != null) " AND d.status = :status" else "") + " ORDER BY d.id",
+             Dispute::class.java,

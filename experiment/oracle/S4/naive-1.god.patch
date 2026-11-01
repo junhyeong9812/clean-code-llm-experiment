@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -3212,7 +3212,7 @@
+     private class Page(val limit: Int, val after: Long)
+ 
+     private fun page(limit: String?, after: String?): Page {
+-        val size = if (limit == null) 50 else limit.toIntOrNull() ?: badRequest("limit은 정수: $limit")
++        val size = if (limit == null) 20 else limit.toIntOrNull() ?: badRequest("limit은 정수: $limit")
+         if (size !in 1..100) badRequest("limit은 1~100: $size")
+         val from = if (after == null) 0L else after.toLongOrNull() ?: badRequest("after는 정수: $after")
+         if (from < 0) badRequest("after는 0 이상: $from")

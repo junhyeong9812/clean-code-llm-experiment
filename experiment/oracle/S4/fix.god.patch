@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -3321,7 +3321,7 @@
+     /** `GET /admin/disputes`(§11.3): 선택 필터 status(OPEN·ACCEPTED·REJECTED), id 순 페이지. */
+     fun adminDisputes(status: String?, limit: String?, after: String?): PageView<AdminDisputeView> {
+         if (status != null && status != "OPEN" && status != "ACCEPTED" && status != "REJECTED") badRequest("알 수 없는 분쟁 상태: $status")
+-        val page = page(limit, after)
++        val page = page(limit ?: "20", after)
+         val query = em.createQuery(
+             "SELECT d FROM Dispute d WHERE d.id > :after" + (if (status != null) " AND d.status = :status" else "") + " ORDER BY d.id",
+             Dispute::class.java,
