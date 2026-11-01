@@ -90,3 +90,56 @@
 | B7 잔여 | codex 재점검 | 앱 코드 늦은 무관 편집은 여전히 대체값을 키움 | 위협 14에 기록(구조별 all_fix_fallback 수 보고) | 수용 |
 | 2026-11-01 17:20:03 | 과제 묶음 재점검 회수(codex 1회) — B1~B4·B6·B8~B14 해소, B5(채택 행렬) 대기, B7 부분→위협 수용, 새 결함 N1 중간·N2 낮음 → 개정 2 보완. 리뷰 종료(중간 stakes 듀얼 1패스 + 재점검 1회) | 다음: 고정 SHA 채택 행렬 |
 | 2026-11-01 17:20:53 | 채택 행렬 시작 — 고정 SHA 417b3b6(트리 깨끗), 2레인(god·layered, 가용 <12GB면 대기). 과제마다 fix·alt 전 단계 ×2, fix 숨은 ×5, none·naive 숨은 ×2. 스크립트·결과 scratchpad/sct/matrix/ | 수 시간 예상 |
+| 2026-11-01 17:30:30 | §4.3-4 판정 범위 검사(fce patch_ranges·group_lines, 기준 417b3b6) — S1·S2·S4: fix·alt 전부 적중, naive 전부 비적중(두 구조). S3: fix·alt-1·alt-2 4/4, naive-1·2 1/4, naive-3 2/4, naive-5 0/4, naive-4·6 4/4(개정 2 허용 — 숨은 실패). 두 구조 같음 | 통과 |
+| 2026-11-02 03:14:09 | 채택 행렬 완료 — 160행, experiment/ 417b3b6 이후 변경 0(행 code_sha 2d79f87 = docs 커밋, dirty 0). 34칸 전부 통과: fix·alt 전 단계 ×2 success, fix 숨은 ×5 통과, none·naive ×2 숨은 실패 — 실패 테스트 이름·수·다른 단계 결과가 반복·구조 간 같음, tampered 0. ADR §4.3-1·2 충족 → 과제 4개 채택 | 다음: NEXT·측정로그, 파일럿 전 정지 |
+
+## 완료 요약 (파일럿 직전 단계까지 — 2026-11-02)
+
+**결론:** 2차 결론 후보 ②(찾기 비용)를 ADR-0008로 사전 등록하고(채택 + 개정 1·2), 과제 낱말로 고칠 곳이 바로 나오지 않게 만든 과제 S1~S4와 첫 정답 편집 턴 추출기 `fce.py`를 만들었다. 기준선은 8실행 전체 중앙값 **4**(god 4.5·layered 4, 문턱 8). 과제 4개는 고정 SHA(experiment/ = `417b3b6`)에서 채택 행렬 160행·34칸이 모두 통과했다. 파일럿 실행 직전에서 멈췄다.
+
+| 해시 | 내용 |
+|---|---|
+| `f275306`~`16fb920` | ADR-0008 초안 → 리뷰 반영(R1~R20·N1~N4) → 채택 |
+| `6d02f1f` · `38850a8` · `291176c` | fce.py(재생·기준 좌표·패치 범위·+∞·그룹 도달) → 그룹 미도달 대체값 → 대체값에서 테스트 쪽 편집 제외·'값 없음' 열 |
+| `759af3d` · `e65ca93` · `bb6a7b4` · `fd2989a` | 과제 S1·S2·S3·S4 |
+| `8bc8f35` · `4517577` · `ff78037` | S3 주석 중립화 inject · S1·S3 alt-2 · S4 alt-2·naive-3 삭제·숨은 E |
+| `ac21422` · `1177f43` · `417b3b6` | ADR 개정 1 · 개정 2 · 개정 2 보완 |
+
+| 과제 | 유형 | 고칠 곳 god | 고칠 곳 layered |
+|---|---|---|---|
+| S1 배치 대상 상한(증상 버그) | bug | Marketplace.kt keyset SQL | infra/KeysetBatchTargets.kt |
+| S2 판매 제한 기준(용어 불일치) | bug | Marketplace.kt 패널티 비교 | domain/User.kt |
+| S3 제한 판매자 입찰 제외(흩어진 규칙) | change | Marketplace.kt 4곳 | infra/JpaBidRepositories.kt · JpaNotificationRepositories.kt |
+| S4 분쟁 목록 기본 20건(영향 범위) | change | Marketplace.kt `adminDisputes` | service/AdminQueryService.kt |
+
+핵심 diff(실파일에서 복사 — 메인이 대조 확인):
+
+S1 주입(`experiment/oracle/S1/inject.god.patch`):
+```diff
+-                "SELECT t.id FROM $table t WHERE ($condition) AND t.id > :after AND t.id <= :upTo ORDER BY t.id LIMIT 500",
++                "SELECT t.id FROM $table t WHERE ($condition) AND t.id > :after AND t.id < :upTo ORDER BY t.id LIMIT 500",
+```
+
+S4 정답(`fix.god.patch` · `fix.layered.patch`):
+```diff
+-        val page = page(limit, after)
++        val page = page(limit ?: "20", after)
+```
+```diff
+-        val page = KeysetPage.of(limit, after)
++        val page = KeysetPage.of(limit ?: "20", after)
+```
+
+fce `evaluate` S3 대체값(`experiment/runner/fce.py`):
+```python
+            else:  # 성공했지만 닿지 않은 그룹 — 등록하지 못한 대안 정답(ADR-0008 §5.3 개정 1·2): 테스트 밖 마지막 편집 사건 턴
+                all_turn = max((e["turn"] for e in res.edits if any(not _is_test_path(p) for p in e["lines"])),
+                               default=None)
+                all_fallback = True
+```
+
+**검증:** 채택 행렬 160행·34칸 통과(fix·alt 전 단계 ×2, fix 숨은 ×5, none·naive ×2 숨은 실패 — 실패 이름·수가 반복·구조 간 같음, tampered 0, `git diff 417b3b6..HEAD -- experiment` 비어 있음) · 판정 범위 검사 통과(S3 naive-4·6 4/4는 개정 2 허용) · unittest 465 OK · 기준선 재생 diff 8/8 일치 · 독립 단서 측정 SCT-CLUE-1·2(S1·S2 과제 낱말 직접 단서 0, S3·S4는 표만) · 리뷰: ADR 듀얼 1패스 + 재점검 2, 과제 묶음 듀얼 1패스 + 재점검 1(B1~B16, 높음 0).
+
+**남은 것:** 파일럿 4(8실행, `results-pilot4`) 사용자 확인 대기 · push 안 함(브랜치 `search-cost-tasks`).
+
+**CS 이슈 아카이브:** study-note 쓰기는 이 작업의 금지영역(spec §4) — 보류. 후보 1건: 줄 단위 판정 범위로는 같은 줄을 다른 내용으로 고친 오답을 가를 수 없다(S3 naive-4·6).
