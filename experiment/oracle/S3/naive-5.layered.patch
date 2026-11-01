@@ -9,7 +9,7 @@ diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt b/app/src/main/ko
 +    fun activeOf(userId: Long, side: String): List<Bid>
 +
      /**
-      * 반대편 최우선 체결 가능 입찰(§3.3). 체결 가능 = ACTIVE이고 expires_at > 현재.
+      * 반대편 최우선 입찰(§3.3).
       * 순서: 가격(구매는 높은 순, 판매는 낮은 순) → created_at → id. 자기(userId) 입찰은 건너뛴다.
 diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/User.kt b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
 --- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt

@@ -1,10 +1,10 @@
 # S3 — 판매 제한 중인 판매자의 판매 입찰 감추기 (change, 흩어진 규칙)
 
-> 정본: ADR-0008 §4.2 S3 행·§4.3·§5.3. 좌표는 기준 사본(주입 없음 — 원본 `god/`·`layered/`와 같다). 작성 기준 HEAD 6d02f1f.
+> 정본: ADR-0008 §4.2 S3 행·§4.3·§5.3. 좌표는 기준 사본(원본 + `inject.*.patch` — 주석만 바꾸고 줄 수 유지라 원본과 같은 좌표). 작성 기준 HEAD 6d02f1f.
 
 ## 의도
 
-같은 새 규칙을 원시 SQL 네 벌(시세·체결 상대·위시리스트·가격 알림)에 빠짐없이 넣어야 하는 과제다(ADR-0008 유형 '흩어진 규칙'). 주 지표는 **모든 고칠 곳 도달 턴**(§5.3). 주입은 없다(TYPE=change, `inject.*.patch` 없음 — C2와 같다). 기준 상태 = 제한 중 판매자의 판매 입찰이 네 곳 모두에 그대로 잡힌다 → 숨은 테스트 실패.
+같은 새 규칙을 원시 SQL 네 벌(시세·체결 상대·위시리스트·가격 알림)에 빠짐없이 넣어야 하는 과제다(ADR-0008 유형 '흩어진 규칙'). 주 지표는 **모든 고칠 곳 도달 턴**(§5.3). 동작 주입은 없다(TYPE=change). `inject.*.patch`는 바뀌는 규칙을 서술한 주석만 중립 문장으로 바꾼다(아래 '주석 처리 방침' — 메인 결정 2026-11-01, 러너 `build_work`는 TYPE과 무관하게 inject를 적용한다 `runner.py:147-149`). 기준 상태 = 제한 중 판매자의 판매 입찰이 네 곳 모두에 그대로 잡힌다 → 숨은 테스트 실패.
 
 두 함정을 함께 둔다.
 - **방향:** 시세 쿼리는 BUY·SELL을 한 문장으로 읽는다(`max(BUY)`·`min(SELL)`) — WHERE에 조건을 넣으면 최고 구매가까지 바뀐다. 체결 상대 쿼리는 새 입찰 방향에 따라 상대 쪽이 바뀐다 — 상대가 SELL(새 입찰이 BUY)일 때만 조건이 붙어야 한다.
@@ -76,18 +76,37 @@
 
 naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 지점별 경유를 확인한다(아래 실측).
 
-## 주석 처리 방침 (ADR-0005 §3.1·ADR-0008 §2)
+## 주석 처리 방침 (ADR-0005 §3.1·ADR-0008 §2 — 메인 결정 2026-11-01)
 
-- 변경 과제라 주입 패치가 없고, 에이전트가 보는 사본 = 원본이다. 바뀌는 규칙을 서술한 주석은 두 구조 모두 **지금 동작의 정확한 서술**이다(규칙과 코드가 어긋나는 주입 버그의 '정답 누설' 주석과 다르다). 그래서 중립화하지 않는다 — C2와 같다(C2도 "제한은 새 입찰에만" 주석 2곳을 두었다).
-- 저장소 전체 grep(`체결 가능`·`최저 판매가`·`expires_at > 현재`·`새 입찰에만`·`이미 걸린 입찰`):
-  - god: `:276`(getBook KDoc "체결 가능한(ACTIVE, 만료 시각 전)… 최저 판매가"), `:301`(findBestCounterBid KDoc "체결 가능 = ACTIVE이고 expires_at > 현재"), `:2620`(wishlist KDoc "…SELL 입찰 최저가(호가와 같은 기준)"), `:2690`(scan KDoc "체결 가능한 SELL"), `:200`(placeBid "제한은 새 입찰에만… 이미 걸려 있는 입찰의 체결은 막지 않는다"), `web/Dtos.kt:200`.
-  - layered: `domain/Bid.kt:102·162·168`, `domain/Wishlist.kt:32·185·214`(포트 KDoc), `domain/User.kt:38`("이미 걸린 입찰의 체결은 막지 않는다").
-  - 대칭: 네 고칠 곳마다 같은 뜻의 KDoc이 두 구조 모두 있다. 위치만 다르다 — god는 고칠 함수 바로 위, layered는 포트 인터페이스(다른 파일). 이것은 구조 차이(처치)라 맞추지 않는다. 단서 효과는 아래 표의 `호가`·`체결`·`최저 판매가` 행(god만 그룹 적중)에 드러난다.
-  - "이미 걸린 입찰의 체결은 막지 않는다"(god `:200`, layered `User.kt:38`)는 새 규칙과 부분적으로 어긋나게 되지만(제한 판매자의 기존 판매 입찰은 새 구매 입찰과 체결되지 않는다), 고칠 곳이 아닌 등록 403 지점을 가리키고 두 구조 모두 있어 그대로 둔다. 정답 패치도 이 주석을 고치지 않는다(판정 범위를 넓히지 않게).
+- 바뀌는 규칙 = "체결 가능(상대·시세·위시리스트·알림에 잡히는 입찰) = ACTIVE이고 만료 시각 전"과 "제한은 새 입찰에만, 이미 걸린 입찰의 체결은 막지 않는다". 이를 서술한 주석을 두 구조 모두 `inject.{god,layered}.patch`로 **중립 문장**으로 바꾼다(줄 수 유지, 그 밖의 주석은 그대로). 처음 판단(지금 동작의 정확한 서술이라 둔다 — C2 식)은 메인 결정으로 바꿨다.
+- 저장소 전체 grep(`체결 가능`·`만료 시각 전`·`expires_at > 현재`·`새 입찰에만`·`이미 걸`·`호가와 같은 기준`·`bestSell =`·`최저 판매가`)으로 찾은 대상과 바꾼 문장:
 
-## 찾기 비용 자체 측정 (ADR-0008 §4.1 S3 변형 — 최종 판정은 리뷰어)
+| 구조 | 위치 | 전 | 후 |
+|---|---|---|---|
+| god | `Marketplace.kt:200` | 제한은 새 입찰에만 건다. 이미 걸려 있는 입찰의 체결은 막지 않는다 | 새 입찰 제한(§3.1): 구매는 purchase_restricted_until, 판매는 sale_restricted_until이 현재보다 뒤이면 403 |
+| god | `:276` | 호가(§3.4): 체결 가능한(ACTIVE, 만료 시각 전) 입찰의 최고 구매가·최저 판매가 | 호가(§3.4): 최고 구매가·최저 판매가 |
+| god | `:301` | 반대편 최우선 체결 가능 입찰(§3.3). 체결 가능 = ACTIVE이고 expires_at > 현재. | 반대편 최우선 입찰(§3.3). |
+| god | `:2620` | bestSell = ACTIVE이고 expires_at > 현재인 SELL 입찰 최저가(호가와 같은 기준) | bestSell = 그 사이즈의 SELL 최저가 |
+| god | `:2690` | 3 그 사이즈의 체결 가능한 SELL 중 | 3 그 사이즈의 SELL 중 |
+| god | `web/Dtos.kt:200` | bestSell = 체결 가능한 SELL 최저가 | bestSell = SELL 최저가 |
+| layered | `domain/User.kt:38` | …판매는 sale_restricted_until. 이미 걸린 입찰의 체결은 막지 않는다. | …판매는 sale_restricted_until. |
+| layered | `domain/Bid.kt:102` | 체결 가능(§3.3): ACTIVE이고 expires_at > 현재. 결제 기한 만료로 복구된 판매 입찰은 이것이면 바로 재매칭한다. | 결제 기한 만료로 복구된 판매 입찰을 바로 재매칭할지(§3.3). |
+| layered | `domain/Bid.kt:162` | (god `:301`과 같은 문장) | 반대편 최우선 입찰(§3.3). |
+| layered | `domain/Bid.kt:168` | 호가(§3.4): 체결 가능한 입찰의 최고 구매가·최저 판매가 | 호가(§3.4): 최고 구매가·최저 판매가 |
+| layered | `domain/Wishlist.kt:32` | bestSell = 체결 가능한 SELL 최저가 | bestSell = SELL 최저가 |
+| layered | `domain/Wishlist.kt:185` | 그 사이즈의 ACTIVE이고 expires_at > 현재인 SELL 입찰 최저가(호가와 같은 기준), 없으면 null | 그 사이즈의 SELL 최저가, 없으면 null |
+| layered | `domain/Wishlist.kt:214` | 그 사이즈의 ACTIVE·expires_at > 현재·price ≤ target인 SELL 입찰 중… | 그 사이즈의 price ≤ target인 SELL 입찰 중… |
 
-낱말마다 두 구조 `src/main`에 `grep -rnF`(대소문자 구분), 결과 중 고칠 줄(위 fix 줄) ±40줄 안에 드는 것이 닿는 그룹. S3 변형 조건 = 낱말마다 그룹 ≤ 2. (TASK.md·공개 테스트에 실제로 쓴 낱말 + 영어 직역 추측. 측정 스크립트 `clue.py` — 보고 packet 참고.)
+- 두 구조 같은 방식: 같은 뜻의 문장을 같은 중립 문장으로 바꿨다(god `:301` = layered `Bid.kt:162`, god `:276` = layered `Bid.kt:168` 등). 중립 문장에 TASK.md 낱말을 새로 넣지 않는다 — 처음 안에서 `:301`을 "반대편 최우선 **상대** 입찰"로 쓰자 `상대`(TASK.md 낱말)가 god book·match에 새로 닿아 "반대편 최우선 입찰"로 고쳤다.
+- 남긴 것: bid-expiry·point-expiry의 `expires_at ≤ 현재`(바뀌지 않는 규칙), god `:1486` 재매칭 주석(유효기간 판정 — 바뀌지 않음), layered `WishlistService.kt:142`("맞는 SELL 입찰" — 이미 중립).
+- 위치 차이(god는 고칠 함수 바로 위 KDoc, layered는 포트 인터페이스 — 다른 파일)는 구조 차이(처치)라 맞추지 않는다.
+- 정답·대안·오답 패치는 이 주석 줄을 건드리지 않는다. inject 뒤 사본에 offset 0·fuzz 0으로 적용된다(naive-5.layered = C2 정답은 `Bid.kt:162`가 문맥 줄이라 inject 위로 다시 만들었다 — 내용 같음).
+
+## 찾기 비용 측정 — **S3 예외** (메인 결정 2026-11-01, S4와 같은 처리: 표만 남긴다)
+
+**예외 — SELL·bids가 공개 API 낱말이라 4그룹 동시 도달.** 네 고칠 곳이 모두 "SELL 입찰을 읽는 SQL"이라 과제 대상 자체를 가리키는 낱말(`SELL`·`bids`, 그리고 `ACTIVE`·`status`·`price`·`expires_at`)이 두 구조 모두 4그룹에 닿는다. `SELL`은 공개 API의 `side` 값이라 TASK.md·공개 테스트에서 뺄 수 없고, 빼도 "판매 입찰"의 직역 추측으로 나온다. 그래서 ADR-0008 §4.1 S3 변형 조건(낱말마다 그룹 ≤ 2)은 적용하지 않고 측정표만 남긴다.
+
+측정: 낱말마다 두 구조 기준 사본(원본 + inject)의 `src/main`에 `grep -rnF`(대소문자 구분), 결과 중 고칠 줄(fix 줄) ±40줄 안에 드는 것이 닿는 그룹. 낱말 = TASK.md·공개 테스트에 쓴 것 + 영어 직역 추측(작성자 측정 — 리뷰어 측정은 별도).
 
 | 낱말 | god 줄 | god 그룹(±40) | layered 줄 | layered 그룹(±40) | >2그룹 |
 |---|---|---|---|---|---|
@@ -97,10 +116,10 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 | 판매 입찰 | 3 | - | 7 | - | |
 | 판매(SELL) 입찰 | 0 | - | 0 | - | |
 | SELL | 15 | alert,book,match,wishlist | 26 | alert,book,match,wishlist | **넘음** |
-| sale_restricted_until | 4 | - | 7 | - | |
+| sale_restricted_until | 5 | - | 7 | - | |
 | users.sale_restricted_until | 0 | - | 0 | - | |
 | 현재 시각 | 2 | - | 7 | - | |
-| 403 | 11 | - | 28 | - | |
+| 403 | 12 | - | 28 | - | |
 | 시세 | 3 | - | 9 | - | |
 | /product-sizes/ | 5 | - | 3 | - | |
 | /book | 1 | - | 1 | - | |
@@ -128,17 +147,17 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 | tradeId | 57 | book,match | 66 | - | |
 | sell_bid_id | 1 | book | 1 | - | |
 | trades | 21 | book | 53 | - | |
-| ACTIVE | 45 | alert,book,match,wishlist | 62 | alert,book,match,wishlist | **넘음** |
+| ACTIVE | 42 | alert,book,match,wishlist | 58 | alert,book,match,wishlist | **넘음** |
 | bids | 10 | alert,book,match,wishlist | 26 | alert,book,match,wishlist | **넘음** |
 | status | 312 | alert,book,match,wishlist | 347 | alert,book,match,wishlist | **넘음** |
 | validDays | 6 | - | 12 | - | |
 | price | 92 | alert,book,match,wishlist | 103 | alert,book,match,wishlist | **넘음** |
-| 입찰 | 35 | alert,book,match,wishlist | 52 | - | **넘음** |
-| 체결 | 46 | alert,book,match | 72 | - | **넘음** |
-| 호가 | 4 | book,match,wishlist | 4 | - | **넘음** |
+| 입찰 | 33 | alert,book,match,wishlist | 50 | - | **넘음** |
+| 체결 | 41 | book,match | 67 | - | |
+| 호가 | 3 | book,match | 3 | - | |
 | bestSell | 7 | book,match,wishlist | 12 | book,match,wishlist | **넘음** |
-| restrict | 22 | - | 35 | alert | |
-| sale | 18 | - | 29 | - | |
+| restrict | 23 | - | 35 | alert | |
+| sale | 19 | - | 29 | - | |
 | wishlist | 9 | wishlist | 7 | alert | |
 | alert | 72 | alert,wishlist | 91 | alert,wishlist | |
 | counter | 9 | book,match | 9 | book,match | |
@@ -146,11 +165,12 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 | instant | 7 | - | 10 | - | |
 | book | 2 | - | 7 | book,match | |
 | trigger | 5 | alert | 11 | alert | |
+| 체결 가능 | 1 | - | 1 | - | |
+| expires_at | 19 | alert,book,match,wishlist | 29 | alert,book,match,wishlist | **넘음** |
 
-판단:
-- TASK.md 문구는 조건을 넘는 낱말(`호가`·`체결`·`bestSell`·`ACTIVE`)을 쓰지 않게 고쳤다 — "시세", "거래될 상대", "최저 판매가"로 썼다.
-- **조건을 넘는 낱말이 남는다(해소 불가 — 메인 판단 필요):** `SELL`(4/4 두 구조), `bids`·`ACTIVE`·`status`·`price`(4/4 두 구조), `입찰`(god 4/layered 0). 네 고칠 곳이 모두 "SELL 입찰을 읽는 SQL"이라 과제 대상 자체를 가리키는 낱말이 네 곳 모두에 붙어 있다. `SELL`은 TASK.md의 "판매(SELL) 입찰"과 공개 테스트의 `"SELL"`에 있고, 빼도 "판매 입찰"의 직역 추측으로 나온다. `SELL` 결과는 god 15줄·layered 26줄이라 결과를 다 훑으면 네 곳에 닿는다 — ADR §4.2 S3 행이 예상한 단서(`expires_at > :now` 6/6 — 과제 문구에 없음)보다 강하다.
-- 비대칭: `호가`·`체결`·`최저 판매가`·`최고 구매가`·`입찰`·`MATCHED`는 god만 그룹에 닿는다(KDoc이 고칠 함수 바로 위에 있음 — 처치). `restrict`·`book`·`wishlist`는 layered만 닿는다(어댑터 이름·인접 코드 — 처치).
+- TASK.md는 조정 가능한 낱말(`호가`·`체결`·`bestSell`·`ACTIVE`)을 쓰지 않는다("시세", "거래될 상대", "최저 판매가").
+- 주석 중립화 효과(inject 전 → 후, god): `호가` 3 → 2그룹, `체결` 3 → 2그룹, `체결 가능` 0(전부 사라짐 — 남은 1줄은 예외 메시지 `:212`), `입찰`·`ACTIVE`는 여전히 4그룹(SQL·코드 자체).
+- 비대칭(처치로 표시): `최저 판매가`·`최고 구매가`·`호가`·`체결`·`입찰`·`MATCHED`·`tradeId`는 god만 그룹에 닿는다(고칠 함수 근처 KDoc·코드). `restrict`·`book`·`wishlist`는 layered만 닿는다(어댑터 이름·인접 코드).
 
 ## regression-exclude · verify-exclude
 
@@ -160,11 +180,10 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 
 ## 채택 조건 실측 (스모크 — 채택 행렬은 메인이 고정 SHA에서)
 
-2026-11-01 10:49 ~ 13:01, 기준 HEAD 6d02f1f(`code_dirty` True — experiment/ 미커밋: S1·S2·S3 작성 중), `runner.py check` 1레인 순차. 결과 행 = 스크래치 `S3-checks/checks.jsonl`(19행).
+2026-11-01 13:09 ~ 15:02(주석 중립화 inject 반영 뒤 재실행), 기준 HEAD ac21422(`code_dirty` True — experiment/ 미커밋), `runner.py check` 1레인 순차. 결과 행 = 스크래치 `S3-checks-v2/checks.jsonl`(18행). 앞 실행(inject 전, 13:01까지 19행 `S3-checks/`)도 같은 결과였다.
 
 | 구조 | 패치 | 단계 | success | 결과 |
 |---|---|---|---|---|
-| god | fix | public,hidden | True | public 1/1; hidden 7/7 |
 | god | fix | public,hidden,contract,contract2,contract3 | True | public 1/1; hidden 7/7; contract 121/121 verify 위반 0; contract2 88/88 verify 위반 0; contract3 252/252 verify 위반 0 |
 | god | none | public,hidden | False | public 0/1; hidden 2/7 (실패: B1·B2·B3·B4·C1) |
 | god | naive-1 | hidden | False | hidden 3/7 (실패: B2·B3·B4·C1) |
@@ -201,7 +220,7 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 
 ## 그룹 도달 검사 (§4.3-4, `fce.patch_ranges` + `fce.FileMap.apply`)
 
-패치 하나를 편집 사건 하나로 보고, 재생기와 같은 줄 대응(`FileMap.apply`)으로 바뀐 줄을 구해 `(fix ∪ alt) ∩ 그룹`을 본다.
+기준 사본 = 원본 + inject(주석만 — 줄 수 유지라 inject 전 결과와 같다). 패치 하나를 편집 사건 하나로 보고, 재생기와 같은 줄 대응(`FileMap.apply`)으로 바뀐 줄을 구해 `(fix ∪ alt) ∩ 그룹`을 본다.
 
 | 구조 | 패치 | 바뀐 줄(재생기 FileMap) | 첫 정답 편집 적중 | 도달 그룹 |
 |---|---|---|---|---|

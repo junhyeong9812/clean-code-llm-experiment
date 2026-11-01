@@ -1,0 +1,60 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -197,7 +197,7 @@
+         return tx.execute {
+             lockProductSize(productSizeId)
+ 
+-            // 제한은 새 입찰에만 건다. 이미 걸려 있는 입찰의 체결은 막지 않는다
++            // 새 입찰 제한(§3.1): 구매는 purchase_restricted_until, 판매는 sale_restricted_until이 현재보다 뒤이면 403
+             val user = em.find(User::class.java, userId)
+             if (side == "BUY" && user.purchaseRestrictedUntil?.isAfter(now) == true) {
+                 throw ApiException(HttpStatus.FORBIDDEN, "PURCHASE_RESTRICTED", "구매 제한 중: ${user.purchaseRestrictedUntil}까지")
+@@ -273,7 +273,7 @@
+         )
+     }
+ 
+-    /** 호가(§3.4): 체결 가능한(ACTIVE, 만료 시각 전) 입찰의 최고 구매가·최저 판매가. */
++    /** 호가(§3.4): 최고 구매가·최저 판매가. */
+     fun getBook(productSizeId: Long): BookView {
+         em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+         val row = em.createNativeQuery(
+@@ -298,7 +298,7 @@
+     }
+ 
+     /**
+-     * 반대편 최우선 체결 가능 입찰(§3.3). 체결 가능 = ACTIVE이고 expires_at > 현재.
++     * 반대편 최우선 입찰(§3.3).
+      * 순서: 가격(구매는 높은 순, 판매는 낮은 순) → created_at → id. 자기 입찰은 건너뛴다.
+      * limitPrice가 있으면 교차하는 것만(새 구매가 ≥ 판매가, 새 판매가 ≤ 구매가), 없으면(즉시 입찰) 가격 조건 없이.
+      */
+@@ -2617,7 +2617,7 @@
+             .setParameter("user", userId).setParameter("size", productSizeId).resultList.firstOrNull()
+ 
+     /**
+-     * `GET /me/wishlist`(§8.1): productSizeId 오름차순. bestSell = ACTIVE이고 expires_at > 현재인 SELL 입찰 최저가(호가와 같은 기준),
++     * `GET /me/wishlist`(§8.1): productSizeId 오름차순. bestSell = 그 사이즈의 SELL 최저가,
+      * activeAlert = 그 사이즈의 내 ACTIVE 가격 알림(§19의 10).
+      */
+     fun wishlist(userId: Long): List<WishlistItemView> = snapshotTx.execute {
+@@ -2687,7 +2687,7 @@
+ 
+     /**
+      * price-alert-scan(§8.3): ACTIVE 가격 알림(id 순). 알림 1건 = 그 행을 잠근 트랜잭션 하나, 잠근 뒤 다시 확인한다.
+-     * 1 expires_at ≤ 현재 → EXPIRED. 2 주인이 구매 제한 중이면 그대로(세지 않음). 3 그 사이즈의 체결 가능한 SELL 중 price ≤ target인
++     * 1 expires_at ≤ 현재 → EXPIRED. 2 주인이 구매 제한 중이면 그대로(세지 않음). 3 그 사이즈의 SELL 중 price ≤ target인
+      * price, created_at, id 순 첫 번째 → TRIGGERED + 알림 PRICE_ALERT. 입찰은 읽기만 한다. 반환 = 1 또는 3으로 바뀐 알림 수.
+      */
+     private fun scanPriceAlerts(now: Instant): BatchResult =
+diff -ruN a/app/src/main/kotlin/com/ccle/god/web/Dtos.kt b/app/src/main/kotlin/com/ccle/god/web/Dtos.kt
+--- a/app/src/main/kotlin/com/ccle/god/web/Dtos.kt
++++ b/app/src/main/kotlin/com/ccle/god/web/Dtos.kt
+@@ -197,7 +197,7 @@
+ /** 위시리스트 등록·삭제 응답(§8.1). */
+ data class WishlistEntryView(val productSizeId: Long, val createdAt: Instant)
+ 
+-/** 위시리스트 조회 1행(§8.1). bestSell = 체결 가능한 SELL 최저가(없으면 null), activeAlert = 그 사이즈의 ACTIVE 가격 알림(§19의 10). */
++/** 위시리스트 조회 1행(§8.1). bestSell = SELL 최저가(없으면 null), activeAlert = 그 사이즈의 ACTIVE 가격 알림(§19의 10). */
+ data class WishlistItemView(val productSizeId: Long, val createdAt: Instant, val bestSell: Long?, val activeAlert: PriceAlertView?)
+ 
+ /** 가격 알림 모양(§8.2). */

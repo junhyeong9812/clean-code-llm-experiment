@@ -1,0 +1,69 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt b/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Bid.kt
+@@ -99,7 +99,7 @@
+         return BidEvent(bidId = id!!, fromStatus = "ACTIVE", toStatus = "MATCHED", tradeId = trade.id, createdAt = now)
+     }
+ 
+-    /** 체결 가능(§3.3): ACTIVE이고 expires_at > 현재. 결제 기한 만료로 복구된 판매 입찰은 이것이면 바로 재매칭한다. */
++    /** 결제 기한 만료로 복구된 판매 입찰을 바로 재매칭할지(§3.3). */
+     fun isMatchable(now: Instant): Boolean = status == "ACTIVE" && expiresAt.isAfter(now)
+ 
+     /** bid-expiry 대상(§7): ACTIVE이고 expires_at ≤ 현재. */
+@@ -159,13 +159,13 @@
+     fun reload(bid: Bid)
+ 
+     /**
+-     * 반대편 최우선 체결 가능 입찰(§3.3). 체결 가능 = ACTIVE이고 expires_at > 현재.
++     * 반대편 최우선 입찰(§3.3).
+      * 순서: 가격(구매는 높은 순, 판매는 낮은 순) → created_at → id. 자기(userId) 입찰은 건너뛴다.
+      * limitPrice가 있으면 교차하는 것만(새 구매가 ≥ 판매가, 새 판매가 ≤ 구매가), 없으면(즉시 입찰) 가격 조건 없이.
+      */
+     fun bestCounter(productSizeId: Long, side: String, userId: Long, limitPrice: Long?, now: Instant): Bid?
+ 
+-    /** 호가(§3.4): 체결 가능한 입찰의 최고 구매가·최저 판매가. */
++    /** 호가(§3.4): 최고 구매가·최저 판매가. */
+     fun book(productSizeId: Long, now: Instant): Book
+ }
+ 
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/User.kt b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -35,7 +35,7 @@
+     var saleRestrictedUntil: Instant? = saleRestrictedUntil
+         private set
+ 
+-    /** 새 입찰 제한(§3.1): 구매는 purchase_restricted_until > 현재이면 403, 판매는 sale_restricted_until. 이미 걸린 입찰의 체결은 막지 않는다. */
++    /** 새 입찰 제한(§3.1): 구매는 purchase_restricted_until > 현재이면 403, 판매는 sale_restricted_until. */
+     fun requireCanBid(side: String, now: Instant) {
+         if (side == "BUY" && purchaseRestrictedUntil?.isAfter(now) == true) {
+             throw MarketException(Failure.PURCHASE_RESTRICTED, "구매 제한 중: ${purchaseRestrictedUntil}까지")
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt b/app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt
+@@ -29,7 +29,7 @@
+     }
+ }
+ 
+-/** 위시리스트 조회 1행(§8.1·§19의 10): bestSell = 체결 가능한 SELL 최저가(없으면 null), activeAlert = 그 사이즈의 내 ACTIVE 가격 알림. */
++/** 위시리스트 조회 1행(§8.1·§19의 10): bestSell = SELL 최저가(없으면 null), activeAlert = 그 사이즈의 내 ACTIVE 가격 알림. */
+ class WishlistItem(val wish: Wishlist, val bestSell: Long?, val activeAlert: PriceAlert?)
+ 
+ /** 가격 알림 등록 요청의 값(§8.2): productSizeId 필수, targetPrice 양의 정수. */
+@@ -182,7 +182,7 @@
+      */
+     fun keyShareSize(productSizeId: Long): Boolean
+ 
+-    /** 그 사이즈의 ACTIVE이고 expires_at > 현재인 SELL 입찰 최저가(호가와 같은 기준), 없으면 null. */
++    /** 그 사이즈의 SELL 최저가, 없으면 null. */
+     fun bestSell(productSizeId: Long, now: Instant): Long?
+ }
+ 
+@@ -211,6 +211,6 @@
+     /** price-alert-rearm(§20.3.3): 잠근 뒤 그 알림에 대상 조건을 다시 확인한다(대상 조회와 같은 식). */
+     fun isRearmable(alertId: Long, now: Instant): Boolean
+ 
+-    /** 그 사이즈의 ACTIVE·expires_at > 현재·price ≤ target인 SELL 입찰 중 price, created_at, id 순 첫 번째 id(읽기 — 잠그지 않는다). */
++    /** 그 사이즈의 price ≤ target인 SELL 입찰 중 price, created_at, id 순 첫 번째 id(읽기 — 잠그지 않는다). */
+     fun triggeringSell(productSizeId: Long, targetPrice: Long, now: Instant): Long?
+ }
