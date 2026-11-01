@@ -1,0 +1,22 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -63,8 +63,8 @@
+     }
+ 
+     /**
+-     * 판매자 패널티에 따른 판매 제한(ADR-0004 §6): 최근 30일 안(created_at > 현재 − 30일)이면서 마지막 제한이 걸린 시각
+-     * (sale_restricted_until − 30일) 뒤의 패널티가 3건 이상이면 sale_restricted_until = 현재 + 30일. 구매 경고와 같은 해석이다.
++     * 판매자 패널티에 따른 판매 제한(ADR-0004 §6): 최근 패널티(마지막 제한이 걸린 뒤의 것)로
++     * sale_restricted_until을 정한다. 구매 경고와 같은 해석이다.
+      * recentPenaltyTimes = created_at > penaltyWindowStart(now)인 패널티의 created_at(방금 쓴 패널티 포함).
+      */
+     fun restrictIfPenalized(recentPenaltyTimes: List<Instant>, now: Instant) {
+@@ -79,7 +79,7 @@
+         private const val WARNINGS_TO_RESTRICT = 3
+         private val PENALTY_WINDOW: Duration = Duration.ofDays(30)
+         private val SALE_RESTRICTION: Duration = Duration.ofDays(30)
+-        private const val PENALTIES_TO_RESTRICT = 3
++        private const val PENALTIES_TO_RESTRICT = 2
+ 
+         /** 제한 판정에 세는 경고의 시작(이 시각 초과). */
+         fun warningWindowStart(now: Instant): Instant = now.minus(WARNING_WINDOW)

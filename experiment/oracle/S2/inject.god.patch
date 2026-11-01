@@ -1,0 +1,22 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1010,8 +1010,8 @@
+ 
+     /**
+      * 판매자 귀책(검수 불합격·발송 기한 초과 공용). 주문·항목을 잠그고 상태를 확인한 트랜잭션 안에서, 아직 아무것도 쓰지 않은 상태로 부른다.
+-     * §7 환불(fault SELLER, 전액 — 판매자 행도 잠근다) → 패널티 1행(floor(체결가 × 10%)) → 판매 제한:
+-     * 최근 30일 안이면서 마지막 제한을 건 시각(sale_restricted_until − 30일) 뒤의 패널티가 3건 이상이면 현재 + 30일.
++     * §7 환불(fault SELLER, 전액 — 판매자 행도 잠근다) → 패널티 1행(floor(체결가 × 10%)) → 판매 제한 판정:
++     * 최근 패널티(마지막 제한을 건 뒤의 것)로 sale_restricted_until을 정한다.
+      */
+     private fun sellerFault(item: OrderItem, reason: String, now: Instant) {
+         refundItem(item, fault = "SELLER", reason = reason, now = now)
+@@ -1025,7 +1025,7 @@
+             Instant::class.java,
+         ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+             .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+-        if (recentPenalties >= 3) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
++        if (recentPenalties >= 2) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
+     }
+ 
+     // ---- 환불 (ADR-0004 §7) ----

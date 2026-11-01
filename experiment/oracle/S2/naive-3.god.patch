@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1024,7 +1024,7 @@
+             "SELECT p.createdAt FROM SellerPenalty p WHERE p.sellerId = :seller AND p.createdAt > :from",
+             Instant::class.java,
+         ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+-            .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
++            .count { it.isBefore(now) && (lastRestrictedAt == null || it.isAfter(lastRestrictedAt)) }
+         if (recentPenalties >= 2) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
+     }
+ 

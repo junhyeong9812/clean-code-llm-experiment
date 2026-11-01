@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -69,7 +69,7 @@
+      */
+     fun restrictIfPenalized(recentPenaltyTimes: List<Instant>, now: Instant) {
+         val lastRestrictedAt = saleRestrictedUntil?.minus(SALE_RESTRICTION)
+-        val counted = recentPenaltyTimes.count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
++        val counted = recentPenaltyTimes.count { it.isBefore(now) && (lastRestrictedAt == null || it.isAfter(lastRestrictedAt)) }
+         if (counted >= PENALTIES_TO_RESTRICT) saleRestrictedUntil = now.plus(SALE_RESTRICTION)
+     }
+ 

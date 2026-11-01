@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -79,7 +79,7 @@
+         private const val WARNINGS_TO_RESTRICT = 3
+         private val PENALTY_WINDOW: Duration = Duration.ofDays(30)
+         private val SALE_RESTRICTION: Duration = Duration.ofDays(30)
+-        private const val PENALTIES_TO_RESTRICT = 2
++        private const val PENALTIES_TO_RESTRICT = 3
+ 
+         /** 제한 판정에 세는 경고의 시작(이 시각 초과). */
+         fun warningWindowStart(now: Instant): Instant = now.minus(WARNING_WINDOW)

@@ -1,0 +1,9 @@
+# S2 symbols — 줄 번호는 주입 사본 기준(inject 는 줄 수를 바꾸지 않는다 — 원본과 같은 좌표).
+# fix = 정답·대안 정답 패치가 실제로 바꾼 줄만(ADR-0008 §5.2 — 문맥 줄 없음). god 는 fix·alt-1 이 같은 줄이다.
+# edit = 정답 패치가 고치는 파일 전체(ADR-0005 §5.2 첫 편집 적중 전용 — ADR-0008 주 지표에는 쓰지 않는다).
+# read = 읽어야 할 곳.
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1028 fix  # sellerFault 판매 제한 기준(fix: >= 2 → >= 3, alt-1: > 2)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1-3667 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1011-1029 read  # sellerFault: 패널티 1행 → 30일 창 → 판매 제한
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:199-206 read  # 새 입찰 제한 확인(SALE_RESTRICTED — 증상이 드러나는 곳, 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1466-1478 read  # payment-due 구매 경고 → 구매 제한(형제 규칙 — 오진 유도, 고칠 곳 아님)

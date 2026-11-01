@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1025,7 +1025,7 @@
+             Instant::class.java,
+         ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+             .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
+-        if (recentPenalties >= 2) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
++        if (recentPenalties >= 3) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
+     }
+ 
+     // ---- 환불 (ADR-0004 §7) ----

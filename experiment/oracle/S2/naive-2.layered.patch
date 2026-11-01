@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -77,7 +77,7 @@
+         private val WARNING_WINDOW: Duration = Duration.ofDays(30)
+         private val PURCHASE_RESTRICTION: Duration = Duration.ofDays(7)
+         private const val WARNINGS_TO_RESTRICT = 3
+-        private val PENALTY_WINDOW: Duration = Duration.ofDays(30)
++        private val PENALTY_WINDOW: Duration = Duration.ofDays(15)
+         private val SALE_RESTRICTION: Duration = Duration.ofDays(30)
+         private const val PENALTIES_TO_RESTRICT = 2
+ 

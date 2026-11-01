@@ -1,0 +1,12 @@
+# S2 symbols — 줄 번호는 주입 사본 기준(inject 는 줄 수를 바꾸지 않는다 — 원본과 같은 좌표).
+# fix = 정답·대안 정답 패치가 실제로 바꾼 줄만(ADR-0008 §5.2 — 문맥 줄 없음). :79(구매 경고 상수 WARNINGS_TO_RESTRICT)는 오답 자리라 넣지 않는다.
+# edit = 정답 패치가 고치는 파일 전체(ADR-0005 §5.2 첫 편집 적중 전용 — ADR-0008 주 지표에는 쓰지 않는다).
+# read = 읽어야 할 곳.
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:82 fix  # PENALTIES_TO_RESTRICT 값(fix: 2 → 3)
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:73 fix  # restrictIfPenalized 비교(alt-1: >= → >)
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:1-142 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:65-74 read  # restrictIfPenalized: 판매 제한 판정
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:76-89 read  # companion 상수(PENALTIES_TO_RESTRICT·PENALTY_WINDOW)
+app/src/main/kotlin/com/ccle/layered/service/ItemRefunder.kt:66-87 read  # 판매자 귀책 → 패널티 1행 → restrictIfPenalized
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:38-46 read  # requireCanBid(SALE_RESTRICTED — 증상이 드러나는 곳, 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:53-63 read  # restrictIfWarned: 구매 경고(형제 규칙 — 오진 유도, 고칠 곳 아님)

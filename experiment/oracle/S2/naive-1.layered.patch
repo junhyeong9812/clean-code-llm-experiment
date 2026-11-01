@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -76,7 +76,7 @@
+     companion object {
+         private val WARNING_WINDOW: Duration = Duration.ofDays(30)
+         private val PURCHASE_RESTRICTION: Duration = Duration.ofDays(7)
+-        private const val WARNINGS_TO_RESTRICT = 3
++        private const val WARNINGS_TO_RESTRICT = 4
+         private val PENALTY_WINDOW: Duration = Duration.ofDays(30)
+         private val SALE_RESTRICTION: Duration = Duration.ofDays(30)
+         private const val PENALTIES_TO_RESTRICT = 2
