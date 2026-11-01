@@ -164,7 +164,9 @@ class MultiGroup(Base):
     def test_missing_group(self):
         r = self.run_fixture("groups", {A: {2}}, {A: lines_with(l2="L2", l8="L8")}, groups=GROUPS)
         self.assertEqual(r["groups_missing"], ["g2"])
-        self.assertIsNone(r["all_fix_touched_turn"])
+        self.assertEqual(r["all_fix_touched_turn"], max(e["turn"] for e in r["edits"]))  # 마지막 편집 사건 턴(§5.3 개정 1)
+        self.assertTrue(r["all_fix_fallback"])
+        self.assertEqual(r["primary"], r["all_fix_touched_turn"])
         r = self.run_fixture("groups", {A: {2}}, {A: lines_with(l2="L2", l8="L8")}, success=False, groups=GROUPS)
         self.assertEqual(r["all_fix_touched_turn"], "+inf")
 

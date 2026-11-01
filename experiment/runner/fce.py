@@ -15,7 +15,8 @@
 --groups CASE=PATH: S3 의 고칠 곳 그룹 정의(§5.3). PATH 는 로컬 파일 또는 `REV:repo/경로`(git show). 형식(JSON):
     {"god": {"<그룹 이름>": ["app/src/…/Marketplace.kt:281-283", …], …}, "layered": {…}}
   범위는 기준 좌표. 그룹 g 도달 = 바뀐 줄이 (fix ∪ alt) ∩ g 의 범위와 겹치는 편집 사건. alt 범위는 그것이 대신하는 그룹의
-  범위 목록에 함께 적는다(§5.3). 모든 그룹에 도달한 턴 = all_fix_touched_turn(실패 실행은 +inf).
+  범위 목록에 함께 적는다(§5.3). 모든 그룹에 도달한 턴 = all_fix_touched_turn(실패 실행은 +inf). 성공했는데 닿지 않은 그룹이 있으면
+  마지막 편집 사건 턴과 all_fix_fallback=true(§5.3 개정 1).
 
 출력(run, JSON lines — 한 실행 1행). 정수 턴 · "+inf"(실패 실행 — §5.1) · null(해당 없음/모름):
   first_correct_edit_turn  주 지표(§5.1). 성공 + 정답 편집 없음이면 첫 편집 사건 턴과 fce_fallback=true
@@ -545,18 +546,24 @@ def evaluate(cs: list, turns: int, base: Path, ranges: dict, groups, recorded: b
             fce = res.first_correct_turn
         else:  # 성공했지만 정답 편집 없음 — 등록하지 못한 대안 정답(§5.1)
             fce, fallback = res.first_edit_turn, True
-    all_turn, missing = None, None
+    all_turn, missing, all_fallback = None, None, False
     if groups is not None:
         missing = sorted(set(groups) - set(res.group_turns))
         if not unknown:
-            all_turn = INF if not success else (max(res.group_turns.values()) if not missing else None)
+            if not success:
+                all_turn = INF
+            elif not missing:
+                all_turn = max(res.group_turns.values())
+            else:  # 성공했지만 닿지 않은 그룹 — 등록하지 못한 대안 정답(ADR-0008 §5.3 개정 1): 마지막 편집 사건 턴
+                all_turn = max((e["turn"] for e in res.edits), default=None)
+                all_fallback = True
     return {
         "turns": turns, "unknown": unknown, "unknown_reasons": reasons, "replay_matches_diff": match,
         "first_correct_edit_turn": fmt(fce), "fce_fallback": fallback,
         "first_correct_edit_turn_raw": res.first_correct_turn,
         "all_fix_touched_turn": fmt(all_turn) if groups is not None else None,
         "group_turns": res.group_turns if groups is not None else None,
-        "groups_missing": missing,
+        "groups_missing": missing, "all_fix_fallback": all_fallback,
         "primary": fmt(all_turn) if groups is not None else fmt(fce),
         "first_edit_turn": res.first_edit_turn, "typo_turns": res.typo_turns, "sleep_turns": res.sleep_turns,
         "reads_before_correct": res.reads_before_correct, "edits": res.edits,
@@ -624,7 +631,7 @@ def summarize(rows: list) -> str:
         succ = [_num(r["primary"]) for r in good if r["success"]]
         cons = [_num(r["primary"]) for r in good]
         lines.append(f"| {label} | {len(sel)} | {median_str(succ)} | {median_str(cons)} | "
-                     f"{[r['primary'] for r in good]} | {sum(r['fce_fallback'] for r in sel)} | "
+                     f"{[r['primary'] for r in good]} | {sum(r['fce_fallback'] or bool(r.get('all_fix_fallback')) for r in sel)} | "
                      f"{sum(r['unknown'] for r in sel)} |")
     return "\n".join(lines)
 
