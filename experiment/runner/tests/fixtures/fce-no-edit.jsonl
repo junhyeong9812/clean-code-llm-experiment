@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "cwd": "/work"}
+{"type": "assistant", "message": {"id": "msg_1", "content": [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "cat TASK.md && grep -n l5 app/A.kt"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "5:l5", "is_error": false}]}}
+{"type": "assistant", "message": {"id": "msg_2", "content": [{"type": "text", "text": "done"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

@@ -1,0 +1,9 @@
+{"type": "system", "subtype": "init", "cwd": "/work"}
+{"type": "assistant", "message": {"id": "msg_1", "content": [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "sed -i 's/^l2$/L2/' app/A.kt"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "", "is_error": false}]}}
+{"type": "assistant", "message": {"id": "msg_2", "content": [{"type": "tool_use", "id": "tu_2", "name": "Bash", "input": {"command": "cat app/A.kt"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_2", "content": "...", "is_error": false}]}}
+{"type": "assistant", "message": {"id": "msg_3", "content": [{"type": "tool_use", "id": "tu_3", "name": "Bash", "input": {"command": "sed -i 's/^l8$/L8/' app/A.kt"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_3", "content": "", "is_error": false}]}}
+{"type": "assistant", "message": {"id": "msg_4", "content": [{"type": "text", "text": "done"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 4}

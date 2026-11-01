@@ -1,0 +1,7 @@
+{"type": "system", "subtype": "init", "cwd": "/work"}
+{"type": "assistant", "message": {"id": "msg_1", "content": [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "sed -i 's/^l9$/L9/' app/A.kt"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "", "is_error": false}]}}
+{"type": "assistant", "message": {"id": "msg_2", "content": [{"type": "tool_use", "id": "tu_2", "name": "Bash", "input": {"command": "sleep 30; cat /tmp/out.txt | tail"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_2", "content": "ok", "is_error": false}]}}
+{"type": "assistant", "message": {"id": "msg_3", "content": [{"type": "text", "text": "done"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 3}
