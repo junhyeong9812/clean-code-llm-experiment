@@ -1,0 +1,17 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+@@ -48,10 +48,12 @@
+             else -> " AND price >= :limit"
+         }
+         val order = if (side == "BUY") "price ASC" else "price DESC"
++        // 판매 제한 중인 판매자의 판매 입찰은 새 구매 입찰·즉시 구매의 상대가 되지 않는다(구매 입찰 상대는 그대로)
++        val sellerOpen = if (side == "BUY") " AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now)" else ""
+         val query = em.createNativeQuery(
+             "SELECT * FROM bids" +
+                 " WHERE product_size_id = :size AND side = :side AND status = 'ACTIVE' AND expires_at > :now" +
+-                " AND user_id <> :user" + crossing +
++                " AND user_id <> :user" + crossing + sellerOpen +
+                 " ORDER BY $order, created_at ASC, id ASC LIMIT 1",
+             Bid::class.java,
+         )

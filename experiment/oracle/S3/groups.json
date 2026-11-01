@@ -1,0 +1,14 @@
+{
+  "god": {
+    "book": ["app/src/main/kotlin/com/ccle/god/Marketplace.kt:279-285"],
+    "match": ["app/src/main/kotlin/com/ccle/god/Marketplace.kt:305-326"],
+    "wishlist": ["app/src/main/kotlin/com/ccle/god/Marketplace.kt:2627-2629"],
+    "alert": ["app/src/main/kotlin/com/ccle/god/Marketplace.kt:2705-2708"]
+  },
+  "layered": {
+    "book": ["app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:66-75"],
+    "match": ["app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:43-64"],
+    "wishlist": ["app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt:68-74"],
+    "alert": ["app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt:118-125"]
+  }
+}

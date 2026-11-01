@@ -1,0 +1,13 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -278,7 +278,8 @@
+         em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+         val row = em.createNativeQuery(
+             """
+-            SELECT max(price) FILTER (WHERE side = 'BUY'), min(price) FILTER (WHERE side = 'SELL')
++            SELECT max(price) FILTER (WHERE side = 'BUY'),
++                   min(price) FILTER (WHERE side = 'SELL' AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now))
+               FROM bids
+              WHERE product_size_id = :size AND status = 'ACTIVE' AND expires_at > :now
+             """,

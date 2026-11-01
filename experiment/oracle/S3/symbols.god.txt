@@ -1,0 +1,17 @@
+# S3 symbols — 줄 번호는 기준 사본(주입 없음 — 원본과 같은 좌표).
+# fix = 정답 패치가 실제로 바꾼 원래 줄(문맥 줄 제외 — ADR-0008 §5.2, 순수 삽입은 앵커와 그다음 줄). alt-1 만 바꾸는 원래 줄은 fix 종류로 적고 메모에 alt-1 을 단다(파서가 fix|read|edit 만 받는다).
+# edit = 정답 패치가 고치는 파일 전체(ADR-0005 §5.2 첫 편집 적중 — 보조 지표 전용). read = 읽어야 할 곳.
+# 고칠 곳 그룹(ADR-0008 §5.3 — groups.json): book = 281 · match = 312-313·316 · wishlist = 2628 · alert = 2706-2707. alt 116-117(공통 조건 상수 정의)은 어느 그룹에도 넣지 않는다.
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:281-281 fix  # book: 시세 쿼리의 최저 판매가 FILTER(판매 쪽에만 조건)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:312-313 fix  # match: 새 입찰이 BUY일 때만 붙는 조건 조각 삽입(앵커 = order 줄)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:316-316 fix  # match: 체결 상대 쿼리에 그 조각을 붙임
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:2628-2628 fix  # wishlist: 위시리스트 최저 판매가 쿼리
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:2706-2707 fix  # alert: price-alert-scan 의 발동 판매 입찰 쿼리(조건 줄 삽입)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:116-117 fix  # alt-1(대안 정답 범위 — events.parse_symbols 는 fix|read|edit 만 받는다): 공통 조건 상수(파일 최상위 private const) 정의 삽입
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1-3667 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:196-216 read  # placeBid: 새 입찰 제한(403)과 상대 찾기 호출
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:276-288 read  # getBook: 시세(BUY·SELL 한 쿼리)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:300-326 read  # findBestCounterBid: 체결 상대(새 입찰 방향에 따라 상대 쪽이 바뀜)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1486-1496 read  # payment-due 재매칭(판매 입찰이 새 입찰 쪽 — 상대는 BUY, 바뀌지 않음)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:2619-2637 read  # wishlist: 최저 판매가
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:2686-2720 read  # scanPriceAlerts: 발동 판매 입찰 선택

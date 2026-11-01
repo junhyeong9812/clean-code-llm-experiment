@@ -1,0 +1,23 @@
+# S3 symbols — 줄 번호는 기준 사본(주입 없음 — 원본과 같은 좌표).
+# fix = 정답 패치가 실제로 바꾼 원래 줄(문맥 줄 제외 — ADR-0008 §5.2, 순수 삽입은 앵커와 그다음 줄). alt-1 만 바꾸는 원래 줄은 fix 종류로 적고 메모에 alt-1 을 단다(파서가 fix|read|edit 만 받는다).
+# edit = 정답 패치가 고치는 파일 전체(ADR-0005 §5.2 첫 편집 적중 — 보조 지표 전용). read = 읽어야 할 곳.
+# 고칠 곳 그룹(ADR-0008 §5.3 — groups.json): book = JpaBidRepositories 69 · match = JpaBidRepositories 50-51·54 · wishlist = JpaNotificationRepositories 71 · alert = JpaNotificationRepositories 121-122. alt JpaBidRepositories 81-82(공통 조건 object 정의)는 어느 그룹에도 넣지 않는다.
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:69-69 fix  # book: 시세 쿼리의 최저 판매가 FILTER(판매 쪽에만 조건)
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:50-51 fix  # match: 새 입찰이 BUY일 때만 붙는 조건 조각 삽입(앵커 = order 줄)
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:54-54 fix  # match: 체결 상대 쿼리에 그 조각을 붙임
+app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt:71-71 fix  # wishlist: 위시리스트 최저 판매가 쿼리(bestSell)
+app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt:121-122 fix  # alert: price-alert-scan 의 발동 판매 입찰 쿼리(triggeringSell — 조건 줄 삽입)
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:81-82 fix  # alt-1(대안 정답 범위 — events.parse_symbols 는 fix|read|edit 만 받는다): 공통 조건 internal object 정의 삽입(파일 끝)
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:1-81 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt:1-141 edit  # 〃
+app/src/main/kotlin/com/ccle/layered/domain/User.kt:38-46 read  # 새 입찰 제한(403)
+app/src/main/kotlin/com/ccle/layered/service/PlaceBidService.kt:33-50 read  # 입찰 등록: 상대 찾기 호출
+app/src/main/kotlin/com/ccle/layered/domain/Bid.kt:160-170 read  # 포트: bestCounter·book
+app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt:43-75 read  # 어댑터: 체결 상대·시세
+app/src/main/kotlin/com/ccle/layered/service/QueryServices.kt:33-36 read  # 시세 조회
+app/src/main/kotlin/com/ccle/layered/service/BatchService.kt:190-200 read  # payment-due 재매칭(판매 입찰이 새 입찰 쪽 — 상대는 BUY, 바뀌지 않음)
+app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt:184-216 read  # 포트: bestSell·triggeringSell
+app/src/main/kotlin/com/ccle/layered/service/WishlistService.kt:61-66 read  # 위시리스트 조회
+app/src/main/kotlin/com/ccle/layered/service/WishlistService.kt:153-170 read  # price-alert-scan
+app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt:67-74 read  # 어댑터: bestSell
+app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt:117-126 read  # 어댑터: triggeringSell

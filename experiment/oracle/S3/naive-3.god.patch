@@ -1,0 +1,27 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -278,7 +278,8 @@
+         em.find(ProductSize::class.java, productSizeId) ?: notFound("없는 사이즈: $productSizeId")
+         val row = em.createNativeQuery(
+             """
+-            SELECT max(price) FILTER (WHERE side = 'BUY'), min(price) FILTER (WHERE side = 'SELL')
++            SELECT max(price) FILTER (WHERE side = 'BUY'),
++                   min(price) FILTER (WHERE side = 'SELL' AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now))
+               FROM bids
+              WHERE product_size_id = :size AND status = 'ACTIVE' AND expires_at > :now
+             """,
+@@ -310,10 +311,12 @@
+             else -> " AND price >= :limit"
+         }
+         val order = if (side == "BUY") "price ASC" else "price DESC"
++        // 판매 제한 중인 판매자의 판매 입찰은 새 구매 입찰·즉시 구매의 상대가 되지 않는다(구매 입찰 상대는 그대로)
++        val sellerOpen = if (side == "BUY") " AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now)" else ""
+         val query = em.createNativeQuery(
+             "SELECT * FROM bids" +
+                 " WHERE product_size_id = :size AND side = :side AND status = 'ACTIVE' AND expires_at > :now" +
+-                " AND user_id <> :user" + crossing +
++                " AND user_id <> :user" + crossing + sellerOpen +
+                 " ORDER BY $order, created_at ASC, id ASC LIMIT 1",
+             Bid::class.java,
+         )
