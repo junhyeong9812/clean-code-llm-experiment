@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
+@@ -100,7 +100,7 @@
+     override fun forEach(target: BatchTarget, now: Instant, handle: (Long) -> Boolean): Int {
+         val spec = spec(target)
+         val params = spec.params(now)
+-        val upTo = (em.createNativeQuery("SELECT coalesce(max(id), 0) FROM ${spec.table}").singleResult as Number).toLong()
++        val upTo = (em.createNativeQuery("SELECT coalesce(max(id), 0) FROM ${spec.table}").singleResult as Number).toLong() + 1
+         var after = 0L
+         var processed = 0
+         while (true) {

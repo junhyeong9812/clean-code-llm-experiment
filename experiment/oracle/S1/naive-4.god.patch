@@ -1,0 +1,20 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1442,7 +1442,7 @@
+             "t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now" +
+                 " AND NOT EXISTS (SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id" +
+                 "                 WHERE i.trade_id = t.id AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING'))",
+-            mapOf("now" to now),
++            mapOf("now" to now.plus(Duration.ofMinutes(1))),
+             isolatedAs = "payment-due",
+         ) { tradeId -> tx.execute { expireUnpaidTrade(tradeId, now) }!! }
+ 
+@@ -1459,7 +1459,7 @@
+             "SELECT count(*) FROM order_items i JOIN orders o ON o.id = i.order_id" +
+                 " WHERE i.trade_id = :trade AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING')",
+         ).setParameter("trade", tradeId).singleResult as Number
+-        if (trade.status != "AWAITING_PAYMENT" || trade.paymentDueAt.isAfter(now) || undecidedOrders.toLong() > 0) return false
++        if (trade.status != "AWAITING_PAYMENT" || trade.paymentDueAt.isAfter(now.plus(Duration.ofMinutes(1))) || undecidedOrders.toLong() > 0) return false
+ 
+         // 만료를 바로 DB에 반영한다: 아래 재매칭이 같은 판매 입찰로 새 체결을 넣을 때 부분 UNIQUE(trades_live_sell_bid_key)에 걸리지 않게
+         trade.status = "PAYMENT_EXPIRED"

@@ -1,0 +1,30 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Trade.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Trade.kt
+@@ -43,7 +43,7 @@
+      * undecidedOrders = 그 체결에 걸린 UNKNOWN·PAYING 주문 수.
+      */
+     fun isExpirableUnpaid(now: Instant, undecidedOrders: Long): Boolean =
+-        status == "AWAITING_PAYMENT" && !paymentDueAt.isAfter(now) && undecidedOrders == 0L
++        status == "AWAITING_PAYMENT" && !paymentDueAt.isAfter(now.plus(Duration.ofMinutes(1))) && undecidedOrders == 0L
+ 
+     /** AWAITING_PAYMENT → PAYMENT_EXPIRED. */
+     fun expireUnpaid() {
+--- a/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
+@@ -12,6 +12,7 @@
+ import com.ccle.layered.domain.SellerGradeMonth
+ import jakarta.persistence.EntityManager
+ import org.springframework.stereotype.Component
++import java.time.Duration
+ import java.time.Instant
+ 
+ /**
+@@ -32,7 +33,7 @@
+             "t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now" +
+                 " AND NOT EXISTS (SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id" +
+                 "                 WHERE i.trade_id = t.id AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING'))",
+-            ::nowParam,
++            { mapOf("now" to it.plus(Duration.ofMinutes(1))) },
+         )
+         BatchTarget.UNKNOWN_ORDERS -> Spec("orders", "t.status = 'UNKNOWN'") { emptyMap() }
+         BatchTarget.PAYING_ORDERS -> Spec("orders", "t.status = 'PAYING'") { emptyMap() }

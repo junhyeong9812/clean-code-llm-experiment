@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1379,7 +1379,7 @@
+         isolatedAs: String? = null,
+         handle: (Long) -> Boolean,
+     ): BatchResult {
+-        val upTo = (em.createNativeQuery("SELECT coalesce(max(id), 0) FROM $table").singleResult as Number).toLong()
++        val upTo = (em.createNativeQuery("SELECT coalesce(max(id), 0) FROM $table").singleResult as Number).toLong() + 1
+         var after = 0L
+         var processed = 0
+         var failed = 0

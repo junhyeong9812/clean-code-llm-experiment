@@ -1,0 +1,13 @@
+--- a/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
+@@ -29,9 +29,7 @@
+         BatchTarget.EXPIRED_BIDS -> Spec("bids", "t.status = 'ACTIVE' AND t.expires_at <= :now", ::nowParam)
+         BatchTarget.OVERDUE_TRADES -> Spec(
+             "trades",
+-            "t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now" +
+-                " AND NOT EXISTS (SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id" +
+-                "                 WHERE i.trade_id = t.id AND i.status <> 'PAYMENT_FAILED' AND o.status IN ('UNKNOWN', 'PAYING'))",
++            "t.status = 'AWAITING_PAYMENT' AND t.payment_due_at <= :now",
+             ::nowParam,
+         )
+         BatchTarget.UNKNOWN_ORDERS -> Spec("orders", "t.status = 'UNKNOWN'") { emptyMap() }

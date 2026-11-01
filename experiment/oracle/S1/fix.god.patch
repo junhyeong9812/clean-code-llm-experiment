@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1385,7 +1385,7 @@
+         var failed = 0
+         while (true) {
+             val query = em.createNativeQuery(
+-                "SELECT t.id FROM $table t WHERE ($condition) AND t.id > :after AND t.id < :upTo ORDER BY t.id LIMIT 500",
++                "SELECT t.id FROM $table t WHERE ($condition) AND t.id > :after AND t.id <= :upTo ORDER BY t.id LIMIT 500",
+             ).setParameter("after", after).setParameter("upTo", upTo)
+             params.forEach { (name, value) -> query.setParameter(name, value) }
+             val ids = query.resultList.map { (it as Number).toLong() }

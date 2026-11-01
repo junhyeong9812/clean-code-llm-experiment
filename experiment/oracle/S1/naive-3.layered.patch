@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
+@@ -97,7 +97,7 @@
+         val started = System.nanoTime() // 소요 시간 로그용(업무 시각 아님)
+         val result = when (name) {
+             "bid-expiry" -> bidExpiry.run(now)
+-            "payment-due" -> paymentDue.run(now)
++            "payment-due" -> paymentDue.run(now).let { first -> paymentDue.run(now).let { BatchResult(first.processed + it.processed, it.failed) } }
+             "pg-inquiry" -> pgInquiry.run(now)
+             "shipment-deadline" -> shipmentDeadline.run(now)
+             "auto-confirm" -> autoConfirm.run(now)

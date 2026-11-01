@@ -1,0 +1,12 @@
+# S1 symbols — 줄 번호는 주입 사본 기준(inject는 줄을 더하거나 빼지 않는다 — 원본과 같은 좌표).
+# fix = 정답·대안 정답(alt-1) 패치가 실제로 바꾼 원래 줄만(ADR-0008 §5.2 — 문맥 줄 없음). alt-1 줄은 메모에 [alt-1] 표시(종류 이름은 fix|read|edit만 — events.py:459).
+# edit = 정답 패치가 고치는 파일 전체(ADR-0005 §5.2 첫 편집 적중 — 보조 지표 전용, ADR-0008 주 지표는 fix ∪ alt만 본다).
+# read = 읽어야 할 곳.
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1388-1388 fix  # forEachTarget 대상 조회의 id 상한 비교(t.id < :upTo → <=)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1382-1382 fix  # [alt-1] forEachTarget 상한 계산(max(id) → max(id) + 1, alt-1)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1-3667 edit  # 정답 패치가 고치는 파일 전체(첫 편집 적중 전용)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1366-1414 read  # forEachTarget: 공통 배치 대상 순회(고칠 곳)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1433-1447 read  # expireUnpaidTrades: payment-due 대상 조건(오진 유도 — 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1449-1470 read  # expireUnpaidTrade: 체결 1건 만료와 재확인(오진 유도 — 고칠 곳 아님)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1415-1431 read  # expireBids: 같은 순회를 쓰는 다른 배치(숨은 테스트 B)
+app/src/main/kotlin/com/ccle/god/Marketplace.kt:1333-1365 read  # runBatch: 배치 이름 → 처리

@@ -1,0 +1,20 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1366,7 +1366,7 @@
+ 
+     /**
+      * 배치 대상 id를 id 순 키셋 페이지(500개씩)로 읽어 하나씩 처리한다. processed = handle이 true를 돌려준 수.
+-     * 배치를 시작할 때의 최대 id까지만 본다: 실행 중에 새로 생긴 행(재매칭 체결·새 주문 등)은 다음 실행의 대상이다.
++     * 읽을 대상은 배치를 시작할 때 정한다.
+      * condition은 별칭 t로 쓴 WHERE 조건, params는 그 조건의 이름 붙은 파라미터.
+      * isolatedAs(배치 이름)가 있으면 대상 1건의 예외는 그 대상의 실패로 세고 다음 대상을 계속한다(ADR-0003 §12의 2) — 대상의 트랜잭션은
+      * 롤백됐고(커밋 단계 예외면 커밋 여부 불명) 대상 조건이 그대로 남으므로 다음 실행의 대상이다. 카드 취소 실패(409 PG_UNAVAILABLE)는 WARN, 그 밖은 ERROR로 남긴다.
+@@ -1385,7 +1385,7 @@
+         var failed = 0
+         while (true) {
+             val query = em.createNativeQuery(
+-                "SELECT t.id FROM $table t WHERE ($condition) AND t.id > :after AND t.id <= :upTo ORDER BY t.id LIMIT 500",
++                "SELECT t.id FROM $table t WHERE ($condition) AND t.id > :after AND t.id < :upTo ORDER BY t.id LIMIT 500",
+             ).setParameter("after", after).setParameter("upTo", upTo)
+             params.forEach { (name, value) -> query.setParameter(name, value) }
+             val ids = query.resultList.map { (it as Number).toLong() }

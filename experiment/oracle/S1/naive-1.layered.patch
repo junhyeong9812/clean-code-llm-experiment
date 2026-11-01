@@ -1,0 +1,40 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Trade.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Trade.kt
+@@ -107,6 +107,9 @@
+     /** 그 입찰의 살아 있는(PAYMENT_EXPIRED가 아닌) 체결 id. 입찰 1개에 최대 1건이다. */
+     fun liveTradeIdOf(bidId: Long): Long?
+ 
++    /** 가장 큰 체결 id(없으면 0). */
++    fun maxId(): Long
++
+     /** 내 체결 목록, id 오름차순. */
+     fun listOf(userId: Long, filter: TradeFilter): List<Trade>
+ 
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaTradeRepository.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaTradeRepository.kt
+@@ -30,6 +30,8 @@
+             ).setParameter("bid", bidId).resultList.firstOrNull() as Number?
+             )?.toLong()
+ 
++    override fun maxId(): Long = (em.createNativeQuery("SELECT coalesce(max(id), 0) FROM trades").singleResult as Number).toLong()
++
+     override fun reload(trade: Trade) = em.refresh(trade)
+ 
+     override fun flush() = em.flush()
+--- a/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
++++ b/app/src/main/kotlin/com/ccle/layered/service/BatchService.kt
+@@ -170,8 +170,12 @@
+     private val events: BidEventRepository,
+     private val matches: MatchRecorder,
+ ) {
+-    fun run(now: Instant): BatchResult =
+-        targets.forEachIsolated("payment-due", BatchTarget.OVERDUE_TRADES, now) { tradeId -> tx.execute { expire(tradeId, now) }!! }
++    fun run(now: Instant): BatchResult {
++        val lastId = trades.maxId()
++        val result = targets.forEachIsolated("payment-due", BatchTarget.OVERDUE_TRADES, now) { tradeId -> tx.execute { expire(tradeId, now) }!! }
++        val lastDone = lastId > 0 && tx.execute { expire(lastId, now) }!!
++        return if (lastDone) BatchResult(result.processed + 1, result.failed) else result
++    }
+ 
+     private fun expire(tradeId: Long, now: Instant): Boolean {
+         val trade = trades.find(tradeId)!!
