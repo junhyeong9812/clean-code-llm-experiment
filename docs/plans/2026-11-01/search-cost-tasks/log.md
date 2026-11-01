@@ -58,3 +58,30 @@
 | 2026-11-01 12:59:13 | SCT-CLUE-1 회수(Opus, 77s, 낱말 저장 12:57:30 → grep 12:57:39): S1·S2 각 40낱말. 메인 판정(±40·≤10줄): S1 LIMIT(영어 추측) god M:1388·layered KeysetBatchTargets:108 — 두 구조 직접 / S2 god만 직접 3(sellerFault :1016, ">= 2" :1028, SellerPenalty :1019·:1024), layered 0. TASK·공개 테스트에 실제로 나온 낱말은 두 과제 모두 직접 0 → ADR §4.1 조건(영어 추측 포함) 미충족, 문구 수정으로 없앨 수 없는 단서 | 사용자 결정 |
 | 2026-11-01 13:04:28 | 사용자: 단서 조건 = TASK·공개 테스트 낱말만, 추측 낱말은 측정·표시(S2 god = 처치, S1 LIMIT = 위협) — ADR 개정 예정. SCT-S3 회수(Opus, ~2.4h): fix·alt-1 두 구조 전 단계 True(contract 121·contract2 88 = exclude 각 1), none·naive 1~6 숨은 실패 이름까지 두 구조 같음(메인 대조), 그룹 도달 fix·alt 4/4·naive 부분. 문제: 공개 테스트·TASK의 SELL(API 값)·bids가 4그룹 모두 닿음 → S3 변형 조건 불가 · 변경 규칙 주석을 중립화 안 함(C2 방침 — ADR §2는 중립화) · 워커가 말한 S1 symbols alt 오류는 사실 아님(parse_symbols 6파일 ok 메인 확인). 커밋 bb6a7b4 | 사용자 결정 |
 | 2026-11-01 13:07:30 | 사용자: S3 찾기 비용 조건 예외 + S3 바뀌는 규칙 주석 중립화(ADR대로) → S3 워커 후속 지시(주석 전용 inject·재스모크). ADR-0008 개정 1 작성(§4.1 적용 범위·S3 예외·§5.3 all_fix_fallback·위협 12·13·§10) | 개정 리뷰 대기 |
+| 2026-11-01 13:08:06 | fce all_fix_fallback 구현(unittest 463 OK) 커밋 · ADR 개정 1 커밋 — 개정 리뷰는 S3·S4 완료 뒤 과제 묶음 듀얼 1패스와 함께 | S3 후속·S4 대기 |
+| 2026-11-01 14:17:47 | SCT-S4 회수 — fix·alt-1 두 구조 전 단계 success, 숨은 실패 대칭(none A·naive-1 C·naive-2 BCD·naive-3 BD), naive 3개 판정 범위 밖. 메인 판단: god alt-1 삽입형 등록, 컨트롤러 defaultValue는 alt 미등록(빈 limit= 계약 변경 — fallback 표시) | 커밋 fd2989a · S3 후속 대기 |
+| 2026-11-01 15:03:45 | SCT-S3 후속 회수 — 주석만 바꾸는 inject(god 6줄·layered 7줄, 줄 수 불변), inject 위 스모크 18행: fix·alt-1 두 구조 success, 숨은 실패 수·테스트 이름 대칭(none 5, naive 4·3·2·2·5·4) — 메인 교차 확인. 찾기 비용 예외 기록 | 커밋 8bc8f35 · 다음: S3·S4 독립 단서 측정 + 과제 묶음 듀얼 1패스 |
+| 2026-11-01 15:04:41 | 과제 묶음 듀얼 1패스 시작(S1~S4 + fce 개정 + ADR 개정 1, 기준 8bc8f35, 사본 /tmp/tmp.Ipeg82P6Xy) — codex ∥ Opus 리뷰어 · SCT-CLUE-2(S3·S4 독립 단서 측정, Opus) | 회수 대기 |
+| 2026-11-01 15:08:19 | SCT-CLUE-2 회수 — S3·S4 독립 단서 측정, 작성자 표와 겹치는 낱말 줄 수·그룹 불일치 0(메인 표본 확인: S3 god bids 10줄, S4 layered 마지막 id 2줄). 과제 낱말 직접 단서 S3 god 14·layered 2, S4 god 10·layered 4(fix 줄만 6·0) — 둘 다 예외라 표만, 비대칭은 god KDoc이 SQL과 같은 파일 ±40에 있는 구조 차이(처치). 작성자 누락 낱말: S4 마지막 id·20건, S3 제한 중·product_sizes 등 → design.md 보완은 리뷰 수정과 함께 | 리뷰 2건 대기 |
+
+## 리뷰 ledger — 과제 묶음 듀얼 1패스 (S1~S4 · fce · 개정 1, 기준 8bc8f35)
+
+| ID | 출처 | 지적 | 판정 | 상태 |
+|---|---|---|---|---|
+| B1 | codex R1 | §4.3-3이 S3 예외를 모름 | 채택 — 개정 2 ① | fixed |
+| B2 | codex R2 · opus O1 | S3 naive가 범위에 닿음, naive-6 4그룹 | 채택 — 그룹 도달로 판정, naive-6은 숨은 실패라 허용(개정 2 ②) | fixed |
+| B3 | codex R3 · opus O6 | S4 컨트롤러 `limit ?: "20"` 정답이 범위 밖 | 채택 — alt-2 등록, 같은 줄 naive-3 삭제 | SCT-S4-FIX 진행 |
+| B4 | codex R4 | S4 defaultValue 형태가 빈 limit= 계약을 깨도 success | 채택 — 숨은 E(빈 limit= 400) | SCT-S4-FIX 진행 |
+| B5 | codex R5 · opus O10 | 5회 결정성·2회 재현 없음, 스모크 SHA 혼재 | 이미 계획 — 고정 SHA 채택 행렬 | 대기 |
+| B6 | opus O2 | S3 WHERE 절 형태가 범위 밖 | 채택 — alt-2 + groups 보강 | SCT-ALT2 진행 |
+| B7 | opus O3 | 대체값 '마지막 편집'에 테스트 편집 포함, §10 서술 불일치 | 채택 — 테스트 쪽 제외(291176c) + §10 정정 | fixed |
+| B8 | opus O4 | 3차 결론 문장 과대 | 채택 — 문장·문턱 유지, 한정어 규칙(개정 2 ④) | fixed |
+| B9 | opus O5 | S1 `upTo + 1` 정답 미등록 | 채택 — alt-2 | SCT-ALT2 진행 |
+| B10 | opus O7 | S4 alt-1 범위 크기 구조별 차이 | 위협 14 | fixed |
+| B11 | opus O8 | S3 alt-1 범위의 무관 편집 | 위협 15(보조 지표만) | fixed |
+| B12 | opus O9 | 성공·편집 없음 → primary None 조용히 빠짐 | 채택 — '값 없음' 열·규칙(291176c, 개정 2 ③) | fixed |
+| B13 | opus O11 | S3 god :200 중립 문장에 과제 낱말 | 위협 16(직접 단서 아님 — SCT-CLUE-2) | fixed |
+| B14 | opus O12 | §4.2 S3 회귀 '갱신본' 서술 불일치 | 채택 — 실제로 정정 | fixed |
+| 2026-11-01 15:13:18 | 과제 묶음 듀얼 1패스 회수·종합(codex 5건 · opus 중간 4·낮음 8, 높음 0 — ledger B1~B14). fce 개정(291176c, unittest 465 OK) · ADR 개정 2 작성 · SCT-S4-FIX·SCT-ALT2 워커 발주 | 워커 대기 → 재점검 |
+| 2026-11-01 16:16:14 | SCT-ALT2 회수 — S1 alt-2(upTo + 1, god :1389·layered :109)·S3 alt-2(WHERE 형태, 4그룹) 두 구조 전 단계 success(메인 확인). naive 범위 겹침 S1 0. S3 naive-4가 4/4 도달로 바뀜(alt-2와 같은 WHERE 줄) — 메인 판단: naive-6과 같이 허용(숨은 실패라 +∞), 개정 2 ②·위협 14에 반영 | 커밋 4517577 · S4-FIX 대기 |
+| 2026-11-01 17:16:47 | SCT-S4-FIX 회수 — alt-2(컨트롤러 limit ?: "20") 등록·naive-3 삭제·숨은 E 추가. v2 14행: fix·alt-1·alt-2 두 구조 success, 숨은 실패 대칭(none A·naive-1 C·naive-2 BCD·defaultValue probe E — 메인 확인), 범위 교집합 ∅. symbols 메모 표기 혼재([alt-2]·alt-1:)는 주석이라 그대로 | 커밋 ff78037 |
