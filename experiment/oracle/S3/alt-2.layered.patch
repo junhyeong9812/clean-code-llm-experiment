@@ -1,0 +1,40 @@
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaBidRepositories.kt
+@@ -50,7 +50,7 @@
+         val order = if (side == "BUY") "price ASC" else "price DESC"
+         val query = em.createNativeQuery(
+             "SELECT * FROM bids" +
+-                " WHERE product_size_id = :size AND side = :side AND status = 'ACTIVE' AND expires_at > :now" +
++                " WHERE product_size_id = :size AND side = :side AND status = 'ACTIVE' AND expires_at > :now AND (side = 'BUY' OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now))" +
+                 " AND user_id <> :user" + crossing +
+                 " ORDER BY $order, created_at ASC, id ASC LIMIT 1",
+             Bid::class.java,
+@@ -68,7 +68,7 @@
+             """
+             SELECT max(price) FILTER (WHERE side = 'BUY'), min(price) FILTER (WHERE side = 'SELL')
+               FROM bids
+-             WHERE product_size_id = :size AND status = 'ACTIVE' AND expires_at > :now
++             WHERE product_size_id = :size AND status = 'ACTIVE' AND expires_at > :now AND (side = 'BUY' OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now))
+             """,
+         ).setParameter("size", productSizeId).setParameter("now", now).singleResult as Array<*>
+         return Book(bestBuy = (row[0] as Number?)?.toLong(), bestSell = (row[1] as Number?)?.toLong())
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt
+@@ -68,7 +68,7 @@
+     override fun bestSell(productSizeId: Long, now: Instant): Long? =
+         (
+             em.createNativeQuery(
+-                "SELECT min(price) FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now",
++                "SELECT min(price) FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now)",
+             ).setParameter("size", productSizeId).setParameter("now", now).singleResult as Number?
+             )?.toLong()
+ }
+@@ -118,7 +118,7 @@
+     override fun triggeringSell(productSizeId: Long, targetPrice: Long, now: Instant): Long? =
+         (
+             em.createNativeQuery(
+-                "SELECT id FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now" +
++                "SELECT id FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now)" +
+                     " AND price <= :target ORDER BY price, created_at, id LIMIT 1",
+             ).setParameter("size", productSizeId).setParameter("now", now).setParameter("target", targetPrice)
+                 .resultList.firstOrNull() as Number?

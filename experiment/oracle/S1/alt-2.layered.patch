@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
+@@ -106,7 +106,7 @@
+         while (true) {
+             val query = em.createNativeQuery(
+                 "SELECT t.id FROM ${spec.table} t WHERE (${spec.condition}) AND t.id > :after AND t.id < :upTo ORDER BY t.id LIMIT 500",
+-            ).setParameter("after", after).setParameter("upTo", upTo)
++            ).setParameter("after", after).setParameter("upTo", upTo + 1)
+             params.forEach { (name, value) -> query.setParameter(name, value) }
+             val ids = query.resultList.map { (it as Number).toLong() }
+             if (ids.isEmpty()) return processed

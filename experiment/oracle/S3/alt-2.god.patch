@@ -1,0 +1,38 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -280,7 +280,7 @@
+             """
+             SELECT max(price) FILTER (WHERE side = 'BUY'), min(price) FILTER (WHERE side = 'SELL')
+               FROM bids
+-             WHERE product_size_id = :size AND status = 'ACTIVE' AND expires_at > :now
++             WHERE product_size_id = :size AND status = 'ACTIVE' AND expires_at > :now AND (side = 'BUY' OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now))
+             """,
+         ).setParameter("size", productSizeId).setParameter("now", clock.now()).singleResult as Array<*>
+         return BookView(bestBuy = (row[0] as Number?)?.toLong(), bestSell = (row[1] as Number?)?.toLong())
+@@ -312,7 +312,7 @@
+         val order = if (side == "BUY") "price ASC" else "price DESC"
+         val query = em.createNativeQuery(
+             "SELECT * FROM bids" +
+-                " WHERE product_size_id = :size AND side = :side AND status = 'ACTIVE' AND expires_at > :now" +
++                " WHERE product_size_id = :size AND side = :side AND status = 'ACTIVE' AND expires_at > :now AND (side = 'BUY' OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now))" +
+                 " AND user_id <> :user" + crossing +
+                 " ORDER BY $order, created_at ASC, id ASC LIMIT 1",
+             Bid::class.java,
+@@ -2625,7 +2625,7 @@
+         em.createQuery("SELECT w FROM Wishlist w WHERE w.userId = :user ORDER BY w.productSizeId", Wishlist::class.java)
+             .setParameter("user", userId).resultList.map { w ->
+                 val bestSell = em.createNativeQuery(
+-                    "SELECT min(price) FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now",
++                    "SELECT min(price) FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now)",
+                 ).setParameter("size", w.productSizeId).setParameter("now", now).singleResult as Number?
+                 val alert = em.createQuery(
+                     "SELECT a FROM PriceAlert a WHERE a.userId = :user AND a.productSizeId = :size AND a.status = 'ACTIVE'",
+@@ -2703,7 +2703,7 @@
+                 }
+                 if (em.find(User::class.java, alert.userId).purchaseRestrictedUntil?.isAfter(now) == true) return@execute false
+                 val bidId = em.createNativeQuery(
+-                    "SELECT id FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now" +
++                    "SELECT id FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = bids.user_id AND u.sale_restricted_until > :now)" +
+                         " AND price <= :target ORDER BY price, created_at, id LIMIT 1",
+                 ).setParameter("size", alert.productSizeId).setParameter("now", now).setParameter("target", alert.targetPrice)
+                     .resultList.firstOrNull() as Number? ?: return@execute false

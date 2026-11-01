@@ -30,13 +30,16 @@
 
 - 고칠 파일: god 1 / layered 2(같은 `infra` 패키지). 고칠 곳 4 대 4, SQL 문자열 같다(ADR §4.2).
 - `groups.json`: 그룹마다 그 쿼리를 감싼 범위(god book `:279-285`·match `:305-326`·wishlist `:2627-2629`·alert `:2705-2708`, layered book `:66-75`·match `:43-64`·wishlist `:68-74`·alert `:118-125`). 도달 판정은 fce가 `(fix ∪ alt) ∩ 그룹`으로 하므로 실제로 세는 줄은 위 표의 fix 줄이다.
-- 판정 범위 줄 수(§5.2, fix ∪ alt): god 9줄(fix 7 + alt 2) / layered 9줄(fix 7 + alt 2).
+- 판정 범위 줄 수(§5.2, fix ∪ alt): god **11줄**(fix 7 + alt-1 2 + alt-2 2 — `:283`·`:315`) / layered **11줄**(fix 7 + alt-1 2 + alt-2 2 — `JpaBidRepositories.kt:53`·`:71`). alt-2 등록 전 9 / 9.
+- `groups.json`은 alt-2 등록에도 **바꾸지 않았다** — alt-2 줄(god `:283`·`:315`, layered `JpaBidRepositories.kt:71`·`:53`)이 이미 book·match 그룹 범위(`:279-285`·`:305-326`, `:66-75`·`:43-64`) 안에 있고, wishlist·alert의 alt-2 줄은 fix 줄과 같다.
 
 ## 대안 정답
 
 - **alt-1 (공통 조건 조각 한 곳):** 성립한다. god는 파일 최상위 `private const val SELLER_NOT_RESTRICTED`(import 뒤 `:116-117` 삽입), layered는 `JpaBidRepositories.kt` 끝에 `internal object SaleRestrictionSql { const val SELLER_OPEN }`(`:81-82` 삽입 — 같은 패키지의 `JpaNotificationRepositories.kt`가 쓴다, 기존 `PriceAlertRearmSql`과 같은 모양). 네 쿼리는 문자열 템플릿으로 그 상수를 붙인다 — 사용처 줄은 정답과 같은 줄이라 각 그룹에 그대로 속한다. **정의 줄(god `:116-117`, layered `:81-82`)은 어느 그룹에도 넣지 않는다** — 정의만 하고 사용처를 안 고치면 아무 그룹에도 닿지 않아야 하므로(첫 정답 편집 턴에는 센다 — §5.2 alt 범위).
   - 재생기 주의: god 정의 삽입은 빈 줄 경계라 재생기(difflib)가 앵커를 `:115`로 잡는다(패치 범위는 `:116-117`). 정의만 먼저 넣는 실행은 첫 정답 편집으로 잡히지 않을 수 있다 — 그룹 도달(주 지표)에는 영향 없음.
-- 숨은 테스트는 결과만 보므로 `LEFT JOIN`·`EXISTS` 대신 `user_id NOT IN (…)`·서비스 층 거르기 등도 통과한다. 다만 판정 범위 밖 줄(예: 시세 WHERE를 `side = 'BUY' OR …`로 고치는 `:283`)만 고친 정답은 그 그룹 도달로 잡히지 않는다(§5.2 넓히는 규칙 없음 — 성공 + 미도달이면 fce_fallback).
+- **alt-2 (WHERE 줄 형태, 듀얼 리뷰 지적 2026-11-01 등록):** 성립한다. 시세·체결 상대 쿼리의 WHERE 줄 끝에 `AND (side = 'BUY' OR <조건>)`(god `:283`·`:315`, layered `JpaBidRepositories.kt:71`·`:53`), 위시리스트·가격 알림은 WHERE 줄(= 쿼리 줄 god `:2628`·`:2706`, layered `JpaNotificationRepositories.kt:71`·`:121`) 끝에 `AND <조건>`. 의미: 시세는 BUY 행을 모두 남기고 제한 판매자의 SELL 행만 빼므로 `max(BUY)`는 그대로·`min(SELL)`만 걸러진다(fix의 FILTER 형태와 같은 결과). 체결 상대는 행의 `side`(= 상대 쪽)로 가리므로 상대가 SELL일 때만 조건이 걸린다(fix의 `if (side == "BUY")`와 같은 결과). 두 구조 같은 문자열·같은 위치 — 의미 차이 없음.
+  - **WHERE 줄 뒤에 새 줄을 넣는 변형**(god `:283` 뒤 `AND (side = 'BUY' OR …)`, `:315` 뒤 `" AND (side = 'BUY' OR …)" +`; layered `:71`·`:53` 뒤)은 별도 패치로 등록하지 않았다 — 재생기(`FileMap.apply`)가 순수 삽입의 앵커를 WHERE 줄로 잡아 alt-2 범위에 그대로 닿는다(스크래치 변형 패치로 확인: 두 구조 4/4).
+- 숨은 테스트는 결과만 보므로 `LEFT JOIN`·`EXISTS` 대신 `user_id NOT IN (…)`·서비스 층 거르기 등도 통과한다. 판정 범위(fix ∪ alt-1 ∪ alt-2) 밖 줄만 고친 정답은 그 그룹 도달로 잡히지 않는다(§5.2 넓히는 규칙 없음 — 성공 + 미도달이면 fce_fallback).
 
 ## 순진한 오답 (naive-N)
 
@@ -167,7 +170,13 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 | trigger | 5 | alert | 11 | alert | |
 | 체결 가능 | 1 | - | 1 | - | |
 | expires_at | 19 | alert,book,match,wishlist | 29 | alert,book,match,wishlist | **넘음** |
+| 제한 중 | 5 | alert(`:2690` "구매 제한 중" KDoc — **직접 단서**, ≤10줄) | 6 | - | |
+| product_sizes | 6 | book,match,wishlist(`:294` 잠금 SQL·`:2602` — **직접 단서**, ≤10줄) | 6 | match,wishlist(`JpaBidRepositories.kt:27`·`JpaNotificationRepositories.kt:65` — **직접 단서**) | **넘음**(god) |
+| side | 22 | alert,book,match,wishlist | 33 | alert,book,match,wishlist | **넘음** |
+| productSizeId | 89 | alert,book,match,wishlist | 127 | alert,book,match,wishlist | **넘음** |
+| bidId | 31 | alert,book,match | 31 | - | **넘음**(god) |
 
+- 추가 5낱말(`제한 중`·`product_sizes`·`side`·`productSizeId`·`bidId`)은 독립 측정이 작성자 표에서 빠졌다고 지적한 것이다(2026-11-01 15시 같은 방법으로 재측정 — 기준 사본 = 원본 + inject, ±40은 fix 줄 기준). `제한 중`은 god에서만 alert 그룹 직접 단서(`판매 제한 중` 2줄은 그룹 밖 — 닿는 것은 "구매 제한 중" 주석). `product_sizes`는 두 구조 모두 직접 단서(사이즈 잠금·존재 확인 SQL이 고칠 쿼리 옆에 있음) — god 3그룹, layered 2그룹으로 비대칭. `side`·`productSizeId`는 공개 API 필드 이름이라 4그룹(SELL·bids와 같은 성질 — S3 예외 근거와 같다). `bidId`는 god만 3그룹(placeBid 응답·알림 발동 코드가 고칠 함수 옆).
 - TASK.md는 조정 가능한 낱말(`호가`·`체결`·`bestSell`·`ACTIVE`)을 쓰지 않는다("시세", "거래될 상대", "최저 판매가").
 - 주석 중립화 효과(inject 전 → 후, god): `호가` 3 → 2그룹, `체결` 3 → 2그룹, `체결 가능` 0(전부 사라짐 — 남은 1줄은 예외 메시지 `:212`), `입찰`·`ACTIVE`는 여전히 4그룹(SQL·코드 자체).
 - 비대칭(처치로 표시): `최저 판매가`·`최고 구매가`·`호가`·`체결`·`입찰`·`MATCHED`·`tradeId`는 god만 그룹에 닿는다(고칠 함수 근처 KDoc·코드). `restrict`·`book`·`wishlist`는 layered만 닿는다(어댑터 이름·인접 코드).
@@ -202,6 +211,8 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 | layered | naive-6 | hidden | False | hidden 3/7 (실패: B1·B2·B3·B4) |
 | god | alt-1 | public,hidden,contract,contract2,contract3 | True | public 1/1; hidden 7/7; contract 121/121 verify 위반 0; contract2 88/88 verify 위반 0; contract3 252/252 verify 위반 0 |
 | layered | alt-1 | public,hidden,contract,contract2,contract3 | True | public 1/1; hidden 7/7; contract 121/121 verify 위반 0; contract2 88/88 verify 위반 0; contract3 252/252 verify 위반 0 |
+| god | alt-2 | public,hidden,contract,contract2,contract3 | True | public 1/1; hidden 7/7; contract 121/121 verify 위반 0; contract2 88/88 verify 위반 0; contract3 252/252 verify 위반 0 (2026-11-01 15:59, code_sha 291176c dirty, `<scratchpad>/sct/S3-checks-alt2/checks.jsonl`) |
+| layered | alt-2 | public,hidden,contract,contract2,contract3 | True | 〃 (16:15) |
 
 숨은 실패 수(두 구조 같음 — §4.3-2):
 
@@ -215,7 +226,7 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 | naive-5 | 5 | 5 | B1·B2·B3·B4·C1 |
 | naive-6 | 4 | 4 | B1·B2·B3·B4 |
 
-- 정답·alt-1: 두 구조 전 단계 success(contract 121 = 122 − 제외 1, contract2 88 = 89 − 제외 1, contract3 252, verify 위반 0 세 단계). 회귀 제외 2메서드 밖에서 새 규칙에 걸리는 계약 테스트 없음(전수 grep 결론을 실측으로 확인).
+- 정답·alt-1·alt-2: 두 구조 전 단계 success(contract 121 = 122 − 제외 1, contract2 88 = 89 − 제외 1, contract3 252, verify 위반 0 세 단계). 회귀 제외 2메서드 밖에서 새 규칙에 걸리는 계약 테스트 없음(전수 grep 결론을 실측으로 확인).
 - 숨은 테스트 5회 결정성·판정 2회 재현(§4.1)은 이 스모크에서 돌리지 않았다 — 메인의 고정 SHA 채택 행렬 몫.
 
 ## 그룹 도달 검사 (§4.3-4, `fce.patch_ranges` + `fce.FileMap.apply`)
@@ -229,7 +240,9 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 | god | naive-1 | Marketplace.kt:281 | 적중 | book |
 | god | naive-2 | Marketplace.kt:312,316 | 적중 | match |
 | god | naive-3 | Marketplace.kt:281,312,316 | 적중 | book,match |
-| god | naive-4 | Marketplace.kt:283,312,316,2628,2706 | 적중 | match,wishlist,alert |
+| god | alt-2 | Marketplace.kt:283,315,2628,2706 | 적중 | book,match,wishlist,alert (4/4) — 등록 전 wishlist,alert |
+| god | alt-2 삽입 변형(스크래치) | Marketplace.kt:283,315,2628,2706 | 적중 | book,match,wishlist,alert (4/4) |
+| god | naive-4 | Marketplace.kt:283,312,316,2628,2706 | 적중 | **book**,match,wishlist,alert (**4/4** — alt-2 등록 전 3그룹) |
 | god | naive-5 | Marketplace.kt:253,1028,1478 | 비적중 | - |
 | god | naive-6 | Marketplace.kt:281,312,316,2628,2706 | 적중 | book,match,wishlist,alert (4/4) |
 | layered | fix | JpaBidRepositories.kt:50,54,69; JpaNotificationRepositories.kt:71,121 | 적중 | book,match,wishlist,alert (4/4) |
@@ -237,9 +250,11 @@ naive-1·2·3이 각각 해당 그룹 테스트에서만 실패하는 것으로 
 | layered | naive-1 | JpaBidRepositories.kt:69 | 적중 | book |
 | layered | naive-2 | JpaBidRepositories.kt:50,54 | 적중 | match |
 | layered | naive-3 | JpaBidRepositories.kt:50,54,69 | 적중 | book,match |
-| layered | naive-4 | JpaBidRepositories.kt:50,54,71; JpaNotificationRepositories.kt:71,121 | 적중 | match,wishlist,alert |
+| layered | alt-2 | JpaBidRepositories.kt:53,71; JpaNotificationRepositories.kt:71,121 | 적중 | book,match,wishlist,alert (4/4) — 등록 전 wishlist,alert |
+| layered | alt-2 삽입 변형(스크래치) | JpaBidRepositories.kt:53,71; JpaNotificationRepositories.kt:71,121 | 적중 | book,match,wishlist,alert (4/4) |
+| layered | naive-4 | JpaBidRepositories.kt:50,54,71; JpaNotificationRepositories.kt:71,121 | 적중 | **book**,match,wishlist,alert (**4/4** — alt-2 등록 전 3그룹) |
 | layered | naive-5 | User.kt:57,59,62,68,70,73; Bid.kt:160; BatchService.kt:171,190; CancelBidService.kt:8,10,35; ItemRefunder.kt:75,84; JpaBidRepositories.kt:42 | 비적중 | - |
 | layered | naive-6 | JpaBidRepositories.kt:50,54,69; JpaNotificationRepositories.kt:71,121 | 적중 | book,match,wishlist,alert (4/4) |
 
-- fix·alt-1: 4그룹 모두 도달. 일부만 고친 naive-1·2·3: 미도달(1·1·2그룹). naive-4(구매 쪽까지): 시세 줄을 안 건드리고 WHERE(`:283`/`:71`)를 고쳐 3그룹 — 미도달이면서 숨은 테스트 실패. naive-6(경계): 4그룹 도달하지만 숨은 테스트 실패. naive-5(CANCELLED): 비적중.
+- fix·alt-1·alt-2: 4그룹 모두 도달. 일부만 고친 naive-1·2·3: 미도달(1·1·2그룹 — alt-2 등록 전후 같음). **naive-4(구매 쪽까지): alt-2 등록으로 3 → 4그룹** — 시세 WHERE(`:283`/`:71`)에 조건을 거는 줄이 alt-2(WHERE 형태)와 같은 줄이라 범위로는 가를 수 없다(정답은 `side = 'BUY' OR …`, 오답은 그것이 없음 — 내용 차이). naive-6과 같은 처지: 4/4 도달이지만 숨은 테스트 실패라 실패 실행의 지표는 +inf(§5.1). naive-5: 비적중(전후 같음). naive-6(경계): 4그룹 도달하지만 숨은 테스트 실패. naive-5(CANCELLED): 비적중.
 - 첫 정답 편집(§5.1)으로는 naive-1~4·6이 적중이다 — S3의 주 지표는 모든 그룹 도달이라 §4.3-4의 S3 문장("일부만 고친 오답은 미도달")으로 판정한다.

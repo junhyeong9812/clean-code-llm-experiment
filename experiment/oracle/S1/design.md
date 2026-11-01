@@ -11,10 +11,10 @@
 
 ## 2. 주입(`inject.{god,layered}.patch`)
 
-| 구조 | 고칠 곳(주입 줄) | 상한 계산(alt 자리) |
-|---|---|---|
-| god | `Marketplace.kt:1388` `forEachTarget`의 조회 SQL `… AND t.id < :upTo …` | `:1382` `val upTo = … max(id) …` |
-| layered | `infra/KeysetBatchTargets.kt:108` `forEach`의 조회 SQL(같은 문자열) | `:103` |
+| 구조 | 고칠 곳(주입 줄) | 상한 계산(alt-1 자리) | 상한 바인딩(alt-2 자리) |
+|---|---|---|---|
+| god | `Marketplace.kt:1388` `forEachTarget`의 조회 SQL `… AND t.id < :upTo …` | `:1382` `val upTo = … max(id) …` | `:1389` `.setParameter("upTo", upTo)` |
+| layered | `infra/KeysetBatchTargets.kt:108` `forEach`의 조회 SQL(같은 문자열) | `:103` | `:109` |
 
 - 1 대 1, SQL 문자열 동일(god `$table`/`$condition`, layered `${spec.table}`/`${spec.condition}`만 다름). 두 사본 모두 경고 없이 컴파일된다(§10 build=True).
 
@@ -80,6 +80,7 @@ TASK.md·공개 테스트(`pub/S1Test.kt`)에서 뽑은 낱말(한국어 그대�
 
 - `fix.{god,layered}.patch`: `t.id < :upTo` → `t.id <= :upTo`(원본 복원). 주석은 되돌리지 않는다(중립 문장 그대로). inject + fix = 원본 코드.
 - **대안 정답 alt-1(상한 계산 쪽, ADR §4.2):** `val upTo = (… max(id) …).toLong() + 1`(god `:1382`, layered `:103`). 배타 비교 `< max+1`은 `<= max`와 같은 집합이다(id는 정수, 빈 테이블이면 coalesce 0 + 1 = 1 → `id < 1`은 공집합 — 원본과 같음). **성립한다** — 두 구조 모두 상한 계산이 순회 함수 안 한 줄이라 같은 형태로 고칠 수 있다.
+- **대안 정답 alt-2(상한 바인딩 쪽, 듀얼 리뷰 지적 2026-11-01 등록):** `.setParameter("upTo", upTo + 1)`(god `:1389`, layered `:109` — SQL 바로 다음 줄). alt-1과 같은 값(`max+1`)을 바인딩 자리에서 넣는다 — 같은 집합, 빈 테이블도 같음. **성립한다** — 두 구조 모두 SQL 다음 줄이 같은 모양이다. 등록 전에는 판정 범위(fix ∪ alt-1) 밖이라 이 형태의 성공 실행이 `fce_fallback`으로 잡혔을 것이다.
 - 숨은 테스트가 대안을 막지 않는 이유: 체결·입찰의 상태(DB), 결제 요청 응답 코드, `GET /bids/{id}` 상태만 본다. 비교 연산자나 상한 값은 보지 않는다.
 - 고려한 다른 대안: 상한을 없애기(`AND t.id <= :upTo` 삭제) — 실행 중 재매칭으로 생긴 새 체결까지 같은 실행에서 처리하게 되어 원본 규칙과 다르다. 계약 테스트(payment-due 재매칭 — 새 체결은 AWAITING_PAYMENT로 남아야 함)가 기한 전 새 체결이라 대상 조건에서 걸러져 잡지 못할 수 있다. 정답으로 등록하지 않는다(판정에서 success면 `fce_fallback`으로 드러난다).
 
@@ -93,7 +94,7 @@ TASK.md·공개 테스트(`pub/S1Test.kt`)에서 뽑은 낱말(한국어 그대�
 | 4 | 결제 기한 시각 비교에 1분 여유(대상 조건 파라미터 `now + 1분`, 재확인 비교도 `now + 1분`) | god :1445·:1462 / layered KeysetBatchTargets.kt :35(+import) · Trade.kt :46 | public fail, hidden A·B fail |
 
 - naive-1은 ADR §4.2의 "payment-due 전용 수정" 오답을 대표한다(숨은 테스트 B가 존재하는 이유). layered는 포트에 메서드를 더해야 해 파일 수가 많다(god 1파일, layered 3파일) — 오답의 크기 차이는 판정에 영향 없음.
-- 추출기 비적중(§4.3-4, S1 자체분): `fce.patch_ranges`(runner/fce.py, 6d02f1f)로 fix ∪ alt-1(god {1382, 1388}, layered KeysetBatchTargets {103, 108})과 naive 1~4의 바뀐 줄을 비교 — **8개 모두 비적중**(god naive-1 {1439,1440,1447,1448}·2 {1442–1444}·3 {1338}·4 {1445,1462}; layered naive-1 Trade.kt/JpaTradeRepository.kt/BatchService.kt {173,174}·2 KeysetBatchTargets {32–34}·3 BatchService {100}·4 KeysetBatchTargets {14,15,35}+Trade.kt {46}). 다른 과제의 오답에 대한 S1 범위 비적중은 메인 몫.
+- 추출기 비적중(§4.3-4, S1 자체분): `fce.patch_ranges`(runner/fce.py, 6d02f1f)로 fix ∪ alt-1 ∪ alt-2(god {1382, 1388, 1389}, layered KeysetBatchTargets {103, 108, 109} — alt-2 줄은 2026-11-01 15시 재확인)과 naive 1~4의 바뀐 줄을 비교 — **8개 모두 비적중**(god naive-1 {1439,1440,1447,1448}·2 {1442–1444}·3 {1338}·4 {1445,1462}; layered naive-1 Trade.kt/JpaTradeRepository.kt/BatchService.kt {173,174}·2 KeysetBatchTargets {32–34}·3 BatchService {100}·4 KeysetBatchTargets {14,15,35}+Trade.kt {46}). 다른 과제의 오답에 대한 S1 범위 비적중은 메인 몫.
 
 ## 6. 숨은 테스트(`hidden/S1HiddenTest.kt`)
 
@@ -131,7 +132,7 @@ TASK.md·공개 테스트(`pub/S1Test.kt`)에서 뽑은 낱말(한국어 그대�
 ## 9. symbols
 
 - `fix`: god `Marketplace.kt:1388`, layered `KeysetBatchTargets.kt:108` — 각 **1줄**(ADR-0008 §5.2 — 문맥 제외).
-- `alt`: god `:1382`, layered `:103` — 각 1줄. symbols 파일에는 종류 `fix`로 적고 메모에 `[alt-1]`(events.py 형식은 fix|read|edit만). 판정 범위 fix ∪ alt = 구조마다 **2줄**.
+- `alt`: alt-1 god `:1382`, layered `:103` · alt-2 god `:1389`, layered `:109` — 각 1줄. symbols 파일에는 종류 `fix`로 적고 메모에 `[alt-1]`·`[alt-2]`(events.py 형식은 fix|read|edit만). 판정 범위 fix ∪ alt = 구조마다 **3줄**(alt-2 등록 전 2줄).
 - `edit`(ADR-0005 보조 지표용): 고칠 파일 전체 — god `Marketplace.kt:1-3667`(사실상 모든 로직), layered `KeysetBatchTargets.kt:1-119`. god의 edit 적중이 넓은 것은 T1과 같은 성질(해석 주의).
 - `read`: 순회·payment-due 대상 조건·재확인·bid-expiry·runBatch.
 
@@ -155,6 +156,8 @@ TASK.md·공개 테스트(`pub/S1Test.kt`)에서 뽑은 낱말(한국어 그대�
 | layered | naive-3 | 12:42 | 〃 | False | public fail | 2/2 |
 | god | naive-4 | 12:47 | 〃 | False | public fail | 2/2 |
 | layered | naive-4 | 12:54 | 〃 | False | public fail(첫 판 12:49는 패치 컴파일 오류 — `Spec(…)` 괄호 누락. 패치 고쳐 재실행, 이 행이 유효) | 2/2 |
+| god | alt-2 | 15:28 | 전 단계 | **True** | fix와 같음(contract 122·contract2 89·contract3 252 통과) — 결과 `<scratchpad>/sct/S1-checks-alt2/checks.jsonl`, code_sha 291176c(dirty) | 0/2 |
+| layered | alt-2 | 15:44 | 전 단계 | **True** | 〃 | 0/2 |
 
 - 숨은 실패 단언(두 구조 같은 값): A — "마지막 체결 상태(DB) expected PAYMENT_EXPIRED but was AWAITING_PAYMENT"(앞 체결 단언은 통과 — 마지막 행만 빠짐을 직접 보여 줌). B — "마지막 입찰 상태(HTTP) … status ACTIVE"(expected EXPIRED).
 - **숨은 실패 수가 패치마다 두 구조 같다**(none 2·naive-1 1·naive-2~4 2). 변조 0, 빌드 실패 0(유효 행 기준).
