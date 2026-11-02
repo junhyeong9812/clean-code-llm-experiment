@@ -109,7 +109,7 @@
 ## 6. 파일럿
 
 - S1~S4 × god·layered × Sonnet × 1회 = **8실행**. 결과 `experiment/results-pilot4`. 기준 SHA = 과제 채택 커밋. 러너 설정(시간 상한·예산·병렬)은 파일럿 A와 같다. 실행 전 `free`를 log에 남기고 사용자 확인을 받는다.
-- **결과(2026-11-02, 기준 HEAD `8cb2fcf`·experiment/ `417b3b6`, god 5,678·layered 9,970줄, Sonnet·CLI 2.1.316):** 8/8 valid·success, 재실행 0('모름'·'값 없음'·fallback 0, 재생 = 기록 diff 8/8). 주 지표 god S1 5·S2 5·S3 5·S4 5 / layered 3·4·5·4 → 성공·보수 중앙값(합침) 5 < 8 → **§7 셋째 행 = 3차 결론**(개정 2 한정어 포함). 구조별 중앙값 god 5·layered 4는 탐색 관찰이다. 근거·사후 관찰: [3차 결론](../results/third-conclusion.md).
+- **결과(2026-11-02, 기준 HEAD `8cb2fcf`·experiment/ `417b3b6`, god 5,678·layered 9,970줄, Sonnet·에이전트 CLI 2.1.308):** 8/8 valid·success, 재실행 0('모름'·'값 없음'·fallback 0, 재생 = 기록 diff 8/8). 주 지표 god S1 5·S2 5·S3 5·S4 5 / layered 3·4·5·4 → 성공·보수 중앙값(합침) 5 < 8 → **§7 셋째 행 = 3차 결론**(개정 2 한정어 포함). 구조별 중앙값 god 5·layered 4는 탐색 관찰이다. 근거·사후 관찰: [3차 결론](../results/third-conclusion.md).
 
 ## 7. 게이트와 다음 단계 규칙 (사전 등록 — 파일럿 실행 전)
 
