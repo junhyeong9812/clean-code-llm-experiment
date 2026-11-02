@@ -89,7 +89,8 @@ PROMPTS = {
 PROMPTS["partial"] = PROMPTS["bug"]
 # ADR-0009 탐색 위임 방식: direct = 위 프롬프트 그대로(종전 실행과 같음). explore-* = 격리 HOME 에 explorer 서브에이전트
 # 정의(모델 지정)를 두고 하네스식 위임 규칙을 프롬프트 끝에 붙인다. 작업 사본은 바꾸지 않는다(판정·diff 무관).
-ARMS = {"direct": None, "explore-haiku": "haiku", "explore-sonnet": "sonnet", "explore-opus": "opus"}
+ARMS = {"direct": None, "solo": None, "explore-haiku": "haiku", "explore-sonnet": "sonnet", "explore-opus": "opus"}
+NO_AGENT_ARMS = {"solo"}  # 서브에이전트 도구(Agent·Task)를 막는다 — 내장 Explore 등 위임이 없는 기준(direct 는 종전 그대로)
 DELEGATE_RULE = ("\n탐색 규칙: 고칠 곳 찾기·여러 파일 읽기·호출처 조사 같은 넓은 탐색과 대량 읽기는 Agent 도구로 explorer "
                  "서브에이전트에게 맡기고, 그 결과(파일 경로·줄 번호·요지)를 받아라. 결정과 편집은 네가 직접 한다. "
                  "편집 전에 explorer 가 가리킨 핵심 1~2곳은 직접 확인하라. grep 한두 번으로 끝나는 작은 조회는 직접 해도 된다.")
@@ -183,10 +184,11 @@ def changed_files(base: Path, work: Path) -> set:
     return out
 
 
-def make_home(home: Path, timeout_s: int, with_creds: bool = True, explorer_model: str = None):
+def make_home(home: Path, timeout_s: int, with_creds: bool = True, explorer_model: str = None, deny_agent: bool = False):
     """격리 HOME: settings.json(금지 도구) + Gradle 사용자 홈(오프라인 init·데몬 끔) + 로그인 파일 사본(셸 모드는 없음)."""
     (home / ".claude").mkdir(parents=True)
-    (home / ".claude" / "settings.json").write_text(json.dumps(SETTINGS))
+    st = SETTINGS if not deny_agent else {"permissions": {"deny": sorted(set(SETTINGS["permissions"]["deny"]) | {"Agent", "Task"})}}
+    (home / ".claude" / "settings.json").write_text(json.dumps(st))
     if explorer_model:  # ADR-0009 위임 방식 — 사용자 수준 서브에이전트 정의(작업 사본 밖)
         (home / ".claude" / "agents").mkdir()
         (home / ".claude" / "agents" / "explorer.md").write_text(EXPLORER_MD.format(model=explorer_model))
@@ -510,7 +512,7 @@ def mask_file(p: Path, secrets: list) -> int:
 
 
 def run_one(case: str, structure: str, rep: int, model: str, results: Path, budget: str, timeout_s: int,
-            argv_override: list = None, arm: str = "direct") -> dict:
+            argv_override: list = None, arm: str = "direct", stages: tuple = None) -> dict:
     tag = model if arm == "direct" else f"{model}-{arm}"
     run_id = f"{case}-{structure}-{tag}-r{rep}-{int(time.time() * 1000) % 10**10}"
     name = f"ccle-{run_id}".lower()
@@ -542,7 +544,8 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         row["image_id"] = image_id(IMAGE)
         build_work(case, structure, rd / "work")
         shutil.copytree(rd / "work", rd / "base", symlinks=True)
-        sb_creds = make_home(rd / "home", timeout_s, with_creds=not argv_override, explorer_model=ARMS[arm])
+        sb_creds = make_home(rd / "home", timeout_s, with_creds=not argv_override, explorer_model=ARMS[arm],
+                            deny_agent=arm in NO_AGENT_ARMS)
         secrets = creds.secrets(sb_creds) if sb_creds else []
         prompt = PROMPTS[case_type(case)] + (DELEGATE_RULE if ARMS[arm] else "")
         argv = argv_override or ["claude", "-p", prompt, "--model", model, "--output-format", "stream-json",
@@ -582,6 +585,7 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
                    **events.metrics(cs, symbols(case, structure), existing=base_files(rd / "base"),
                                    changed=changed_files(rd / "base", rd / "work")), audit_violations=violations,
                    **classify(evs, rc, timed_out, violations, tail(err, 4000) + limit_evidence(evs), tok, n_asst))
+        row.update(events.sub_info(cs, base_files(rd / "base")))
         row["result_count"] = events.result_count(evs)  # 2 이상이면 큐에 쌓인 턴 — 토큰은 마지막 result 기준(표시)
         harness = events.harness_problems(row["init"]) if any(e.get("subtype") == "init" for e in evs) \
             else ["init 이벤트 없음"]
@@ -600,7 +604,8 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
             if pre_left:  # 에이전트 자원이 남은 채 판정하면 부하가 섞인다 — 판정하지 않고 보관해 나중에 판정
                 row.update(judged=False, judge_error=f"판정 전 정리 잔여 {pre_left}", success=None)
             else:
-                row.update(judging.judge(case, structure, rd / "work", rd / "judge", name))
+                row.update(judging.judge(case, structure, rd / "work", rd / "judge", name,
+                                         **({"stages_to_run": tuple(stages)} if stages else {})))
             if needs_rejudge(row):  # 판정 불가 — 사본을 보관하고 에이전트 없이 다시 판정한다(ADR §4.1-3 '다시 판정')
                 hold_for_rejudge(results, run_id, rd / "work", row)
                 row.update(valid=False, invalid_reason="judge_infra", held=True)
@@ -987,6 +992,22 @@ def _on_signal(signum, _frame):
     print(f"[runner] 신호 {signum} — 진행 중 {len(names)}개 중단·정리", flush=True)
 
 
+def mem_available_gb() -> float:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) / 2**20
+    return float("inf")
+
+
+def wait_mem(min_gb: float, sleep=None, log=print) -> float:
+    """ADR-0009 부하 제한: 가용 메모리가 min_gb 미만이면 60초씩 기다린다(사용자 PC 부하 테스트와 겹치지 않게)."""
+    sleep = sleep or (lambda s: _stop.wait(s))
+    while min_gb and (m := mem_available_gb()) < min_gb and not _stop.is_set():
+        log(f"[runner] 가용 메모리 {m:.1f}GB < {min_gb}GB — 60초 대기", flush=True)
+        sleep(60)
+    return mem_available_gb()
+
+
 def cmd_run(a) -> int:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
@@ -1026,7 +1047,9 @@ def cmd_run(a) -> int:
             with case_lock(c):
                 if _stop.is_set():  # 잠금을 기다리는 동안 중단됨 — 시작하지 않은 job
                     return r
-                r = run_one(c, s, rep, a.model, results, a.budget, a.timeout, arm=a.arm)
+                wait_mem(a.min_mem_gb)
+                r = run_one(c, s, rep, a.model, results, a.budget, a.timeout, arm=a.arm,
+                            stages=tuple(a.stages.split(",")) if a.stages else None)
             if r.get("invalid_reason") != "usage_limit" or attempt > a.limit_retries or _stop.is_set():
                 return r
             print(f"{c} {s} r{rep}: 사용량 한도 — {a.limit_wait}s 대기 후 재시도({attempt})", flush=True)
@@ -1071,6 +1094,8 @@ def main() -> int:
     p.add_argument("--reps", default="1,2,3")
     p.add_argument("--arm", default="direct", help="direct | explore-haiku | explore-sonnet | explore-opus (ADR-0009)")
     p.add_argument("--parallel", type=int, default=3)
+    p.add_argument("--stages", default="", help="판정 단계(쉼표). 비우면 전 단계 — ADR-0009 본 실행은 public,hidden")
+    p.add_argument("--min-mem-gb", type=float, default=0, help="가용 메모리가 이보다 작으면 실행 전 대기(0=끔)")
     p.add_argument("--budget", default="5")
     p.add_argument("--timeout", type=int, default=2700)
     p.add_argument("--limit-wait", type=int, default=900)

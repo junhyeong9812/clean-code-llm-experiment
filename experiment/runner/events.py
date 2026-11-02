@@ -380,6 +380,7 @@ def tokens(evs: list) -> dict:
     if mu:
         return {"total_tokens": sum(_usage_sum(v, MU_KEYS) for v in mu.values()),
                 "by_model": {m: {k: int(v.get(k) or 0) for k in MU_KEYS} for m, v in mu.items()},
+                "cost_by_model": {m: v.get("costUSD") for m, v in mu.items()},
                 "cost_usd": res.get("total_cost_usd"), "partial_tokens": False, "tokens_source": "modelUsage"}
     last = {}
     for e in evs:
@@ -1144,6 +1145,27 @@ def result_count(evs: list) -> int:
 
 
 BUILTIN_PLUGINS = {"cc-plugin-agents-md", "cc-plugin-plugin-authoring"}  # 2.1.308 내장(스모크 init 실측)
+
+
+def sub_info(cs: list, existing: set = None) -> dict:
+    """ADR-0009: 서브에이전트 종류(Agent·Task 호출의 subagent_type 순서대로)와, 하위 에이전트 안의 호출이 쓴 파일.
+    explorer 는 고치지 말라는 지시뿐이라 막는 장치가 없다 — 하위 쓰기는 메인 편집과 구별해 드러낸다."""
+    types, paths = [], []
+    for c in cs:
+        if c.name in ("Agent", "Task"):
+            types.append(str(c.input.get("subagent_type") or "?"))
+        if not c.sub:
+            continue
+        if c.name in EDIT_TOOLS:
+            tg = [norm_path(str(c.input.get("file_path", "")))]
+        elif c.name == "Bash":
+            tg, _ = bash_writes(segments(str(c.input.get("command", "")))[0])
+        else:
+            tg = []
+        for p in tg:
+            if p and p not in paths:
+                paths.append(p)
+    return {"subagent_types": types, "sub_edit_paths": paths}
 
 
 def harness_problems(info: dict) -> list:
