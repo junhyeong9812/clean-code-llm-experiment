@@ -87,6 +87,21 @@ PROMPTS = {
                  + ENV_NOTE + SCOPE),
 }
 PROMPTS["partial"] = PROMPTS["bug"]
+# ADR-0009 탐색 위임 방식: direct = 위 프롬프트 그대로(종전 실행과 같음). explore-* = 격리 HOME 에 explorer 서브에이전트
+# 정의(모델 지정)를 두고 하네스식 위임 규칙을 프롬프트 끝에 붙인다. 작업 사본은 바꾸지 않는다(판정·diff 무관).
+ARMS = {"direct": None, "explore-haiku": "haiku", "explore-sonnet": "sonnet", "explore-opus": "opus"}
+DELEGATE_RULE = ("\n탐색 규칙: 고칠 곳 찾기·여러 파일 읽기·호출처 조사 같은 넓은 탐색과 대량 읽기는 Agent 도구로 explorer "
+                 "서브에이전트에게 맡기고, 그 결과(파일 경로·줄 번호·요지)를 받아라. 결정과 편집은 네가 직접 한다. "
+                 "편집 전에 explorer 가 가리킨 핵심 1~2곳은 직접 확인하라. grep 한두 번으로 끝나는 작은 조회는 직접 해도 된다.")
+EXPLORER_MD = """---
+name: explorer
+description: 코드베이스 탐색 전담 — 고칠 곳 찾기, 여러 파일 읽기, 호출처 조사. 결과를 파일 경로·줄 번호·요지로 보고한다. 코드를 수정하지 않는다.
+model: {model}
+tools: Bash, Read, Grep, Glob
+---
+너는 탐색 전담이다. 받은 질문에 답하려고 코드를 찾고 읽어라. 파일을 만들거나 고치지 마라.
+보고는 근거(실제로 읽은 파일 경로와 줄 번호)와 요지만 간결하게 한다. 확인하지 못한 것은 확인하지 못했다고 적어라.
+"""
 SETTINGS = {"permissions": {"deny": sorted(events.FORBIDDEN_TOOLS)}}
 COPY_IGNORE = shutil.ignore_patterns("build", ".gradle", ".kotlin", "*.log")
 CASE_PRIVATE = {"TYPE"}  # 사본에 넣지 않는 과제 파일
@@ -168,10 +183,13 @@ def changed_files(base: Path, work: Path) -> set:
     return out
 
 
-def make_home(home: Path, timeout_s: int, with_creds: bool = True):
+def make_home(home: Path, timeout_s: int, with_creds: bool = True, explorer_model: str = None):
     """격리 HOME: settings.json(금지 도구) + Gradle 사용자 홈(오프라인 init·데몬 끔) + 로그인 파일 사본(셸 모드는 없음)."""
     (home / ".claude").mkdir(parents=True)
     (home / ".claude" / "settings.json").write_text(json.dumps(SETTINGS))
+    if explorer_model:  # ADR-0009 위임 방식 — 사용자 수준 서브에이전트 정의(작업 사본 밖)
+        (home / ".claude" / "agents").mkdir()
+        (home / ".claude" / "agents" / "explorer.md").write_text(EXPLORER_MD.format(model=explorer_model))
     g = home / ".gradle"
     if GRADLE_WARM.is_dir():
         shutil.copytree(GRADLE_WARM, g, symlinks=True)
@@ -317,7 +335,7 @@ def append_row(results: Path, row: dict) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def done_keys(results: Path) -> set:
+def done_keys(results: Path, arm: str = "direct") -> set:
     """valid 행과 판정 미해결(judge_unresolved — 종단, 재실행은 사용자 확인 뒤 따로) 행의 (case, structure, model, rep).
     깨진 줄(강제 종료로 반쯤 쓰인 append)은 건너뛰고 알린다."""
     keys, bad = set(), 0
@@ -330,6 +348,8 @@ def done_keys(results: Path) -> set:
                 r = json.loads(line)
             except json.JSONDecodeError:
                 bad += 1
+                continue
+            if r.get("arm", "direct") != arm:  # 위임 방식이 다른 행은 다른 표본(ADR-0009)
                 continue
             if r.get("valid") or r.get("invalid_reason") == "judge_unresolved":
                 keys.add((r["case"], r["structure"], r["model"], r["rep"]))
@@ -490,15 +510,16 @@ def mask_file(p: Path, secrets: list) -> int:
 
 
 def run_one(case: str, structure: str, rep: int, model: str, results: Path, budget: str, timeout_s: int,
-            argv_override: list = None) -> dict:
-    run_id = f"{case}-{structure}-{model}-r{rep}-{int(time.time() * 1000) % 10**10}"
+            argv_override: list = None, arm: str = "direct") -> dict:
+    tag = model if arm == "direct" else f"{model}-{arm}"
+    run_id = f"{case}-{structure}-{tag}-r{rep}-{int(time.time() * 1000) % 10**10}"
     name = f"ccle-{run_id}".lower()
     rd = RUNS / run_id
     raw = results / "raw"
     out, err = raw / f"{run_id}.jsonl", raw / f"{run_id}.stderr"
     row = {"run_id": run_id, "case": case, "structure": structure, "model": model, "rep": rep,
            "started_at": now_iso(), "image": IMAGE, "cli_version": CLI_VERSION, "budget_usd": budget,
-           "timeout_s": timeout_s, "shell": bool(argv_override), "judged": False, "judge_skip": "미도달"}
+           "timeout_s": timeout_s, "shell": bool(argv_override), "judged": False, "judge_skip": "미도달", "arm": arm}
     alive = sb_creds = None
     secrets = []
     with _live_lock:
@@ -521,9 +542,9 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
         row["image_id"] = image_id(IMAGE)
         build_work(case, structure, rd / "work")
         shutil.copytree(rd / "work", rd / "base", symlinks=True)
-        sb_creds = make_home(rd / "home", timeout_s, with_creds=not argv_override)
+        sb_creds = make_home(rd / "home", timeout_s, with_creds=not argv_override, explorer_model=ARMS[arm])
         secrets = creds.secrets(sb_creds) if sb_creds else []
-        prompt = PROMPTS[case_type(case)]
+        prompt = PROMPTS[case_type(case)] + (DELEGATE_RULE if ARMS[arm] else "")
         argv = argv_override or ["claude", "-p", prompt, "--model", model, "--output-format", "stream-json",
                                  "--verbose", "--max-budget-usd", budget, "--permission-mode", "bypassPermissions"]
         start_services(name)
@@ -647,13 +668,15 @@ def hold_for_rejudge(results: Path, run_id: str, work: Path, row: dict) -> None:
     (h / "row.json").write_text(json.dumps(row, ensure_ascii=False))
 
 
-def held_keys(results: Path) -> set:
+def held_keys(results: Path, arm: str = "direct") -> set:
     """재판정을 기다리는 보관 사본의 키 — 에이전트를 다시 돌리지 않는다(재판정만 기다린다)."""
     keys = set()
     base = results / "held"
     for h in base.iterdir() if base.is_dir() else []:
         try:
             r = json.loads((h / "row.json").read_text())
+            if r.get("arm", "direct") != arm:
+                continue
             keys.add((r["case"], r["structure"], r["model"], r["rep"]))
         except (OSError, ValueError, KeyError):
             continue
@@ -975,6 +998,8 @@ def cmd_run(a) -> int:
     for s in structures:
         if s not in STRUCTURES:
             raise SystemExit(f"구조는 {STRUCTURES}")
+    if a.arm not in ARMS:
+        raise SystemExit(f"방식은 {sorted(ARMS)}")
     results.mkdir(parents=True, exist_ok=True)
     guard = open(results / ".runner.lock", "w")  # 같은 결과 디렉터리에 러너 둘 → 같은 키 valid 행 중복 방지
     try:
@@ -987,8 +1012,9 @@ def cmd_run(a) -> int:
         print(f"[runner] 보관 사본 {rj}개 재판정", flush=True)
     if orphans:
         print(f"[runner] 이전 고아 시도 {orphans}개를 orphan 행으로 기록·정리", flush=True)
-    jobs = jobs_for(cases, structures, a.model, [int(r) for r in a.reps.split(",")], done_keys(results) | held_keys(results))
-    print(f"jobs={len(jobs)} parallel={a.parallel} results={results}", flush=True)
+    jobs = jobs_for(cases, structures, a.model, [int(r) for r in a.reps.split(",")],
+                    done_keys(results, a.arm) | held_keys(results, a.arm))
+    print(f"jobs={len(jobs)} arm={a.arm} parallel={a.parallel} results={results}", flush=True)
     bad = 0
 
     def one(job):
@@ -1000,7 +1026,7 @@ def cmd_run(a) -> int:
             with case_lock(c):
                 if _stop.is_set():  # 잠금을 기다리는 동안 중단됨 — 시작하지 않은 job
                     return r
-                r = run_one(c, s, rep, a.model, results, a.budget, a.timeout)
+                r = run_one(c, s, rep, a.model, results, a.budget, a.timeout, arm=a.arm)
             if r.get("invalid_reason") != "usage_limit" or attempt > a.limit_retries or _stop.is_set():
                 return r
             print(f"{c} {s} r{rep}: 사용량 한도 — {a.limit_wait}s 대기 후 재시도({attempt})", flush=True)
@@ -1043,6 +1069,7 @@ def main() -> int:
     p.add_argument("--cases", required=True)
     p.add_argument("--structures", default=",".join(STRUCTURES))
     p.add_argument("--reps", default="1,2,3")
+    p.add_argument("--arm", default="direct", help="direct | explore-haiku | explore-sonnet | explore-opus (ADR-0009)")
     p.add_argument("--parallel", type=int, default=3)
     p.add_argument("--budget", default="5")
     p.add_argument("--timeout", type=int, default=2700)
