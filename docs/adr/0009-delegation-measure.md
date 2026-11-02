@@ -135,14 +135,14 @@
 ## 8. 실행 순서·시간·로그인
 
 - **순서(`experiment/runner/del_schedule.py`):** 반복마다 14칸 순서를 시드 `20261103`으로 섞고, 칸 안의 4방식 순서를 (반복 + 칸 번호)만큼 회전한다. 러너를 실행 하나씩 부른다(`--parallel 1 --timeout 1800 --min-mem-gb 12`, 본 실행 `--stages public,hidden`). valid 행이 있는 키는 건너뛰어 다시 부르면 무효·미실행만 돈다.
-- **로그인(`experiment/runner/keepalive.py`):** 러너는 원본 로그인 파일 만료까지 실행 상한 + 10분이 남아야 시작한다(2,400초). 갱신은 호스트 claude 사용 때만 일어나므로, 실험 기간에 호스트에서 1분마다 남은 시간을 보고 문턱 아래면 `claude -p ok --model haiku`를 러너와 같은 잠금 안에서 1회 부른다. 문턱은 호스트 CLI가 갱신하는 시점 실측으로 정한다 **[측정 중 — 채택 전 확정]**. 대기 시간은 러너 로그로 남는다.
+- **로그인(`experiment/runner/keepalive.py`):** 러너는 원본 로그인 파일 만료까지 실행 상한 + 10분이 남아야 시작한다(2,400초). 갱신은 호스트 claude 사용 때만 일어나므로, 실험 기간에 호스트에서 1분마다 남은 시간을 보고 문턱 아래면 `claude -p ok --model haiku`를 러너와 같은 잠금 안에서 1회 부른다. **실측(2026-11-03 01:08~01:17, 1분 간격 호스트 호출):** 만료까지 13.0~5.2분에서는 호출해도 갱신되지 않았고, 4.2분 남았을 때 갱신되어 새 유효 시간이 **479.9분(약 8시간)**이 됐다. 그래서 문턱 = **5분**(`--below-min 5`). 러너는 40분 미만 남으면 기다리므로 8시간마다 약 35분 대기(약 7%)가 생긴다. 대기 시간은 러너 로그로 남는다.
 - **시간(추정):** 파일럿 32실행 × 약 17분(전 단계 판정) ≈ 9시간. 본 실행은 에이전트 3~5분 + public·hidden 판정(파일럿에서 실측) — 판정이 5분이면 168 × 약 10분 ≈ 28시간, 로그인 대기 별도. 파일럿 뒤 다시 추정해 사용자 확인.
 - **비용:** 스모크 S1 explore-haiku $0.227. 상한 $100(본 실행) — 파일럿 게이트 4.
 
 ## 9. 실행 명령 (고정)
 
 ```
-python3 experiment/runner/keepalive.py --below-min <실측>          # 별도 셸, 실험 동안
+python3 experiment/runner/keepalive.py --below-min 5          # 별도 셸, 실험 동안
 python3 experiment/runner/del_schedule.py --phase pilot --tasks D1,D2,D3 --s-tasks S1,S2,S3,S4 --cap-usd 30 --results-dir experiment/results-del-pilot
 python3 experiment/runner/del_schedule.py --phase main --tasks S1,S2,S3,S4,D1,D2,D3 --cap-usd 100 --results-dir experiment/results-del-main
 ```
