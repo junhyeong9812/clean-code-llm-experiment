@@ -1,0 +1,90 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/SellerGrade.kt b/app/src/main/kotlin/com/ccle/layered/domain/SellerGrade.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/SellerGrade.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/SellerGrade.kt
+@@ -67,7 +67,7 @@
+          * 매달 쓴다(지난달과 같아도), created_at = 현재.
+          */
+         fun assess(seller: User, month: SellerGradeMonth, basis: Long, now: Instant): SellerGrade {
+-            val restricted = seller.saleRestrictedUntil?.isAfter(now) == true
++            val restricted = seller.isSaleRestricted(now)
+             return SellerGrade(
+                 sellerId = seller.id!!,
+                 grade = if (restricted) "STANDARD" else gradeOf(basis),
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/User.kt b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -37,14 +37,19 @@
+ 
+     /** 새 입찰 제한(§3.1): 구매는 purchase_restricted_until, 판매는 sale_restricted_until 기준 제한 중이면 403. 이미 걸린 입찰의 체결은 막지 않는다. */
+     fun requireCanBid(side: String, now: Instant) {
+-        if (side == "BUY" && purchaseRestrictedUntil?.isAfter(now) == true) {
++        if (side == "BUY" && isPurchaseRestricted(now)) {
+             throw MarketException(Failure.PURCHASE_RESTRICTED, "구매 제한 중: ${purchaseRestrictedUntil}까지")
+         }
+-        if (side == "SELL" && saleRestrictedUntil?.isAfter(now) == true) {
++        if (side == "SELL" && isSaleRestricted(now)) {
+             throw MarketException(Failure.SALE_RESTRICTED, "판매 제한 중: ${saleRestrictedUntil}까지")
+         }
+     }
+ 
++    /** 제한 끝 시각 정각까지 제한 중(끝 ≥ 현재). */
++    fun isPurchaseRestricted(now: Instant): Boolean = purchaseRestrictedUntil?.isBefore(now) == false
++
++    fun isSaleRestricted(now: Instant): Boolean = saleRestrictedUntil?.isBefore(now) == false
++
+     /** 등급 재산정 반영(ADR-0004 §8.5): 기준일 이력이 없고 등급이 바뀌는 재산정 값만 users.grade에 반영한다. */
+     fun regrade(review: GradeReview) {
+         check(review.changesGrade()) { "등급이 바뀌지 않는 재산정 값: ${review.grade}" }
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt b/app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Wishlist.kt
+@@ -132,7 +132,7 @@
+     }
+ 
+     /** price-alert-scan의 2(§8.3): 주인이 구매 제한 중이면 멈춘다(ACTIVE 유지). 제한은 저장된 열을 읽기만 한다. */
+-    fun isPausedFor(owner: User, now: Instant): Boolean = owner.purchaseRestrictedUntil?.isAfter(now) == true
++    fun isPausedFor(owner: User, now: Instant): Boolean = owner.isPurchaseRestricted(now)
+ 
+     /** price-alert-scan의 3(§8.3): → TRIGGERED + 알림 PRICE_ALERT(ref_id = 알림 id, 받는 사람 = 알림 주인). */
+     fun trigger(bidId: Long, now: Instant): Notification {
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaAdminQueryRepository.kt b/app/src/main/kotlin/com/ccle/layered/infra/JpaAdminQueryRepository.kt
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaAdminQueryRepository.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaAdminQueryRepository.kt
+@@ -23,7 +23,7 @@
+             RestrictionType.PURCHASE -> "purchaseRestrictedUntil"
+             RestrictionType.SALE -> "saleRestrictedUntil"
+         }
+-        return em.createQuery("SELECT u FROM User u WHERE u.$column > :now AND u.id > :after ORDER BY u.id", User::class.java)
++        return em.createQuery("SELECT u FROM User u WHERE NOT (u.$column < :now) AND u.id > :after ORDER BY u.id", User::class.java)
+             .setParameter("now", now).setParameter("after", page.after).setMaxResults(page.limit).resultList
+     }
+ 
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt b/app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaNotificationRepositories.kt
+@@ -135,7 +135,7 @@
+         " AND EXISTS (SELECT 1 FROM wishlists w WHERE w.user_id = t.user_id AND w.product_size_id = t.product_size_id)" +
+         " AND NOT EXISTS (SELECT 1 FROM price_alerts n WHERE n.user_id = t.user_id AND n.product_size_id = t.product_size_id" +
+         " AND (n.id > t.id OR n.status = 'ACTIVE'))" +
+-        " AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.purchase_restricted_until > :now)"
++        " AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND NOT (u.purchase_restricted_until < :now))"
+ 
+     fun params(now: Instant): Map<String, Any> = mapOf("now" to now, "due" to PriceAlert.rearmCutoff(now))
+ }
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/infra/ReminderSql.kt b/app/src/main/kotlin/com/ccle/layered/infra/ReminderSql.kt
+--- a/app/src/main/kotlin/com/ccle/layered/infra/ReminderSql.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/ReminderSql.kt
+@@ -56,11 +56,11 @@
+                 "t.seller_id", "'SETTLEMENT_PAID:' || t.id",
+             )
+             DeadlineReminder.PURCHASE_RESTRICTED -> ReminderSql(
+-                reminder, "users", "t.purchase_restricted_until > :now", { mapOf("now" to it) },
++                reminder, "users", "NOT (t.purchase_restricted_until < :now)", { mapOf("now" to it) },
+                 "t.id", restrictionKey("PURCHASE_RESTRICTED", "purchase_restricted_until"),
+             )
+             DeadlineReminder.SALE_RESTRICTED -> ReminderSql(
+-                reminder, "users", "t.sale_restricted_until > :now", { mapOf("now" to it) },
++                reminder, "users", "NOT (t.sale_restricted_until < :now)", { mapOf("now" to it) },
+                 "t.id", restrictionKey("SALE_RESTRICTED", "sale_restricted_until"),
+             )
+         }

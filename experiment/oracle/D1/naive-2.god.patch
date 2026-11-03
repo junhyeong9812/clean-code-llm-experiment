@@ -1,0 +1,39 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -199,7 +199,7 @@
+ 
+             // 제한은 새 입찰에만 건다. 이미 걸려 있는 입찰의 체결은 막지 않는다
+             val user = em.find(User::class.java, userId)
+-            if (side == "BUY" && user.purchaseRestrictedUntil?.isAfter(now) == true) {
++            if (side == "BUY" && user.purchaseRestrictedUntil?.isBefore(now) == false) {
+                 throw ApiException(HttpStatus.FORBIDDEN, "PURCHASE_RESTRICTED", "구매 제한 중: ${user.purchaseRestrictedUntil}까지")
+             }
+             if (side == "SELL" && user.saleRestrictedUntil?.isAfter(now) == true) {
+@@ -2477,7 +2477,7 @@
+                 "t.seller_id", "'SETTLEMENT_PAID:' || t.id",
+             ),
+             Reminder(
+-                "PURCHASE_RESTRICTED", "users", "t.purchase_restricted_until > :now", mapOf("now" to now),
++                "PURCHASE_RESTRICTED", "users", "t.purchase_restricted_until >= :now", mapOf("now" to now),
+                 "t.id", restrictionKey("PURCHASE_RESTRICTED", "purchase_restricted_until"),
+             ),
+             Reminder(
+@@ -2701,7 +2701,7 @@
+                     alert.closedAt = now
+                     return@execute true
+                 }
+-                if (em.find(User::class.java, alert.userId).purchaseRestrictedUntil?.isAfter(now) == true) return@execute false
++                if (em.find(User::class.java, alert.userId).purchaseRestrictedUntil?.isBefore(now) == false) return@execute false
+                 val bidId = em.createNativeQuery(
+                     "SELECT id FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now" +
+                         " AND price <= :target ORDER BY price, created_at, id LIMIT 1",
+@@ -2784,7 +2784,7 @@
+             " AND EXISTS (SELECT 1 FROM wishlists w WHERE w.user_id = t.user_id AND w.product_size_id = t.product_size_id)" +
+             " AND NOT EXISTS (SELECT 1 FROM price_alerts n WHERE n.user_id = t.user_id AND n.product_size_id = t.product_size_id" +
+             " AND (n.id > t.id OR n.status = 'ACTIVE'))" +
+-            " AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.purchase_restricted_until > :now)"
++            " AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.purchase_restricted_until >= :now)"
+         val params = mapOf<String, Any>("now" to now, "due" to now.minus(Duration.ofDays(7)))
+         return forEachTarget("price_alerts", condition, params, isolatedAs = "price-alert-rearm") { alertId ->
+             tx.execute {

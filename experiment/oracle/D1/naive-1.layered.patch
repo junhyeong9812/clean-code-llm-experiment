@@ -1,0 +1,16 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/User.kt b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+@@ -37,10 +37,10 @@
+ 
+     /** 새 입찰 제한(§3.1): 구매는 purchase_restricted_until, 판매는 sale_restricted_until 기준 제한 중이면 403. 이미 걸린 입찰의 체결은 막지 않는다. */
+     fun requireCanBid(side: String, now: Instant) {
+-        if (side == "BUY" && purchaseRestrictedUntil?.isAfter(now) == true) {
++        if (side == "BUY" && purchaseRestrictedUntil?.isBefore(now) == false) {
+             throw MarketException(Failure.PURCHASE_RESTRICTED, "구매 제한 중: ${purchaseRestrictedUntil}까지")
+         }
+-        if (side == "SELL" && saleRestrictedUntil?.isAfter(now) == true) {
++        if (side == "SELL" && saleRestrictedUntil?.isBefore(now) == false) {
+             throw MarketException(Failure.SALE_RESTRICTED, "판매 제한 중: ${saleRestrictedUntil}까지")
+         }
+     }

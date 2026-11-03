@@ -1,0 +1,21 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt	2026-11-03 08:46:20.952211133 +0900
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt	2026-11-03 08:46:20.959907228 +0900
+@@ -2083,7 +2083,7 @@
+     /**
+      * seller-grade-recalc(§5.2): 기준월 D = 현재가 속한 달 1일(KST). 대상 = 정산 행이 있고 effective_from = D 행이 없는 사용자(users id 순).
+      * 사용자 1명 = 그 사용자 행을 잠근 트랜잭션 하나, 잠근 뒤 D 행이 없는지 다시 본다(있으면 건너뜀 — 첫 결과 유지).
+-     * 기준 금액 = INCLUDED amount 합(소속 정산 period_start ∈ [D − 3개월, D)). 판매 제한 중(sale_restricted_until > 현재)이면 restricted·STANDARD.
++     * 기준 금액 = INCLUDED amount 합(소속 정산 period_start ∈ [D − 3개월, D)). 판매 제한 중(sale_restricted_until 기준)이면 restricted·STANDARD.
+      */
+     private fun recalcSellerGrades(now: Instant): BatchResult {
+         val d = LocalDate.ofInstant(now, kst).withDayOfMonth(1)
+@@ -3233,7 +3233,7 @@
+ 
+     private fun requireUserRow(userId: Long): User = em.find(User::class.java, userId) ?: notFound("없는 사용자: $userId")
+ 
+-    /** `GET /admin/users/restricted`(§11.3): type = purchase|sale(필수), 그 제한 끝 > 현재인 사용자, id 순 페이지. */
++    /** `GET /admin/users/restricted`(§11.3): type = purchase|sale(필수), 그 제한 중인 사용자, id 순 페이지. */
+     fun restrictedUsers(type: String?, limit: String?, after: String?): PageView<RestrictedUserView> {
+         if (type == null) badRequest("type이 필요하다")
+         val column = when (type) {

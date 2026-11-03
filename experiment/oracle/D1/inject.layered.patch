@@ -1,0 +1,68 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/BatchTargets.kt b/app/src/main/kotlin/com/ccle/layered/domain/BatchTargets.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/BatchTargets.kt	2026-11-03 08:46:21.101672306 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/domain/BatchTargets.kt	2026-11-03 08:46:21.112734640 +0900
+@@ -55,10 +55,10 @@
+     /** deadline-reminder SETTLEMENT_PAID(§7.1): PAID, now − 7일 < paid_at ≤ now, 같은 dedupe_key 알림 없음. */
+     RECENTLY_PAID_SETTLEMENTS,
+ 
+-    /** deadline-reminder PURCHASE_RESTRICTED(§7.1): purchase_restricted_until > now, 같은 dedupe_key 알림 없음. */
++    /** deadline-reminder PURCHASE_RESTRICTED(§7.1): purchase_restricted_until 기준 제한 중, 같은 dedupe_key 알림 없음. */
+     PURCHASE_RESTRICTED_USERS,
+ 
+-    /** deadline-reminder SALE_RESTRICTED(§7.1): sale_restricted_until > now, 같은 dedupe_key 알림 없음. */
++    /** deadline-reminder SALE_RESTRICTED(§7.1): sale_restricted_until 기준 제한 중, 같은 dedupe_key 알림 없음. */
+     SALE_RESTRICTED_USERS,
+ 
+     /** price-alert-scan(ADR-0007 §8.3): ACTIVE 가격 알림. */
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt b/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt	2026-11-03 08:46:21.102163513 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt	2026-11-03 08:46:21.112530639 +0900
+@@ -78,10 +78,10 @@
+     /** settlements: PAID, now − 7일 < paid_at ≤ now → 판매자. */
+     SETTLEMENT_PAID(BatchTarget.RECENTLY_PAID_SETTLEMENTS),
+ 
+-    /** users: purchase_restricted_until > now → 그 사용자. */
++    /** users: purchase_restricted_until 기준 제한 중 → 그 사용자. */
+     PURCHASE_RESTRICTED(BatchTarget.PURCHASE_RESTRICTED_USERS),
+ 
+-    /** users: sale_restricted_until > now → 그 사용자. */
++    /** users: sale_restricted_until 기준 제한 중 → 그 사용자. */
+     SALE_RESTRICTED(BatchTarget.SALE_RESTRICTED_USERS),
+     ;
+ 
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/SellerGrade.kt b/app/src/main/kotlin/com/ccle/layered/domain/SellerGrade.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/SellerGrade.kt	2026-11-03 08:46:21.102372057 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/domain/SellerGrade.kt	2026-11-03 08:46:21.112672895 +0900
+@@ -63,7 +63,7 @@
+         }
+ 
+         /**
+-         * 그 달의 등급 행(§5.2). 판매 제한 중(저장된 sale_restricted_until > 현재)이면 restricted·STANDARD(§5.1).
++         * 그 달의 등급 행(§5.2). 판매 제한 중(저장된 sale_restricted_until 기준)이면 restricted·STANDARD(§5.1).
+          * 매달 쓴다(지난달과 같아도), created_at = 현재.
+          */
+         fun assess(seller: User, month: SellerGradeMonth, basis: Long, now: Instant): SellerGrade {
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/domain/User.kt b/app/src/main/kotlin/com/ccle/layered/domain/User.kt
+--- a/app/src/main/kotlin/com/ccle/layered/domain/User.kt	2026-11-03 08:46:21.101565877 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/domain/User.kt	2026-11-03 08:46:21.112483511 +0900
+@@ -35,7 +35,7 @@
+     var saleRestrictedUntil: Instant? = saleRestrictedUntil
+         private set
+ 
+-    /** 새 입찰 제한(§3.1): 구매는 purchase_restricted_until > 현재이면 403, 판매는 sale_restricted_until. 이미 걸린 입찰의 체결은 막지 않는다. */
++    /** 새 입찰 제한(§3.1): 구매는 purchase_restricted_until, 판매는 sale_restricted_until 기준 제한 중이면 403. 이미 걸린 입찰의 체결은 막지 않는다. */
+     fun requireCanBid(side: String, now: Instant) {
+         if (side == "BUY" && purchaseRestrictedUntil?.isAfter(now) == true) {
+             throw MarketException(Failure.PURCHASE_RESTRICTED, "구매 제한 중: ${purchaseRestrictedUntil}까지")
+diff -ruN a/app/src/main/kotlin/com/ccle/layered/service/AdminQueryService.kt b/app/src/main/kotlin/com/ccle/layered/service/AdminQueryService.kt
+--- a/app/src/main/kotlin/com/ccle/layered/service/AdminQueryService.kt	2026-11-03 08:46:21.104894008 +0900
++++ b/app/src/main/kotlin/com/ccle/layered/service/AdminQueryService.kt	2026-11-03 08:46:21.114174718 +0900
+@@ -34,7 +34,7 @@
+         isReadOnly = true
+     }
+ 
+-    /** 제한 사용자: type 필수(purchase|sale), 그 제한 끝 > 현재. */
++    /** 제한 사용자: type 필수(purchase|sale), 그 제한 중인 사용자. */
+     fun restrictedUsers(type: String?, limit: String?, after: String?): Pair<RestrictionType, PageOf<User>> {
+         val restriction = RestrictionType.of(type)
+         val page = KeysetPage.of(limit, after)

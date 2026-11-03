@@ -1,0 +1,16 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -199,10 +199,10 @@
+ 
+             // 제한은 새 입찰에만 건다. 이미 걸려 있는 입찰의 체결은 막지 않는다
+             val user = em.find(User::class.java, userId)
+-            if (side == "BUY" && user.purchaseRestrictedUntil?.isAfter(now) == true) {
++            if (side == "BUY" && user.purchaseRestrictedUntil?.isBefore(now) == false) {
+                 throw ApiException(HttpStatus.FORBIDDEN, "PURCHASE_RESTRICTED", "구매 제한 중: ${user.purchaseRestrictedUntil}까지")
+             }
+-            if (side == "SELL" && user.saleRestrictedUntil?.isAfter(now) == true) {
++            if (side == "SELL" && user.saleRestrictedUntil?.isBefore(now) == false) {
+                 throw ApiException(HttpStatus.FORBIDDEN, "SALE_RESTRICTED", "판매 제한 중: ${user.saleRestrictedUntil}까지")
+             }
+ 

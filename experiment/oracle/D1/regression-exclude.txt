@@ -1,0 +1,9 @@
+# 테스트 메서드 단위(Gradle excludeTestsMatching 패턴). 항목마다 사유. 정답(fix) 무제외 회귀 실측(2026-11-03, 두 구조 같은 8메서드)에서 실패한 것만.
+com.ccle.behavior.contract.RestrictionAndConcurrencyTest.제한 경계*  # 구매 제한 끝 = 현재인 사용자의 구매 입찰이 201이라고 단언한다 — 새 규칙에서는 403 PURCHASE_RESTRICTED. 판매 쪽(끝 = 하루 전 → 허용)은 그대로이므로, 구매 쪽 기대값만 새 규칙으로 바꾼 갱신 단언을 숨은 테스트 'B1'로 옮겼다(판정기는 갱신본 테스트를 지원하지 않는다)
+com.ccle.behavior.contract.BatchAndClockTest.구매 경고 - 제한을 건 경고는*  # 준비가 '제한이 풀린 시각(끝 = 현재)'에 같은 구매자의 구매 입찰로 체결 3건을 만든다 — 새 규칙에서는 그 시각에 아직 구매 제한이라 403으로 준비가 깨진다. 같은 계약(제한을 건 경고는 빼고 다시 센다)은 숨은 'R1'이 끝 + 1초에 준비해 검증한다
+com.ccle.behavior.contract.BatchAndClockTest.구매 경고 - 제한 뒤 경고 2건*  # 위와 같은 준비(끝 = 현재에 구매 입찰) — 403으로 깨진다. 같은 계약(제한 뒤 경고 2건 → 제한 그대로)은 숨은 'R2'가 끝 + 1초에 준비해 검증한다(재계수 기준까지 바꾼 naive-4를 잡는 테스트)
+com.ccle.behavior.contract3.A2SellerGradeTest.§5_1 판매 제한*  # 판매 제한 끝 = 현재(정각)인 판매자는 제한 아님(MASTER, restricted=false)이라고 단언한다 — 새 규칙에서는 restricted·STANDARD. 경계 단언(끝 + 1초 제한·끝 = 현재 제한·끝 − 1초 아님)을 숨은 'G1'로 옮겼다(기준 금액은 0으로 준비 — 아래 design.md 한계)
+com.ccle.behavior.contract3.A4DeadlineReminderTest.§7_1 제한 알림*  # 끝 = now인 사용자(u2 구매·u4 판매)는 대상 아님이라고 단언한다 — 새 규칙에서는 대상(알림 1행). 경계·키 E·재실행 무중복 단언을 숨은 'N1'(구매)·'N2'(판매)로 옮겼다. 연장 시 새 키 단언도 N1에 함께 옮겼다
+com.ccle.behavior.contract3.A5PriceAlertScanTest.§8_3의 2*  # 주인의 구매 제한 끝 = 현재가 되면 TRIGGERED라고 단언한다 — 새 규칙에서는 ACTIVE 유지, 1초 뒤 TRIGGERED. 갱신 단언을 숨은 'P1'로 옮겼다
+com.ccle.behavior.contract3.A14PriceAlertRearmTest.§20_3_3 구매 제한 중*  # 주인의 구매 제한 끝 = 현재가 되면 재무장이라고 단언한다 — 새 규칙에서는 건너뛰고 1초 뒤 재무장. 갱신 단언을 숨은 'P2'로 옮겼다
+com.ccle.behavior.contract3.A9AdminQueryTest.§11_3 users-restricted*  # 끝 = 현재인 사용자는 목록에서 제외라고 단언한다 — 새 규칙에서는 포함. 경계 단언을 숨은 'Q1'(purchase)·'Q2'(sale)로 옮겼다. 항목 모양·페이지·400 단언도 Q2에 함께 옮겼다
