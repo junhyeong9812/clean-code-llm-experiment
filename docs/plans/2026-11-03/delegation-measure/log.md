@@ -39,3 +39,19 @@
 | 2026-11-03 12:14 | DEL-T2(D2) 회수: fix·alt-1 두 구조 전 단계 success, none·naive-1~5 숨은 실패(두 구조 같음 — none/1/2/3 = A·B·D, 4 = A, 5 = D), tampered 0, 제외 0. 메인 교차 확인: fix.god = :1170 DESC→ASC 1줄, TASK·공개 테스트에 정렬·ORDER·FIFO 낱말 없음(기대 동작에 규칙 문장은 있음 — 리뷰 대상). DEL-T3(D3) 착수 | D1·D3 대기 |
 | 2026-11-03 15:46 | DEL-T1(D1) 회수·커밋: fix·alt-1 두 구조 전 단계 success, none 숨은 9실패·naive-1 7·2 5·3 5·4 1(R2), 이름·수 두 구조 같음, tampered 0, verify 0. ADR과 차이: layered 고칠 줄 8(9는 호출처 포함 셈), 회귀 제외 8메서드(BatchAndClockTest 2개 추가 — 끝=현재에 구매 입찰로 준비) → ADR §4 정정 필요. 메인 교차 확인: fix.god 8줄 diff·TASK 문안·exclude 8행 | D3 대기 |
 | 2026-11-03 17:29 | DEL-T3(D3) 회수·커밋 8e6322b: fix·alt-1 두 구조 전 단계 success, none 숨은 C·D·E, naive-1 C·D·2 전부·3 C·D·4 E(두 구조 같음), tampered 0, 제외 0. 메인 교차 확인: TASK 문안(배치명·SHIPMENT_OVERDUE는 재현용). 워커 판정 중 가용 9GB 대기 합 약 2h(사용자 부하). 최종 채택 확인 큐 착수(커밋 코드, results-del-adopt): 패치마다 2회차 = 이 큐, 1회차 = 워커 행(code_dirty — 같은 내용 커밋), fix 숨은 5회 = 워커 1 + 전 단계 1 + 숨은 단독 3 | 큐 대기(약 6h) |
+| 2026-11-03 17:30 | 과제 D1~D3 듀얼 1패스 착수: base 81d7983..8e6322b(experiment만), OUT=/tmp/tmp.Ffi8qmJljl, mirror=/tmp/tmp.GQnPXqFZKQ, 보안 스캔 0건. Opus 워커 ∥ codex(medium, 인라인 — 이전 bwrap 실패 전례) | 회수 대기 |
+| 2026-11-03 17:37 | 과제 듀얼 1패스 회수: codex(medium 인라인, rc 0) 중간 3 · Opus(DEL-R1, 미러) 중간 2·낮음 2·위험 1·OQ 2. 판정 막는 결함(정답 탈락·naive 통과·비결정)은 양쪽 0. 반영이 D1·D2·D3 숨은 자산을 바꿔 최종 확인 큐 중지(D2 god fix 1건 진행 중 SIGTERM → cleanup 컨테이너 4·네트워크 1, 결과 행 없음) | 수정 위임 |
+
+### 리뷰 ledger — 과제 D1~D3 (루프 1)
+
+| id | source | 근거 | 지적 | disposition | 조치 |
+|---|---|---|---|---|---|
+| DT-1 | codex D1-1 · opus OQ-2 | D1HiddenTest G1, regression-exclude A2 | G1 기준 금액 0 → 등급 판별 못 함(제외된 A2의 '풀리면 MASTER' 미이전) | 채택 | G1을 MASTER 기준 금액으로, 끝 정각 = restricted·STANDARD / 끝 −1초(해제) = MASTER |
+| DT-2 | codex D1-2 | D1HiddenTest R1·R2, naive-4 | 재계수 함정은 구매 경고만 검사 — 판매 패널티 기준만 바꾼 오답 통과 | 채택 | 판매 패널티 재계수 숨은 테스트 추가(제한 건 시각과 같은 패널티 제외) |
+| DT-3 | codex D3-1 | cases/D3/TASK.md 할 일 | 보고 요구를 판정하지 않음 | 채택(문서) | 자산 불변. ADR §4·design.md에 "보고는 판정 밖 — 탐색 유도 문구" 명시 |
+| DT-4 | opus R1-1 | D3 inject.layered Notification.kt:92 주석 | "발송 기한" grep이 layered에서만 알림 창에 직접 닿음(구조 단서 비대칭) | 채택 | 주석 중립화(줄 수 유지) |
+| DT-5 | opus R1-2 | A4DeadlineReminderTest:248-261 vs D1HiddenTest N1·N2 | 옮긴 계약 중 소수 초 끝 시각 키 내림·알림 필드 단언 누락 | 채택 | N1에 +700ms 사용자 추가, 키 내림·수신자·대상 단언 |
+| DT-6 | opus R1-3 | D3 TASK.md '다른 규칙은 바꾸지 않는다' | 알림 창 되돌림이 이름 의미로만 도달 | 채택(기록) | design.md 위험 기록, 문안 불변(위치 누설 방지 우선) |
+| DT-7 | opus R1-4 | D1 열 이름 grep·D2 ORDER BY 2줄·D3 ofDays(4) 유일 | 큰 탐색 의도를 비켜갈 지름길 → 파일럿 게이트 5 미달 위험 | 채택(기록) | 자산 불변(ADR이 낱말 단서 조건을 걸지 않음 — 게이트 5가 실측). ADR §10 위협에 추가, 미달 시 사용자 결정 |
+| DT-8 | opus OQ-1 | D2Fixtures:58-60·81-84, D2HiddenTest C | 같은 created_at — created_at 정렬 대안이 비결정 | 채택 | 두 적립분 created_at을 id 순으로 1초 벌림 |
+2026-11-03 20:16:40|DEL-F1 회수 — DT-1·2·4·5·8 반영, check 33행 기대와 전부 일치(숨은 실패 god=layered, tampered 0; D1 naive-4 R2·R3, naive-5 R3)|코드 커밋 6ce8731
