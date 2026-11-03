@@ -47,16 +47,19 @@ object D2Fx {
         return Db.long("INSERT INTO product_sizes(product_id, size) VALUES (?, '270') RETURNING id", product)
     }
 
-    /** 사용 가능한 적립분 1개(remaining = amount, expires_at = confirmedAt + 365일) + point_balances.available 증가. */
-    fun bundle(buyer: Long, amount: Long, confirmedAt: Instant): Bundle {
+    /**
+     * 사용 가능한 적립분 1개(remaining = amount, expires_at = confirmedAt + 365일) + point_balances.available 증가.
+     * earnShift: 체결·결제·적립 시각(적립분 created_at)만 그만큼 옮긴다 — 만료는 그대로(만료가 같은 적립분끼리 created_at 순 = id 순을 만들 때).
+     */
+    fun bundle(buyer: Long, amount: Long, confirmedAt: Instant, earnShift: Duration = Duration.ZERO): Bundle {
         val seller = newUser()
         val size = newSize()
         val p = amount * 100
         val fee = maxOf(p * 3 / 100, 1000L)
         val ship = if (p >= 100_000) 0L else 3000L
         val total = p + fee + ship
-        val tSell = confirmedAt.minus(Duration.ofDays(10))
-        val tBuy = confirmedAt.minus(Duration.ofDays(9))
+        val tSell = confirmedAt.minus(Duration.ofDays(10)).plus(earnShift)
+        val tBuy = confirmedAt.minus(Duration.ofDays(9)).plus(earnShift)
         val paid = tBuy.plus(Duration.ofMinutes(1))
         val expiresAt = confirmedAt.plus(Duration.ofDays(365))
         val bidSql = "INSERT INTO bids(user_id, product_size_id, side, price, status, expires_at, created_at) VALUES (?, ?, ?, ?, 'MATCHED', ?, ?) RETURNING id"
@@ -128,6 +131,9 @@ object D2Fx {
     }
 
     fun remaining(bundleId: Long): Long = Db.long("SELECT remaining FROM point_ledger WHERE id = ?", bundleId)
+
+    fun createdAt(entryId: Long): Instant =
+        (Db.query("SELECT created_at FROM point_ledger WHERE id = ?", entryId).single()["created_at"] as Timestamp).toInstant()
 
     fun expiredSum(user: Long): Long =
         Db.long("SELECT coalesce(sum(amount), 0) FROM point_ledger WHERE user_id = ? AND kind = 'EXPIRE'", user)

@@ -12,8 +12,8 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
 
 /**
- * D1 숨은 테스트 준비 도우미. 사용자·빈 상품 사이즈·제한 끝 시각·(등급 대상이 되기 위한) 빈 정산 행만 SQL로 넣고,
- * 입찰·체결·위시리스트·가격 알림·배치는 API로 만든다. 시계는 멈춘 시계라 Clock.now()를 끝 시각으로 넣으면 '끝 = 현재'가 정확히 성립한다.
+ * D1 숨은 테스트 준비 도우미. 사용자·빈 상품 사이즈·제한 끝 시각·(등급 기준 금액용) 정산 행·INCLUDED 항목만 SQL로 넣고,
+ * 입찰·체결·결제·위시리스트·가격 알림·배치는 API로 만든다. 시계는 멈춘 시계라 Clock.now()를 끝 시각으로 넣으면 '끝 = 현재'가 정확히 성립한다.
  * 시계는 앞으로만 옮긴다.
  */
 object D1Fx {
@@ -47,15 +47,29 @@ object D1Fx {
     fun purchaseUntil(user: Long): Instant? =
         (Db.query("SELECT purchase_restricted_until FROM users WHERE id = ?", user).single()["purchase_restricted_until"] as java.sql.Timestamp?)?.toInstant()
 
-    /** 판매자 등급 산정 대상이 되게 빈 정산 행 1개(금액 0, CARRIED)를 넣는다 — 기준 금액 0. */
-    fun addEmptySettlement(seller: Long) = assertEquals(
-        1,
-        Db.update(
+    fun saleUntil(user: Long): Instant? =
+        (Db.query("SELECT sale_restricted_until FROM users WHERE id = ?", user).single()["sale_restricted_until"] as java.sql.Timestamp?)?.toInstant()
+
+    /**
+     * 기준 금액 = amount가 되게 정산 행 1개(PAID, 수수료·패널티 0)와 INCLUDED 항목 1개를 넣는다. period_start = 현재가 속한 달 1일(KST) − 7일
+     * (산정 창 [D − 3개월, D) 안). 항목의 order_item_id는 아무 기존 항목(FK만 맞춘다 — 등급 산정은 항목 amount·status만 읽는다).
+     */
+    fun addSettlement(seller: Long, amount: Long) {
+        val d = java.time.LocalDate.ofInstant(Clock.now(), java.time.ZoneId.of("Asia/Seoul")).withDayOfMonth(1)
+        val start = d.minusDays(7)
+        val s = Db.long(
             "INSERT INTO settlements(seller_id, period_start, period_end, gross, fee_total, penalty_total, carry_in, net, payout, carry_out, status, paid_at)" +
-                " VALUES (?, DATE '2025-01-06', DATE '2025-01-12', 0, 0, 0, 0, 0, 0, 0, 'CARRIED', NULL)",
-            seller,
-        ),
-    )
+                " VALUES (?, ?, ?, ?, 0, 0, 0, ?, ?, 0, 'PAID', ?) RETURNING id",
+            seller, start, start.plusDays(6), amount, amount, amount, ts(Clock.now()),
+        )
+        assertEquals(
+            1,
+            Db.update(
+                "INSERT INTO settlement_items(settlement_id, order_item_id, amount, fee, status) VALUES (?, (SELECT min(id) FROM order_items), ?, 0, 'INCLUDED')",
+                s, amount,
+            ),
+        )
+    }
 
     fun ok(step: String, r: Resp, expected: Int = 200): Resp {
         assertEquals(expected, r.status, "준비 $step: $r")
@@ -98,10 +112,21 @@ object D1Fx {
     fun restrictionNotifs(user: Long, kind: String): List<String> =
         Db.query("SELECT dedupe_key FROM notifications WHERE user_id = ? AND kind = ? ORDER BY id", user, kind).map { it["dedupe_key"] as String }
 
-    /** (제한된 사용자, 등급 행의 restricted, grade) — effective_from이 가장 늦은 행. */
-    fun latestGrade(seller: Long): Pair<Boolean, String>? =
-        Db.query("SELECT restricted, grade FROM seller_grades WHERE seller_id = ? ORDER BY effective_from DESC, id DESC LIMIT 1", seller)
-            .singleOrNull()?.let { it["restricted"] as Boolean to it["grade"] as String }
+    /** 등급 행의 (restricted, grade, basis_amount) — effective_from이 가장 늦은 행. */
+    fun latestGrade(seller: Long): Triple<Boolean, String, Long>? =
+        Db.query("SELECT restricted, grade, basis_amount FROM seller_grades WHERE seller_id = ? ORDER BY effective_from DESC, id DESC LIMIT 1", seller)
+            .singleOrNull()?.let { Triple(it["restricted"] as Boolean, it["grade"] as String, (it["basis_amount"] as Number).toLong()) }
+
+    /** 제한 알림 1행의 (받는 사람, kind, ref_id, created_at, read_at) — dedupe_key로 찾는다(정확히 1행). */
+    fun notif(key: String): List<Any?> {
+        val rows = Db.query("SELECT user_id, kind, ref_id, created_at, read_at FROM notifications WHERE dedupe_key = ?", key)
+        assertEquals(1, rows.size, "dedupe_key '$key' 알림 1행: $rows")
+        val r = rows.single()
+        return listOf(
+            (r["user_id"] as Number).toLong(), r["kind"], (r["ref_id"] as Number).toLong(),
+            (r["created_at"] as java.sql.Timestamp).toInstant(), (r["read_at"] as java.sql.Timestamp?)?.toInstant(),
+        )
+    }
 
     fun restrictedIds(type: String, after: Long): List<Long> {
         val r = ok("제한 사용자 목록", Api.get("/admin/users/restricted?type=$type&after=$after"))
@@ -127,6 +152,38 @@ object D1Fx {
     fun tradeStatus(trade: Long): String = Db.query("SELECT status FROM trades WHERE id = ?", trade).single()["status"] as String
 
     fun warningCount(buyer: Long): Long = Db.long("SELECT count(*) FROM buyer_warnings WHERE user_id = ?", buyer)
+
+    // ---- 판매자 패널티 → 판매 제한 (contract2 PenaltyTest 방식: 판매 입찰을 미리 걸어 두고 구매자가 나중에 체결·결제) ----
+
+    /** 판매자가 새 사이즈 n개에 판매 입찰(90일)을 건다 — 제한이 걸린 뒤에도 이 입찰의 체결·결제는 된다. 반환: 사이즈 id. */
+    fun sellBids(seller: Long, n: Int): List<Long> = (1..n).map { createProductSize().also { s -> activeBid(seller, s, "SELL", 50_000, 90) } }
+
+    /** 새 구매자가 그 사이즈를 사서 결제한다(PAID). 반환: 주문 항목 id. */
+    fun buyAndPay(size: Long): Long {
+        val buyer = createUser()
+        val r = ok("BUY 입찰", bid(buyer, size, "BUY", 50_000), 201)
+        assertEquals("MATCHED", r.json["status"].asText(), "준비 체결: $r")
+        val pay = ok(
+            "결제", Api.post("/orders", mapOf("tradeIds" to listOf(r.json["tradeId"].asLong()), "pointToUse" to 0), buyer, "d1h-" + uniq()), 201,
+        )
+        assertEquals("PAID", pay.json["status"].asText(), "준비 결제: $pay")
+        return pay.json["items"].single()["orderItemId"].asLong()
+    }
+
+    /** 항목들의 결제 시각 + 3일(발송 기한)로 옮겨 shipment-deadline을 돌린다 → 판매자 귀책(패널티 created_at = 그 시각). 반환: 그 시각. */
+    fun faultAll(items: List<Long>): Instant {
+        val now = moveTo(items.maxOf { paidAt(it) }.plus(java.time.Duration.ofDays(3)))
+        batch("shipment-deadline")
+        items.forEach { assertEquals("CANCELLED_SELLER_FAULT", itemStatus(it), "준비 기한 초과 귀책: 항목 $it") }
+        return now
+    }
+
+    fun paidAt(item: Long): Instant =
+        (Db.query("SELECT paid_at FROM order_items WHERE id = ?", item).single()["paid_at"] as java.sql.Timestamp).toInstant()
+
+    fun itemStatus(item: Long): String = Db.query("SELECT status FROM order_items WHERE id = ?", item).single()["status"] as String
+
+    fun penaltyCount(seller: Long): Long = Db.long("SELECT count(*) FROM seller_penalties WHERE seller_id = ?", seller)
 
     /** 결제 기한 시각으로 옮겨 payment-due를 돌린다. 반환: 그 시각. */
     fun expireAll(trades: List<Long>): Instant {

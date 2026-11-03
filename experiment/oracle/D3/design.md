@@ -50,9 +50,10 @@
 | layered | `domain/BatchTargets.kt:67` | "… PAID이고 paid_at + 3일 ≤ 현재, 같은 (항목, kind) 행 없음." → "… PAID이고 발송 기한이 지난 항목, 같은 (항목, kind) 행 없음." |
 | layered | `domain/BatchTargets.kt:49` | "… PAID, paid_at + 2일 ≤ now < paid_at + 3일, 같은 dedupe_key 알림 없음." → "… PAID, 결제 후 알림 창 안, 같은 dedupe_key 알림 없음." |
 | layered | `domain/Notification.kt:72` | "order_items: PAID, paid_at + 2일 ≤ now < paid_at + 3일 → 판매자." → "order_items: PAID, 결제 후 알림 창(SHIPMENT_FROM·SHIPMENT_UNTIL) 안 → 판매자." |
-| layered | `domain/Notification.kt:92` | "발송 기한 알림 창: 결제 + 2일부터 결제 + 3일 전까지." → "발송 기한 알림 창: 결제 시각 기준." |
+| layered | `domain/Notification.kt:92` | "발송 기한 알림 창: 결제 + 2일부터 결제 + 3일 전까지." → "알림 창: 결제 시각 기준." |
 
 - god 알림 창에는 숫자 서술 주석이 원래 없다(`remindDeadlines` KDoc :2446-2449는 일반 서술). layered가 주석 5곳, god가 1곳인 것은 원본 구조 차이다.
+- `Notification.kt:92`는 처음에 "발송 기한 알림 창: 결제 시각 기준."으로 바꿨다가 리뷰 DT-4로 "알림 창: 결제 시각 기준."으로 고쳤다: god 알림 창 자리에는 '발송 기한' 낱말이 없는데 layered만 `grep "발송 기한"`이 알림 창 상수로 바로 이끄는 비대칭 단서였다. 줄 수 유지, 이 줄을 문맥으로 쓰는 fix·alt-1·naive-3·naive-4 layered 패치의 문맥 줄도 같이 바꿨다(패치 내용 변경 없음 — 기준 사본 + inject 위에 6개 패치 모두 `patch --dry-run` 적용 확인).
 - 남는 단서(처치의 일부): 알림 종류 이름 `SHIPMENT_DUE_SOON`, 상수 이름 `SHIPMENT_FROM`/`SHIPMENT_UNTIL`, 지연 종류 `SHIPMENT_OVERDUE` — 두 구조 모두 있다.
 
 ## 3. 과제 문구(`cases/D3/TASK.md`)·공개 테스트
@@ -110,4 +111,22 @@
 - 숨은 실패 수·실패 테스트 이름이 패치마다 두 구조 같다(ADR-0008 §4.3-2). tampered 0(모든 행 `[]`). 판정 시간: public,hidden 223~293초, 전 단계 765~893초.
 - 실패 메시지 예(none, 두 구조 같음): C "결제 + 2일 정각 마감 임박 알림 수 expected <1> but was <0>", D "결제 + 3일 정각 마감 임박 알림 수 expected <0> but was <1>", E "결제 + 3일 정각 지연 기록 수 expected <1> but was <0>".
 - 남은 일(메인): 고정 SHA에서 fix·alt 판정 2회 재현, fix 숨은 테스트 5회 결정성, none·naive 2회째.
+
+### 리뷰 반영 뒤 재확인 (DEL-F1 — DT-4 layered 주석 중립화)
+
+`inject.layered.patch`가 바뀌어(`Notification.kt:92` 주석 한 줄) 다시 돌렸다. 2026-11-03 18:48 ~ 20:15, `code_sha` `01edabf`, `code_dirty` True(미커밋), `flock /tmp/ccle-judge.lock` 1레인 순차(가용 메모리 12GB 이상에서만 시작 — 대기 0회). 바뀐 패치는 그 주석 줄이 든 inject(+줄)·fix·alt-1·naive-3·naive-4(문맥 줄)뿐이고, mk.py(주석 문자열만 고침)로 다시 만든 패치 14개가 손으로 고친 것과 바이트 단위로 같았다(mk.py의 inject + fix = 원본 단언 통과).
+
+| 패치 | 단계 | god | layered | 공개 | 숨은 실패(5개 중, 두 구조 같음) | 회귀 |
+|---|---|---|---|---|---|---|
+| fix | 전 단계 | True | True | pass | 0 | contract 122 · contract2 89 · contract3 252 통과 |
+| alt-1 | 전 단계 | True | True | pass | 0 | 〃 |
+| none | public,hidden | False | False | fail | C·D·E (3) | — |
+| naive-1 | public,hidden | False | False | **pass** | C·D (2) | — |
+| naive-2 | public,hidden | False | False | fail | A·B·C·D·E (5) | — |
+| naive-3 | public,hidden | False | False | **pass** | C·D (2) | — |
+| naive-4 | public,hidden | False | False | fail | E (1) | — |
+
+- 위 첫 실측과 패치마다 결과·실패 이름이 같다. tampered 0(모든 행).
+- 위험(기록만, 리뷰 DT-3): TASK.md의 "확인한 곳·고친 곳을 보고한다"는 **판정하지 않는다** — 숨은 테스트·회귀는 동작만 본다. 보고 요구는 탐색 범위를 넓히게 하는 유도 문구일 뿐이고, 보고의 정확성·완전성은 이 과제의 성공 판정에 들어가지 않는다.
+- 위험(기록만, 리뷰 DT-6): 알림 창 되돌림(2·3일)은 과제 문구가 직접 요구하지 않는다. 에이전트가 알림 창도 발송 기한을 쓰는 곳이라고 알아보는 근거는 알림 이름 `SHIPMENT_DUE_SOON`의 뜻과 "기한 뒤에 오는 마감 임박 알림은 무의미하다"는 추론뿐이다. TASK.md의 "기한을 기준으로 정해진 다른 규칙은 바꾸지 않는다"는 naive-3(빈 창)을 배제하는 근거는 되지만 **naive-1(알림 창을 그대로 둠)을 배제하지 못한다** — 알림 창을 '기한과 무관한 다른 규칙'으로 읽으면 naive-1도 문구에 맞는다. 그래서 숨은 C·D 실패가 '탐색 누락'인지 '문구 해석 차이'인지 결과만으로 가를 수 없다(보고 내용·궤적으로만 구분).
 - 위험(기록만): layered는 고칠 자리가 상수 2곳(`Notification.kt:93-94`·`Tracking.kt:88`)이고 `SHIP_WITHIN`·`SHIPMENT_FROM/UNTIL`·`ShipmentDelayKind` 이름으로 바로 닿아, god(3,667줄 한 파일 안 5자리)보다 탐색량이 적을 수 있다 — ADR-0009 §4 탐색량 조건은 파일럿이 잰다.

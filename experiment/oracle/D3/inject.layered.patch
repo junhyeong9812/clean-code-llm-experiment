@@ -16,7 +16,7 @@
 -        /** 발송 기한 알림 창: 결제 + 2일부터 결제 + 3일 전까지. */
 -        val SHIPMENT_FROM: Duration = Duration.ofDays(2)
 -        val SHIPMENT_UNTIL: Duration = Duration.ofDays(3)
-+        /** 발송 기한 알림 창: 결제 시각 기준. */
++        /** 알림 창: 결제 시각 기준. */
 +        val SHIPMENT_FROM: Duration = Duration.ofDays(3)
 +        val SHIPMENT_UNTIL: Duration = Duration.ofDays(4)
  

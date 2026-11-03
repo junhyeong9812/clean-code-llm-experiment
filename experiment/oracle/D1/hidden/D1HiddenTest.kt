@@ -13,6 +13,7 @@ import kotlin.test.assertTrue
  * 영역마다 한 메서드: 새 입찰(BUY·SELL) · 판매자 등급 · 제한 알림(구매·판매) · 가격 알림 발동 · 가격 알림 재무장 · 관리자 목록(purchase·sale)
  * + 정답이 깨뜨리는 기존 계약 이전(메서드 이름에 '이전'): 제한 경계(contract RestrictionAndConcurrencyTest) → B1,
  * A2·A4·A5·A9·A14 경계 단언 → 각 영역 메서드, 구매 경고 재계수 2건(contract BatchAndClockTest) → R1·R2(제한이 풀린 시각 = 끝 + 1초로 준비).
+ * 판매 패널티 재계수(제한을 건 시각과 같은 시각의 패널티는 다시 세지 않는다)는 R3(contract2 PenaltyTest 방식 — 판매 입찰을 미리 걸어 둔다).
  * 멈춘 시계라 Clock.now()를 끝 시각으로 넣으면 끝 = 현재가 정확히 성립한다. 테스트끼리 같은 DB·시계를 쓴다:
  * 사용자·사이즈는 테스트마다 새로 만들고 시계는 앞으로만 상대 이동한다(실행 순서는 이름순, 순서에 기대는 단언 없음).
  */
@@ -59,17 +60,17 @@ class D1HiddenTest {
     }
 
     @Test
-    fun `G1 판매자 등급 - 판매 제한 끝 = 현재면 restricted·STANDARD, 끝이 1초 전이면 제한 아님 (A2 §5_1 경계 이전)`() {
+    fun `G1 판매자 등급 - 기준 금액 MASTER여도 판매 제한 끝 = 현재면 restricted·STANDARD, 끝이 1초 전이면 제한 아님·MASTER (A2 §5_1 판매 제한 이전)`() {
         val now = Clock.now()
         val restricted = D1Fx.createUser(saleUntil = now.plus(sec))
         val edge = D1Fx.createUser(saleUntil = now)
         val released = D1Fx.createUser(saleUntil = now.minus(sec))
-        for (u in listOf(restricted, edge, released)) D1Fx.addEmptySettlement(u)
+        for (u in listOf(restricted, edge, released)) D1Fx.addSettlement(u, 8_000_000)
 
         D1Fx.batch("seller-grade-recalc")
-        assertEquals(true to "STANDARD", D1Fx.latestGrade(restricted), "끝 = 현재 + 1초")
-        assertEquals(true to "STANDARD", D1Fx.latestGrade(edge), "끝 = 현재: 제한")
-        assertEquals(false to "STANDARD", D1Fx.latestGrade(released), "끝 = 현재 − 1초: 제한 아님(기준 금액 0 → STANDARD)")
+        assertEquals(Triple(true, "STANDARD", 8_000_000L), D1Fx.latestGrade(restricted), "끝 = 현재 + 1초: 제한(basis는 그대로)")
+        assertEquals(Triple(true, "STANDARD", 8_000_000L), D1Fx.latestGrade(edge), "끝 = 현재: 제한(basis는 그대로)")
+        assertEquals(Triple(false, "MASTER", 8_000_000L), D1Fx.latestGrade(released), "끝 = 현재 − 1초: 제한이 풀려 기준 금액대로 MASTER")
     }
 
     @Test
@@ -78,9 +79,20 @@ class D1HiddenTest {
         val edge = D1Fx.createUser(purchaseUntil = now)
         val later = D1Fx.createUser(purchaseUntil = now.plus(sec))
         val released = D1Fx.createUser(purchaseUntil = now.minus(sec))
+        // 경계와 무관한 A4 단언: 소수 초 끝 시각 → 키의 E는 epoch 초 내림, 알림 필드(받는 사람·kind·대상·created_at = 배치의 현재·read_at 없음)
+        val fracP = now.plus(Duration.ofDays(1)).plusMillis(700)
+        val fracS = now.plus(Duration.ofDays(2)).plusMillis(300)
+        val frac = D1Fx.createUser(purchaseUntil = fracP, saleUntil = fracS)
 
         D1Fx.batch("deadline-reminder")
         assertEquals(listOf("PURCHASE_RESTRICTED:$edge:${now.epochSecond}"), D1Fx.restrictionNotifs(edge, "PURCHASE_RESTRICTED"), "끝 = 현재: 대상")
+        assertEquals(listOf<Any?>(edge, "PURCHASE_RESTRICTED", edge, now, null), D1Fx.notif("PURCHASE_RESTRICTED:$edge:${now.epochSecond}"))
+        val kP = "PURCHASE_RESTRICTED:$frac:${Math.floorDiv(fracP.toEpochMilli(), 1000L)}"
+        val kS = "SALE_RESTRICTED:$frac:${Math.floorDiv(fracS.toEpochMilli(), 1000L)}"
+        assertEquals(listOf(kP), D1Fx.restrictionNotifs(frac, "PURCHASE_RESTRICTED"), "소수 초 끝(+700ms): E 내림")
+        assertEquals(listOf(kS), D1Fx.restrictionNotifs(frac, "SALE_RESTRICTED"), "소수 초 끝(+300ms): E 내림")
+        assertEquals(listOf<Any?>(frac, "PURCHASE_RESTRICTED", frac, now, null), D1Fx.notif(kP))
+        assertEquals(listOf<Any?>(frac, "SALE_RESTRICTED", frac, now, null), D1Fx.notif(kS))
         assertEquals(listOf("PURCHASE_RESTRICTED:$later:${now.plus(sec).epochSecond}"), D1Fx.restrictionNotifs(later, "PURCHASE_RESTRICTED"))
         assertTrue(D1Fx.restrictionNotifs(released, "PURCHASE_RESTRICTED").isEmpty(), "끝 = 현재 − 1초: 대상 아님")
         for (u in listOf(edge, later, released)) assertTrue(D1Fx.restrictionNotifs(u, "SALE_RESTRICTED").isEmpty(), "판매 제한 없음: $u")
@@ -98,6 +110,8 @@ class D1HiddenTest {
             D1Fx.restrictionNotifs(edge, "PURCHASE_RESTRICTED"),
         )
         assertEquals(extended, D1Fx.purchaseUntil(edge), "제한은 읽기만 한다")
+        assertEquals(fracP to fracS, D1Fx.purchaseUntil(frac) to D1Fx.saleUntil(frac), "제한은 읽기만 한다(소수 초 그대로)")
+        assertEquals(listOf(kP) to listOf(kS), D1Fx.restrictionNotifs(frac, "PURCHASE_RESTRICTED") to D1Fx.restrictionNotifs(frac, "SALE_RESTRICTED"), "같은 구간은 다시 만들지 않는다")
     }
 
     @Test
@@ -109,6 +123,7 @@ class D1HiddenTest {
 
         D1Fx.batch("deadline-reminder")
         assertEquals(listOf("SALE_RESTRICTED:$edge:${now.epochSecond}"), D1Fx.restrictionNotifs(edge, "SALE_RESTRICTED"), "끝 = 현재: 대상")
+        assertEquals(listOf<Any?>(edge, "SALE_RESTRICTED", edge, now, null), D1Fx.notif("SALE_RESTRICTED:$edge:${now.epochSecond}"))
         assertEquals(listOf("SALE_RESTRICTED:$later:${now.plus(sec).epochSecond}"), D1Fx.restrictionNotifs(later, "SALE_RESTRICTED"))
         assertTrue(D1Fx.restrictionNotifs(released, "SALE_RESTRICTED").isEmpty(), "끝 = 현재 − 1초: 대상 아님")
     }
@@ -221,5 +236,24 @@ class D1HiddenTest {
         D1Fx.expireAll(D1Fx.unpaidTrades(buyer, 2))
         assertEquals(5, D1Fx.warningCount(buyer))
         assertEquals(until, D1Fx.purchaseUntil(buyer), "마지막 제한 뒤 경고 2건 → 그대로")
+    }
+
+    @Test
+    fun `R3 판매 패널티 - 제한을 건 패널티(제한 시각과 같은 시각)는 다시 세지 않는다, 뒤 2건은 그대로·3건째에 다시 제한 (PenaltyTest 방식 — 판매 입찰을 미리 걸어 둠)`() {
+        val seller = D1Fx.createUser()
+        val sizes = D1Fx.sellBids(seller, 6)
+        val t1 = D1Fx.faultAll(sizes.take(3).map { D1Fx.buyAndPay(it) })
+        val until = t1.plus(Duration.ofDays(30))
+        assertEquals(3, D1Fx.penaltyCount(seller))
+        assertEquals(until, D1Fx.saleUntil(seller), "준비: 패널티 3건 → 현재 + 30일")
+
+        // 마지막 제한을 건 시각 = until − 30일 = t1 = 앞 3건의 created_at → 그 3건은 다시 세지 않는다
+        D1Fx.faultAll(listOf(D1Fx.buyAndPay(sizes[3]), D1Fx.buyAndPay(sizes[4])))
+        assertEquals(5, D1Fx.penaltyCount(seller))
+        assertEquals(until, D1Fx.saleUntil(seller), "마지막 제한 뒤 패널티 2건 → 그대로")
+
+        val t3 = D1Fx.faultAll(listOf(D1Fx.buyAndPay(sizes[5])))
+        assertEquals(6, D1Fx.penaltyCount(seller))
+        assertEquals(t3.plus(Duration.ofDays(30)), D1Fx.saleUntil(seller), "제한 뒤 3건째 → 다시 제한")
     }
 }

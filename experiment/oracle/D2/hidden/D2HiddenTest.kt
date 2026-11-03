@@ -51,8 +51,9 @@ class D2HiddenTest {
         val at = D2Fx.now().minus(day)
         val buyer = D2Fx.newUser()
         val first = D2Fx.bundle(buyer, 600, at)
-        val second = D2Fx.bundle(buyer, 1_000, at)
+        val second = D2Fx.bundle(buyer, 1_000, at, earnShift = Duration.ofSeconds(1)) // created_at 1초 뒤 — id 순 = created_at 순
         assertEquals(first.expiresAt, second.expiresAt, "준비")
+        assertEquals(D2Fx.createdAt(first.id).plusSeconds(1), D2Fx.createdAt(second.id), "준비: created_at 순 = id 순")
 
         val order = D2Fx.pay(buyer, 1, 1_000).json["orderId"].asLong()
         assertEquals(mapOf(first.id to 600L, second.id to 400L), D2Fx.useAllocations(order), "결제 1,000P의 배분")

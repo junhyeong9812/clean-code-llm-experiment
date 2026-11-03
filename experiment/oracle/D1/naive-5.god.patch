@@ -1,0 +1,75 @@
+diff -ruN a/app/src/main/kotlin/com/ccle/god/Marketplace.kt b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -199,10 +199,10 @@
+ 
+             // 제한은 새 입찰에만 건다. 이미 걸려 있는 입찰의 체결은 막지 않는다
+             val user = em.find(User::class.java, userId)
+-            if (side == "BUY" && user.purchaseRestrictedUntil?.isAfter(now) == true) {
++            if (side == "BUY" && user.purchaseRestrictedUntil?.isBefore(now) == false) {
+                 throw ApiException(HttpStatus.FORBIDDEN, "PURCHASE_RESTRICTED", "구매 제한 중: ${user.purchaseRestrictedUntil}까지")
+             }
+-            if (side == "SELL" && user.saleRestrictedUntil?.isAfter(now) == true) {
++            if (side == "SELL" && user.saleRestrictedUntil?.isBefore(now) == false) {
+                 throw ApiException(HttpStatus.FORBIDDEN, "SALE_RESTRICTED", "판매 제한 중: ${user.saleRestrictedUntil}까지")
+             }
+ 
+@@ -1024,7 +1024,7 @@
+             "SELECT p.createdAt FROM SellerPenalty p WHERE p.sellerId = :seller AND p.createdAt > :from",
+             Instant::class.java,
+         ).setParameter("seller", sellerId).setParameter("from", now.minus(Duration.ofDays(30))).resultList
+-            .count { lastRestrictedAt == null || it.isAfter(lastRestrictedAt) }
++            .count { lastRestrictedAt == null || !it.isBefore(lastRestrictedAt) }
+         if (recentPenalties >= 3) seller.saleRestrictedUntil = now.plus(Duration.ofDays(30))
+     }
+ 
+@@ -2107,7 +2107,7 @@
+                             " WHERE s.seller_id = :seller AND si.status = 'INCLUDED' AND s.period_start >= :from AND s.period_start < :d",
+                     ).setParameter("seller", userId).setParameter("from", d.minusMonths(3)).setParameter("d", d).singleResult as Number
+                     ).toLong()
+-                val restricted = em.find(User::class.java, userId).saleRestrictedUntil?.isAfter(now) == true
++                val restricted = em.find(User::class.java, userId).saleRestrictedUntil?.isBefore(now) == false
+                 em.persist(
+                     SellerGrade(
+                         sellerId = userId,
+@@ -2477,11 +2477,11 @@
+                 "t.seller_id", "'SETTLEMENT_PAID:' || t.id",
+             ),
+             Reminder(
+-                "PURCHASE_RESTRICTED", "users", "t.purchase_restricted_until > :now", mapOf("now" to now),
++                "PURCHASE_RESTRICTED", "users", "t.purchase_restricted_until >= :now", mapOf("now" to now),
+                 "t.id", restrictionKey("PURCHASE_RESTRICTED", "purchase_restricted_until"),
+             ),
+             Reminder(
+-                "SALE_RESTRICTED", "users", "t.sale_restricted_until > :now", mapOf("now" to now),
++                "SALE_RESTRICTED", "users", "t.sale_restricted_until >= :now", mapOf("now" to now),
+                 "t.id", restrictionKey("SALE_RESTRICTED", "sale_restricted_until"),
+             ),
+         )
+@@ -2701,7 +2701,7 @@
+                     alert.closedAt = now
+                     return@execute true
+                 }
+-                if (em.find(User::class.java, alert.userId).purchaseRestrictedUntil?.isAfter(now) == true) return@execute false
++                if (em.find(User::class.java, alert.userId).purchaseRestrictedUntil?.isBefore(now) == false) return@execute false
+                 val bidId = em.createNativeQuery(
+                     "SELECT id FROM bids WHERE product_size_id = :size AND side = 'SELL' AND status = 'ACTIVE' AND expires_at > :now" +
+                         " AND price <= :target ORDER BY price, created_at, id LIMIT 1",
+@@ -2784,7 +2784,7 @@
+             " AND EXISTS (SELECT 1 FROM wishlists w WHERE w.user_id = t.user_id AND w.product_size_id = t.product_size_id)" +
+             " AND NOT EXISTS (SELECT 1 FROM price_alerts n WHERE n.user_id = t.user_id AND n.product_size_id = t.product_size_id" +
+             " AND (n.id > t.id OR n.status = 'ACTIVE'))" +
+-            " AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.purchase_restricted_until > :now)"
++            " AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = t.user_id AND u.purchase_restricted_until >= :now)"
+         val params = mapOf<String, Any>("now" to now, "due" to now.minus(Duration.ofDays(7)))
+         return forEachTarget("price_alerts", condition, params, isolatedAs = "price-alert-rearm") { alertId ->
+             tx.execute {
+@@ -3243,7 +3243,7 @@
+         }
+         val page = page(limit, after)
+         val users = em.createQuery(
+-            "SELECT u FROM User u WHERE u.$column > :now AND u.id > :after ORDER BY u.id",
++            "SELECT u FROM User u WHERE u.$column >= :now AND u.id > :after ORDER BY u.id",
+             User::class.java,
+         ).setParameter("now", clock.now()).setParameter("after", page.after).setMaxResults(page.limit).resultList
+         val items = users.map {

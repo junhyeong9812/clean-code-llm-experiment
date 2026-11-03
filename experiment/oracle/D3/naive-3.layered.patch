@@ -2,7 +2,7 @@
 +++ b/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt
 @@ -91,7 +91,7 @@
  
-         /** 발송 기한 알림 창: 결제 시각 기준. */
+         /** 알림 창: 결제 시각 기준. */
          val SHIPMENT_FROM: Duration = Duration.ofDays(3)
 -        val SHIPMENT_UNTIL: Duration = Duration.ofDays(4)
 +        val SHIPMENT_UNTIL: Duration = Duration.ofDays(3)
