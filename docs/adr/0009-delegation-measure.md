@@ -168,3 +168,4 @@ python3 experiment/runner/del_schedule.py --phase main --tasks S1,S2,S3,S4,D1,D2
 
 - **초안 리뷰 반영(2026-11-03, 채택 전):** 듀얼 1패스(Opus 16·codex 9 지적)와 사용자 결정 3건(본 실행 판정 축소, 호스트 로그인 유지 루프, 비교 두 축 + 위임 차단 기준)으로 다시 썼다 — 기준 방식 `direct` → `solo`, 주 비교 ÷`explore-opus`, 구간 조건 대칭화, 비열등을 성공률 차 구간으로, 결측·재실행 규칙, 탐색량 문턱 단위 일치, 실행 순서·로그인·시간 추정 정정, D1~D3 구체화. 근거 ledger: 작업 log.
 - **과제 작성 반영(2026-11-03, 채택 뒤·파일럿 전 — 사실 정정, 판정 기준 불변):** D1 layered 고칠 곳 9곳 → 8줄(호출처 제외), D1 회귀 제외 6 → 8메서드(`BatchAndClockTest` 2개 — 정답에서 준비 단계가 깨짐, 같은 계약은 숨은 테스트로 이전). D2·D3 제외 0 그대로. 과제별 상세·확인 결과 = `experiment/oracle/D*/design.md`.
+- **과제 채택(2026-11-04, 파일럿 전 — 판정 기준 불변):** 듀얼 1패스(지적 8건 전부 반영) + post-fix 재점검(새 지적 1건 반영 — D1 G1 준비 독립화) 뒤 D1~D3 채택. D1 숨은 테스트 11 → 12(R3 판매 재계수), 함정 4 → 5(naive-5). 채택 확인 = 커밋된 코드(`dd165eb`)에서 fix·alt-1 전 단계 2회 통과, fix 숨은 단계 5회 이상 결정적 통과, none·naive 숨은 실패 2회 모두 같은 이름·같은 수이고 god = layered, tampered 0. 결과 = `experiment/results-del-adopt`(52회).

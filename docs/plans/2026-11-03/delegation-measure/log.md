@@ -55,3 +55,7 @@
 | DT-7 | opus R1-4 | D1 열 이름 grep·D2 ORDER BY 2줄·D3 ofDays(4) 유일 | 큰 탐색 의도를 비켜갈 지름길 → 파일럿 게이트 5 미달 위험 | 채택(기록) | 자산 불변(ADR이 낱말 단서 조건을 걸지 않음 — 게이트 5가 실측). ADR §10 위협에 추가, 미달 시 사용자 결정 |
 | DT-8 | opus OQ-1 | D2Fixtures:58-60·81-84, D2HiddenTest C | 같은 created_at — created_at 정렬 대안이 비결정 | 채택 | 두 적립분 created_at을 id 순으로 1초 벌림 |
 2026-11-03 20:16:40|DEL-F1 회수 — DT-1·2·4·5·8 반영, check 33행 기대와 전부 일치(숨은 실패 god=layered, tampered 0; D1 naive-4 R2·R3, naive-5 R3)|코드 커밋 6ce8731
+2026-11-03 20:17:06|채택 큐 재시작(HEAD 6ce8731·77c3ea5, D1 naive 5개) — 2회차·fix 숨은 5회 결정성; 1회차 = 원 워커 행 + DEL-F1 행(D1·D2 숨은 단계 갱신분)|진행
+2026-11-03 20:57:31|post-fix 재점검(codex, 수정 hunk 한정) — DT-1·2·4·5·8 해소, 새 지적 1: D1 G1 정산 항목이 기존 order_items(min id)에 기댐|채택 → dd165eb(준비가 결제 항목 직접 생성), D1 hidden fix·none·naive-1 두 구조 재판정 중
+2026-11-03 21:59:11|D1 hidden 재판정(dd165eb, 깨끗한 트리) — fix 12/12 두 구조, none 9·naive-1 7 실패 이름 수정 전과 동일|G1 지적 해소, ledger 루프 1 종료
+2026-11-04 05:44:32|채택 큐 완료(52회, 64행, 깨끗한 트리 77c3ea5·dd165eb) — fix·alt-1 전 단계 통과, fix 숨은 결정성 ≥5, none·naive 실패 이름·수 1회차와 같고 god=layered, tampered 0|과제 D1~D3 채택. 다음 = 파일럿(사용자 확인 대기)
