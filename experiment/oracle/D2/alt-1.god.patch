@@ -1,0 +1,13 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -1171,9 +1171,8 @@
+             PointLedgerEntry::class.java,
+         ).setParameter("user", userId).setParameter("now", now).resultList
+         var need = amount
+-        for (row in bundles) {
++        for (bundle in bundles.map { it as PointLedgerEntry }.sortedWith(compareBy({ it.expiresAt }, { it.id }))) {
+             if (need == 0L) break
+-            val bundle = row as PointLedgerEntry
+             val take = minOf(bundle.remaining!!, need)
+             bundle.remaining = bundle.remaining!! - take
+             need -= take

@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/KeysetBatchTargets.kt
+@@ -44,7 +44,7 @@
+         }
+         BatchTarget.EXPIRED_POINTS -> Spec(
+             "point_ledger",
+-            "t.kind = 'EARN' AND t.status = 'AVAILABLE' AND t.remaining > 0 AND t.expires_at <= :now",
++            "t.kind = 'EARN' AND t.status = 'AVAILABLE' AND t.remaining > 0 AND t.expires_at < :now",
+             ::nowParam,
+         )
+         BatchTarget.GRADE_CHANGES -> Spec("users", "$noGradeHistoryAtD AND t.grade <> $gradeSql") { gradeParams(GradePeriod.of(it)) }

@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/JpaPointRepositories.kt
+@@ -25,7 +25,7 @@
+     override fun usable(userId: Long, now: Instant): Long {
+         val sum = em.createNativeQuery(
+             "SELECT coalesce(sum(remaining), 0) FROM point_ledger" +
+-                " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at > :now",
++                " WHERE user_id = :user AND kind = 'EARN' AND status = 'AVAILABLE' AND expires_at >= :now",
+         ).setParameter("user", userId).setParameter("now", now).singleResult as Number
+         return sum.toLong()
+     }
