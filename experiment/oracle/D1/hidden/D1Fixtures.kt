@@ -52,7 +52,7 @@ object D1Fx {
 
     /**
      * 기준 금액 = amount가 되게 정산 행 1개(PAID, 수수료·패널티 0)와 INCLUDED 항목 1개를 넣는다. period_start = 현재가 속한 달 1일(KST) − 7일
-     * (산정 창 [D − 3개월, D) 안). 항목의 order_item_id는 아무 기존 항목(FK만 맞춘다 — 등급 산정은 항목 amount·status만 읽는다).
+     * (산정 창 [D − 3개월, D) 안). 항목의 order_item_id는 이 준비가 직접 만든 결제 항목(FK만 맞춘다 — 등급 산정은 항목 amount·status만 읽는다; 다른 테스트가 만든 행에 기대지 않는다).
      */
     fun addSettlement(seller: Long, amount: Long) {
         val d = java.time.LocalDate.ofInstant(Clock.now(), java.time.ZoneId.of("Asia/Seoul")).withDayOfMonth(1)
@@ -65,8 +65,8 @@ object D1Fx {
         assertEquals(
             1,
             Db.update(
-                "INSERT INTO settlement_items(settlement_id, order_item_id, amount, fee, status) VALUES (?, (SELECT min(id) FROM order_items), ?, 0, 'INCLUDED')",
-                s, amount,
+                "INSERT INTO settlement_items(settlement_id, order_item_id, amount, fee, status) VALUES (?, ?, ?, 0, 'INCLUDED')",
+                s, buyAndPay(sellBids(createUser(), 1).single()), amount,
             ),
         )
     }
