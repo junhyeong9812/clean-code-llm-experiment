@@ -1,0 +1,54 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -810,6 +810,9 @@
+         itemView(item)
+     }!!
+ 
++    /** 발송 기한: 결제 + 3일(발송 등록·shipment-deadline·마감 임박 알림·지연 기록 공용). */
++    private val shipWithin: Duration = Duration.ofDays(3)
++
+     /** 발송 등록(§3). 그 체결의 판매자만, PAID이고 현재 < paid_at + 3일. 상태 위반이 기한 위반보다 먼저다(§2.1). */
+     fun shipItem(userId: Long, itemId: Long): ItemView {
+         val now = clock.now()
+@@ -819,7 +822,7 @@
+                 throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "판매자가 아닌 주문 항목: $itemId")
+             }
+             requireItemStatus(item, "PAID")
+-            val deadline = item.paidAt!!.plus(Duration.ofDays(3))
++            val deadline = item.paidAt!!.plus(shipWithin)
+             if (!now.isBefore(deadline)) {
+                 throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "발송 기한($deadline)이 지났다: $itemId")
+             }
+@@ -1548,12 +1551,12 @@
+         forEachTarget(
+             "order_items",
+             "t.status = 'PAID' AND t.paid_at <= :due",
+-            mapOf("due" to now.minus(Duration.ofDays(3))),
++            mapOf("due" to now.minus(shipWithin)),
+             isolatedAs = "shipment-deadline",
+         ) { itemId ->
+             tx.execute {
+                 val item = lockOrderOf(itemId)
+-                if (item.status != "PAID" || item.paidAt!!.plus(Duration.ofDays(3)).isAfter(now)) {
++                if (item.status != "PAID" || item.paidAt!!.plus(shipWithin).isAfter(now)) {
+                     false
+                 } else {
+                     sellerFault(item, reason = "발송 기한 초과", now = now)
+@@ -2461,7 +2464,7 @@
+             Reminder(
+                 "SHIPMENT_DUE_SOON", "order_items",
+                 "t.status = 'PAID' AND t.paid_at <= :paidUntil AND t.paid_at > :paidSince",
+-                mapOf("paidUntil" to now.minus(Duration.ofDays(3)), "paidSince" to now.minus(Duration.ofDays(4))),
++                mapOf("paidUntil" to now.minus(shipWithin.minusDays(1)), "paidSince" to now.minus(shipWithin)),
+                 "(SELECT tr.seller_id FROM trades tr WHERE tr.id = t.trade_id)", "'SHIPMENT_DUE_SOON:' || t.id",
+             ),
+             Reminder(
+@@ -2875,7 +2878,7 @@
+      */
+     private fun scanDeliveryDelays(now: Instant): BatchResult {
+         val kinds = listOf(
+-            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(Duration.ofDays(4))),
++            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(shipWithin)),
+             Triple("DELIVERY_LATE", "t.status = 'DELIVERING' AND t.inspected_at <= :due", now.minus(Duration.ofDays(5))),
+         )
+         var processed = 0

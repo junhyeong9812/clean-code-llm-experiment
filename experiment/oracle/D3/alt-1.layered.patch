@@ -1,0 +1,36 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt
+@@ -90,8 +90,8 @@
+         val PAYMENT_LEAD: Duration = Duration.ofMinutes(10)
+ 
+         /** 발송 기한 알림 창: 결제 시각 기준. */
+-        val SHIPMENT_FROM: Duration = Duration.ofDays(3)
+-        val SHIPMENT_UNTIL: Duration = Duration.ofDays(4)
++        val SHIPMENT_FROM: Duration = OrderItem.SHIP_WITHIN.minusDays(1)
++        val SHIPMENT_UNTIL: Duration = OrderItem.SHIP_WITHIN
+ 
+         /** 분쟁 기간 알림 창: 확정 + 12일부터 확정 + 14일까지(양끝 포함). */
+         val DISPUTE_FROM: Duration = Duration.ofDays(12)
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Tracking.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Tracking.kt
+@@ -85,7 +85,7 @@
+  */
+ enum class ShipmentDelayKind(val target: BatchTarget, private val after: Duration) {
+     /** PAID이고 발송 기한이 지난 항목(shipment-deadline이 아직 돌지 않은 항목). */
+-    SHIPMENT_OVERDUE(BatchTarget.SHIPMENT_OVERDUE_ITEMS, Duration.ofDays(4)),
++    SHIPMENT_OVERDUE(BatchTarget.SHIPMENT_OVERDUE_ITEMS, OrderItem.SHIP_WITHIN),
+ 
+     /** DELIVERING이고 inspected_at + 5일 ≤ 현재. */
+     DELIVERY_LATE(BatchTarget.DELIVERY_LATE_ITEMS, Duration.ofDays(5)),
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
+@@ -393,7 +393,8 @@
+     }
+ 
+     companion object {
+-        private val SHIP_WITHIN: Duration = Duration.ofDays(3)
++        /** 발송 기한: 결제 + 3일(발송 등록·shipment-deadline·마감 임박 알림·지연 기록 공용). */
++        val SHIP_WITHIN: Duration = Duration.ofDays(3)
+         private val CONFIRM_WITHIN: Duration = Duration.ofDays(7)
+         private val DISPUTE_WITHIN: Duration = Duration.ofDays(14)
+ 

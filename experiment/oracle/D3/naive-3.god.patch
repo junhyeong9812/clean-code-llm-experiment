@@ -1,0 +1,20 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -2461,7 +2461,7 @@
+             Reminder(
+                 "SHIPMENT_DUE_SOON", "order_items",
+                 "t.status = 'PAID' AND t.paid_at <= :paidUntil AND t.paid_at > :paidSince",
+-                mapOf("paidUntil" to now.minus(Duration.ofDays(3)), "paidSince" to now.minus(Duration.ofDays(4))),
++                mapOf("paidUntil" to now.minus(Duration.ofDays(3)), "paidSince" to now.minus(Duration.ofDays(3))),
+                 "(SELECT tr.seller_id FROM trades tr WHERE tr.id = t.trade_id)", "'SHIPMENT_DUE_SOON:' || t.id",
+             ),
+             Reminder(
+@@ -2875,7 +2875,7 @@
+      */
+     private fun scanDeliveryDelays(now: Instant): BatchResult {
+         val kinds = listOf(
+-            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(Duration.ofDays(4))),
++            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(Duration.ofDays(3))),
+             Triple("DELIVERY_LATE", "t.status = 'DELIVERING' AND t.inspected_at <= :due", now.minus(Duration.ofDays(5))),
+         )
+         var processed = 0

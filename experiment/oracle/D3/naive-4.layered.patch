@@ -1,0 +1,13 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt
+@@ -90,8 +90,8 @@
+         val PAYMENT_LEAD: Duration = Duration.ofMinutes(10)
+ 
+         /** 발송 기한 알림 창: 결제 시각 기준. */
+-        val SHIPMENT_FROM: Duration = Duration.ofDays(3)
+-        val SHIPMENT_UNTIL: Duration = Duration.ofDays(4)
++        val SHIPMENT_FROM: Duration = Duration.ofDays(2)
++        val SHIPMENT_UNTIL: Duration = Duration.ofDays(3)
+ 
+         /** 분쟁 기간 알림 창: 확정 + 12일부터 확정 + 14일까지(양끝 포함). */
+         val DISPUTE_FROM: Duration = Duration.ofDays(12)

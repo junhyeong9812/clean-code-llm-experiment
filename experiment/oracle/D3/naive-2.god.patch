@@ -1,0 +1,26 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -819,7 +819,7 @@
+                 throw ApiException(HttpStatus.FORBIDDEN, "NOT_OWNER", "판매자가 아닌 주문 항목: $itemId")
+             }
+             requireItemStatus(item, "PAID")
+-            val deadline = item.paidAt!!.plus(Duration.ofDays(3))
++            val deadline = item.paidAt!!.plus(Duration.ofDays(4))
+             if (!now.isBefore(deadline)) {
+                 throw ApiException(HttpStatus.CONFLICT, "DEADLINE_PASSED", "발송 기한($deadline)이 지났다: $itemId")
+             }
+@@ -1548,12 +1548,12 @@
+         forEachTarget(
+             "order_items",
+             "t.status = 'PAID' AND t.paid_at <= :due",
+-            mapOf("due" to now.minus(Duration.ofDays(3))),
++            mapOf("due" to now.minus(Duration.ofDays(4))),
+             isolatedAs = "shipment-deadline",
+         ) { itemId ->
+             tx.execute {
+                 val item = lockOrderOf(itemId)
+-                if (item.status != "PAID" || item.paidAt!!.plus(Duration.ofDays(3)).isAfter(now)) {
++                if (item.status != "PAID" || item.paidAt!!.plus(Duration.ofDays(4)).isAfter(now)) {
+                     false
+                 } else {
+                     sellerFault(item, reason = "발송 기한 초과", now = now)

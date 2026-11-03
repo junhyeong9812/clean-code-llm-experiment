@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -2875,7 +2875,7 @@
+      */
+     private fun scanDeliveryDelays(now: Instant): BatchResult {
+         val kinds = listOf(
+-            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(Duration.ofDays(4))),
++            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(Duration.ofDays(3))),
+             Triple("DELIVERY_LATE", "t.status = 'DELIVERING' AND t.inspected_at <= :due", now.minus(Duration.ofDays(5))),
+         )
+         var processed = 0

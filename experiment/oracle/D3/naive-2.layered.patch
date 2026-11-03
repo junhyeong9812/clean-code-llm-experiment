@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Order.kt
+@@ -393,7 +393,7 @@
+     }
+ 
+     companion object {
+-        private val SHIP_WITHIN: Duration = Duration.ofDays(3)
++        private val SHIP_WITHIN: Duration = Duration.ofDays(4)
+         private val CONFIRM_WITHIN: Duration = Duration.ofDays(7)
+         private val DISPUTE_WITHIN: Duration = Duration.ofDays(14)
+ 

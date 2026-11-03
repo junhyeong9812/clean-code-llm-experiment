@@ -1,0 +1,11 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Tracking.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Tracking.kt
+@@ -85,7 +85,7 @@
+  */
+ enum class ShipmentDelayKind(val target: BatchTarget, private val after: Duration) {
+     /** PAID이고 발송 기한이 지난 항목(shipment-deadline이 아직 돌지 않은 항목). */
+-    SHIPMENT_OVERDUE(BatchTarget.SHIPMENT_OVERDUE_ITEMS, Duration.ofDays(4)),
++    SHIPMENT_OVERDUE(BatchTarget.SHIPMENT_OVERDUE_ITEMS, Duration.ofDays(3)),
+ 
+     /** DELIVERING이고 inspected_at + 5일 ≤ 현재. */
+     DELIVERY_LATE(BatchTarget.DELIVERY_LATE_ITEMS, Duration.ofDays(5)),

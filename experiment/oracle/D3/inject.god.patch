@@ -1,0 +1,29 @@
+--- a/app/src/main/kotlin/com/ccle/god/Marketplace.kt
++++ b/app/src/main/kotlin/com/ccle/god/Marketplace.kt
+@@ -2460,8 +2460,8 @@
+             ),
+             Reminder(
+                 "SHIPMENT_DUE_SOON", "order_items",
+-                "t.status = 'PAID' AND t.paid_at <= :before2d AND t.paid_at > :before3d",
+-                mapOf("before2d" to now.minus(Duration.ofDays(2)), "before3d" to now.minus(Duration.ofDays(3))),
++                "t.status = 'PAID' AND t.paid_at <= :paidUntil AND t.paid_at > :paidSince",
++                mapOf("paidUntil" to now.minus(Duration.ofDays(3)), "paidSince" to now.minus(Duration.ofDays(4))),
+                 "(SELECT tr.seller_id FROM trades tr WHERE tr.id = t.trade_id)", "'SHIPMENT_DUE_SOON:' || t.id",
+             ),
+             Reminder(
+@@ -2869,13 +2869,13 @@
+         TrackingEventView(e.id!!, e.orderItemId, e.carrier, e.trackingNo, e.eventType, e.occurredAt, e.receivedAt)
+ 
+     /**
+-     * delivery-delay-scan(§12.2): 두 종류를 차례로(order_items id 순). SHIPMENT_OVERDUE = PAID이고 paid_at + 3일 ≤ 현재,
++     * delivery-delay-scan(§12.2): 두 종류를 차례로(order_items id 순). SHIPMENT_OVERDUE = PAID이고 발송 기한이 지난 항목,
+      * DELIVERY_LATE = DELIVERING이고 inspected_at + 5일 ≤ 현재. 같은 (항목, kind) 행이 없을 때만 1행(detected_at = 현재).
+      * 잠금 없음, 항목 상태는 바꾸지 않는다. 반환 = 쓴 행 수.
+      */
+     private fun scanDeliveryDelays(now: Instant): BatchResult {
+         val kinds = listOf(
+-            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(Duration.ofDays(3))),
++            Triple("SHIPMENT_OVERDUE", "t.status = 'PAID' AND t.paid_at <= :due", now.minus(Duration.ofDays(4))),
+             Triple("DELIVERY_LATE", "t.status = 'DELIVERING' AND t.inspected_at <= :due", now.minus(Duration.ofDays(5))),
+         )
+         var processed = 0

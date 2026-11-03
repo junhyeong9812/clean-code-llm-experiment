@@ -1,0 +1,70 @@
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Notification.kt
+@@ -69,7 +69,7 @@
+     /** trades: AWAITING_PAYMENT, now < payment_due_at ≤ now + 10분 → 구매자. */
+     PAYMENT_DUE_SOON(BatchTarget.PAYMENT_DUE_SOON_TRADES),
+ 
+-    /** order_items: PAID, paid_at + 2일 ≤ now < paid_at + 3일 → 판매자. */
++    /** order_items: PAID, 결제 후 알림 창(SHIPMENT_FROM·SHIPMENT_UNTIL) 안 → 판매자. */
+     SHIPMENT_DUE_SOON(BatchTarget.SHIPMENT_DUE_SOON_ITEMS),
+ 
+     /** order_items: CONFIRMED, confirmed_at + 12일 ≤ now ≤ confirmed_at + 14일 → 구매자. */
+@@ -89,9 +89,9 @@
+         /** 결제 기한 알림 창: 기한 10분 전부터. */
+         val PAYMENT_LEAD: Duration = Duration.ofMinutes(10)
+ 
+-        /** 발송 기한 알림 창: 결제 + 2일부터 결제 + 3일 전까지. */
+-        val SHIPMENT_FROM: Duration = Duration.ofDays(2)
+-        val SHIPMENT_UNTIL: Duration = Duration.ofDays(3)
++        /** 발송 기한 알림 창: 결제 시각 기준. */
++        val SHIPMENT_FROM: Duration = Duration.ofDays(3)
++        val SHIPMENT_UNTIL: Duration = Duration.ofDays(4)
+ 
+         /** 분쟁 기간 알림 창: 확정 + 12일부터 확정 + 14일까지(양끝 포함). */
+         val DISPUTE_FROM: Duration = Duration.ofDays(12)
+--- a/app/src/main/kotlin/com/ccle/layered/infra/ReminderSql.kt
++++ b/app/src/main/kotlin/com/ccle/layered/infra/ReminderSql.kt
+@@ -39,8 +39,8 @@
+             )
+             DeadlineReminder.SHIPMENT_DUE_SOON -> ReminderSql(
+                 reminder, "order_items",
+-                "t.status = 'PAID' AND t.paid_at <= :before2d AND t.paid_at > :before3d",
+-                { mapOf("before2d" to it.minus(DeadlineReminder.SHIPMENT_FROM), "before3d" to it.minus(DeadlineReminder.SHIPMENT_UNTIL)) },
++                "t.status = 'PAID' AND t.paid_at <= :paidUntil AND t.paid_at > :paidSince",
++                { mapOf("paidUntil" to it.minus(DeadlineReminder.SHIPMENT_FROM), "paidSince" to it.minus(DeadlineReminder.SHIPMENT_UNTIL)) },
+                 "(SELECT tr.seller_id FROM trades tr WHERE tr.id = t.trade_id)", "'SHIPMENT_DUE_SOON:' || t.id",
+             )
+             DeadlineReminder.DISPUTE_WINDOW_CLOSING -> ReminderSql(
+--- a/app/src/main/kotlin/com/ccle/layered/domain/Tracking.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/Tracking.kt
+@@ -84,8 +84,8 @@
+  * 같은 (항목, kind) 행이 없을 때만 대상이다(대상 조건의 NOT EXISTS).
+  */
+ enum class ShipmentDelayKind(val target: BatchTarget, private val after: Duration) {
+-    /** PAID이고 paid_at + 3일 ≤ 현재(발송 기한 지남 — shipment-deadline이 아직 돌지 않은 항목). */
+-    SHIPMENT_OVERDUE(BatchTarget.SHIPMENT_OVERDUE_ITEMS, Duration.ofDays(3)),
++    /** PAID이고 발송 기한이 지난 항목(shipment-deadline이 아직 돌지 않은 항목). */
++    SHIPMENT_OVERDUE(BatchTarget.SHIPMENT_OVERDUE_ITEMS, Duration.ofDays(4)),
+ 
+     /** DELIVERING이고 inspected_at + 5일 ≤ 현재. */
+     DELIVERY_LATE(BatchTarget.DELIVERY_LATE_ITEMS, Duration.ofDays(5)),
+--- a/app/src/main/kotlin/com/ccle/layered/domain/BatchTargets.kt
++++ b/app/src/main/kotlin/com/ccle/layered/domain/BatchTargets.kt
+@@ -46,7 +46,7 @@
+     /** deadline-reminder PAYMENT_DUE_SOON(ADR-0007 §7.1): AWAITING_PAYMENT, now < payment_due_at ≤ now + 10분, 같은 dedupe_key 알림 없음. */
+     PAYMENT_DUE_SOON_TRADES,
+ 
+-    /** deadline-reminder SHIPMENT_DUE_SOON(§7.1): PAID, paid_at + 2일 ≤ now < paid_at + 3일, 같은 dedupe_key 알림 없음. */
++    /** deadline-reminder SHIPMENT_DUE_SOON(§7.1): PAID, 결제 후 알림 창 안, 같은 dedupe_key 알림 없음. */
+     SHIPMENT_DUE_SOON_ITEMS,
+ 
+     /** deadline-reminder DISPUTE_WINDOW_CLOSING(§7.1): CONFIRMED, confirmed_at + 12일 ≤ now ≤ confirmed_at + 14일, 같은 dedupe_key 알림 없음. */
+@@ -64,7 +64,7 @@
+     /** price-alert-scan(ADR-0007 §8.3): ACTIVE 가격 알림. */
+     ACTIVE_PRICE_ALERTS,
+ 
+-    /** delivery-delay-scan SHIPMENT_OVERDUE(ADR-0007 §12.2): PAID이고 paid_at + 3일 ≤ 현재, 같은 (항목, kind) 행 없음. */
++    /** delivery-delay-scan SHIPMENT_OVERDUE(ADR-0007 §12.2): PAID이고 발송 기한이 지난 항목, 같은 (항목, kind) 행 없음. */
+     SHIPMENT_OVERDUE_ITEMS,
+ 
+     /** delivery-delay-scan DELIVERY_LATE(§12.2): DELIVERING이고 inspected_at + 5일 ≤ 현재, 같은 (항목, kind) 행 없음. */
