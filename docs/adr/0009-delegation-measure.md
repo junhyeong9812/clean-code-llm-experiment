@@ -49,11 +49,11 @@
 ## 4. 과제
 
 - **S1~S4:** ADR-0008 그대로(experiment/ = `417b3b6`의 판정 자산). 바꾸지 않는다.
-- **D1~D3 (새로, 큰 탐색 — 후보 조사 DEL-W1, 기준 `ddd3d56`, 줄 번호는 과제 작성 때 확정) [제안]:**
+- **D1~D3 (새로, 큰 탐색 — 후보 조사 DEL-W1, 기준 `ddd3d56`. 과제 작성 DEL-T1~T3에서 줄 번호 확정 — 커밋 `6139696`·`66cbb30`·`8e6322b`, 정본 = `experiment/oracle/D*/design.md`) [제안]:**
 
 | ID | 유형 | 요지 | 고칠 곳(god / layered) | 계약 테스트 영향 |
 |---|---|---|---|---|
-| D1 | 교차 기능 변경 | 구매·판매 제한을 **끝 시각 정각까지** 제한으로 본다(`until ≥ 현재`). 새 입찰·가격 알림 발동과 재무장·판매자 등급·제한 알림·관리자 제한 사용자 목록 모두 | god `Marketplace.kt` 8곳(:202·:205·:2110·:2480·:2484·:2704·:2787·:3246) / layered 6파일 9곳(`User.kt`·`SellerGrade.kt`·`ReminderSql.kt`·`Wishlist.kt`·`JpaNotificationRepositories.kt`·`JpaAdminQueryRepository.kt`) | 경계를 단언하는 6메서드 제외 + 숨은 테스트로 이전(ADR-0008 S3 전례) |
+| D1 | 교차 기능 변경 | 구매·판매 제한을 **끝 시각 정각까지** 제한으로 본다(`until ≥ 현재`). 새 입찰·가격 알림 발동과 재무장·판매자 등급·제한 알림·관리자 제한 사용자 목록 모두 | god `Marketplace.kt` 8곳(:202·:205·:2110·:2480·:2484·:2704·:2787·:3246) / layered 6파일 8줄(`User.kt`·`SellerGrade.kt`·`ReminderSql.kt`·`Wishlist.kt`·`JpaNotificationRepositories.kt`·`JpaAdminQueryRepository.kt` — 후보 조사의 '9곳'은 호출처 포함 셈) | **8메서드** 제외 + 새 규칙 단언을 숨은 테스트로 이전(ADR-0008 S3 전례). 후보 조사의 6개에 `BatchAndClockTest` 구매 경고 2개 추가(끝 = 현재에 구매 입찰로 준비 — 정답에서 403) |
 | D2 | 원인 추적 버그 | (주입) 포인트 차감 묶음 순서를 만료 늦은 것부터로. 증상 문안: 먼저 적립된 쪽 유효기간이 지난 뒤 `point-expiry`에서 이미 썼어야 할 포인트가 소멸된다 — 고칠 곳 이름 없음 | god `:1170`(`reservePoints`) / layered `infra/JpaPointRepositories.kt:37`. 증상 자리(소멸 배치)와 데이터로만 이어지고 결제 경로 3홉 이상. 규칙 주석 4곳 중립화 | 0(주입을 잡는 `PointRuleTest` FIFO는 숨은 재료) |
 | D3 | 조사·보고 후 수정 | (주입) 발송 기한(결제 후 3일)을 쓰는 곳 중 2곳(지연 기록·마감 임박 알림 창)을 하루 어긋나게. 문안: 지연 기록이 하루 늦게 생긴다는 제보 — 발송 기한을 쓰는 곳을 모두 찾아 3일로 맞추고 보고 | god 5곳(:822·:1551·:1556·:2464·:2878) / layered 3파일(`Order.kt`·`Notification.kt`·`Tracking.kt`). god 파라미터 이름·KDoc 중립화 | 0(주입을 잡는 A4·A11은 숨은 재료) |
 
@@ -165,3 +165,4 @@ python3 experiment/runner/del_schedule.py --phase main --tasks S1,S2,S3,S4,D1,D2
 ## 11. 개정 이력
 
 - **초안 리뷰 반영(2026-11-03, 채택 전):** 듀얼 1패스(Opus 16·codex 9 지적)와 사용자 결정 3건(본 실행 판정 축소, 호스트 로그인 유지 루프, 비교 두 축 + 위임 차단 기준)으로 다시 썼다 — 기준 방식 `direct` → `solo`, 주 비교 ÷`explore-opus`, 구간 조건 대칭화, 비열등을 성공률 차 구간으로, 결측·재실행 규칙, 탐색량 문턱 단위 일치, 실행 순서·로그인·시간 추정 정정, D1~D3 구체화. 근거 ledger: 작업 log.
+- **과제 작성 반영(2026-11-03, 채택 뒤·파일럿 전 — 사실 정정, 판정 기준 불변):** D1 layered 고칠 곳 9곳 → 8줄(호출처 제외), D1 회귀 제외 6 → 8메서드(`BatchAndClockTest` 2개 — 정답에서 준비 단계가 깨짐, 같은 계약은 숨은 테스트로 이전). D2·D3 제외 0 그대로. 과제별 상세·확인 결과 = `experiment/oracle/D*/design.md`.
