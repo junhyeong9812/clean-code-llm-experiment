@@ -38,12 +38,27 @@ class Schedule(unittest.TestCase):
         self.assertNotIn("--stages", ds.argv((1, "D1", "god", "solo"), "R", "pilot"))
 
 
+class ScheduleState(unittest.TestCase):
+    def test_spent_and_missing(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            rows = [{"rep": 1, "case": "D1", "structure": "god", "arm": "solo", "valid": True, "cost_usd": 0.5},
+                    {"rep": 1, "case": "D1", "structure": "god", "arm": "explore-haiku", "valid": False, "cost_usd": 0.25}]
+            (Path(d) / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows) + "broken\n")
+            self.assertEqual(ds.spent(d), 0.75)
+            js = [(1, "D1", "god", "solo"), (1, "D1", "god", "explore-haiku")]
+            self.assertEqual(ds.missing(js, d), [(1, "D1", "god", "explore-haiku")])
+
+
 class Keepalive(unittest.TestCase):
     def test_tick_only_below(self):
         with tempfile.TemporaryDirectory() as d:
             calls = []
             with mock.patch.object(keepalive, "left_min", side_effect=[30.0]):
-                self.assertFalse(keepalive.tick(6, run=lambda *a, **k: calls.append(a), lock=Path(d) / "l"))
+                self.assertIsNone(keepalive.tick(6, run=lambda *a, **k: calls.append(a), lock=Path(d) / "l"))
+            with mock.patch.object(keepalive, "left_min", side_effect=[4.0, 4.0]):
+                self.assertFalse(keepalive.tick(6, run=lambda *a, **k: mock.Mock(returncode=0),
+                                                log=lambda *a, **k: None, lock=Path(d) / "l"))
             with mock.patch.object(keepalive, "left_min", side_effect=[4.0, 60.0]):
                 self.assertTrue(keepalive.tick(6, run=lambda *a, **k: calls.append(a) or mock.Mock(returncode=0),
                                                log=lambda *a, **k: None, lock=Path(d) / "l"))

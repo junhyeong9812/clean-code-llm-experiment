@@ -23,21 +23,23 @@ def left_min(origin: Path = creds.ORIGIN) -> float:
     return (creds.expiry(origin) - time.time()) / 60
 
 
-def tick(below_min: float, run=subprocess.run, log=print, origin: Path = creds.ORIGIN, lock: Path = creds.LOCK) -> bool:
-    """만료까지 below_min 분 미만이면 잠금 안에서 1회 호출. 호출했으면 True."""
+def tick(below_min: float, run=subprocess.run, log=print, origin: Path = creds.ORIGIN, lock: Path = creds.LOCK):
+    """만료까지 below_min 분 미만이면 잠금 안에서 1회 호출. 부르지 않았으면 None, 불렀으면 갱신됐는지(만료가 5분 넘게 늘었나)."""
     before = left_min(origin)
     if before >= below_min:
-        return False
+        return None
     with creds._locked(lock):
         p = run(PING, cwd="/tmp", capture_output=True, text=True, timeout=180)
     after = left_min(origin)
-    log(f"{datetime.now():%H:%M:%S} keepalive rc={p.returncode} 만료까지 {before:.1f}분 → {after:.1f}분", flush=True)
-    return True
+    refreshed = after > before + 5
+    log(f"{datetime.now():%H:%M:%S} keepalive rc={p.returncode} 만료까지 {before:.1f}분 → {after:.1f}분 "
+        f"{'갱신' if refreshed else '갱신 안 됨'}", flush=True)
+    return refreshed
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--below-min", type=float, default=6)
+    ap.add_argument("--below-min", type=float, required=True, help="호스트 CLI 갱신 시점 실측으로 정한다(ADR-0009 §8)")
     ap.add_argument("--every", type=int, default=60)
     a = ap.parse_args()
     while True:

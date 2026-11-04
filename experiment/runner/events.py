@@ -1147,9 +1147,10 @@ def result_count(evs: list) -> int:
 BUILTIN_PLUGINS = {"cc-plugin-agents-md", "cc-plugin-plugin-authoring"}  # 2.1.308 내장(스모크 init 실측)
 
 
-def sub_info(cs: list, existing: set = None) -> dict:
-    """ADR-0009: 서브에이전트 종류(Agent·Task 호출의 subagent_type 순서대로)와, 하위 에이전트 안의 호출이 쓴 파일.
-    explorer 는 고치지 말라는 지시뿐이라 막는 장치가 없다 — 하위 쓰기는 메인 편집과 구별해 드러낸다."""
+def sub_info(cs: list) -> dict:
+    """ADR-0009: 서브에이전트 종류(Agent·Task 호출의 subagent_type 순서대로)와, 하위 에이전트 안의 호출이 쓰려 한 파일
+    (편집 도구 입력·Bash 쓰기 해석 — 추정이다. 실제 변경은 diff, Bash 해석 누락 가능). explorer 는 고치지 말라는
+    지시뿐이라 막는 장치가 없다 — 하위 쓰기 시도를 메인 편집과 구별해 드러낸다."""
     types, paths = [], []
     for c in cs:
         if c.name in ("Agent", "Task"):

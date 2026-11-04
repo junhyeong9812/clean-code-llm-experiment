@@ -69,6 +69,9 @@ class Arms(unittest.TestCase):
         with mock.patch.object(runner, "mem_available_gb", lambda: next(seq)):
             m = runner.wait_mem(12, sleep=slept.append, log=lambda *a, **k: None)
         self.assertEqual((slept, m), ([60], 13.0))
+        with mock.patch.object(runner, "mem_available_gb", lambda: 1.0), mock.patch.object(runner, "_stop") as st:
+            st.is_set.return_value = True
+            self.assertIsNone(runner.wait_mem(12, sleep=slept.append, log=lambda *a, **k: None))
         with mock.patch.object(runner, "mem_available_gb", lambda: 1.0):
             self.assertEqual(runner.wait_mem(0, sleep=slept.append), 1.0)  # 0 = 끔
 

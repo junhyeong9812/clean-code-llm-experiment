@@ -585,7 +585,12 @@ def run_one(case: str, structure: str, rep: int, model: str, results: Path, budg
                    **events.metrics(cs, symbols(case, structure), existing=base_files(rd / "base"),
                                    changed=changed_files(rd / "base", rd / "work")), audit_violations=violations,
                    **classify(evs, rc, timed_out, violations, tail(err, 4000) + limit_evidence(evs), tok, n_asst))
-        row.update(events.sub_info(cs, base_files(rd / "base")))
+        row.update(events.sub_info(cs))
+        cbm = row.get("cost_by_model") or {}
+        if row.get("cost_usd") is not None and cbm and all(v is not None for v in cbm.values()):
+            row["cost_check"] = "ok" if abs(sum(cbm.values()) - row["cost_usd"]) <= 1e-6 else "mismatch"
+        else:
+            row["cost_check"] = "missing"  # ADR-0009 §7.4 — 비용 계산에서 뺀다
         row["result_count"] = events.result_count(evs)  # 2 이상이면 큐에 쌓인 턴 — 토큰은 마지막 result 기준(표시)
         harness = events.harness_problems(row["init"]) if any(e.get("subtype") == "init" for e in evs) \
             else ["init 이벤트 없음"]
@@ -999,13 +1004,18 @@ def mem_available_gb() -> float:
     return float("inf")
 
 
-def wait_mem(min_gb: float, sleep=None, log=print) -> float:
-    """ADR-0009 부하 제한: 가용 메모리가 min_gb 미만이면 60초씩 기다린다(사용자 PC 부하 테스트와 겹치지 않게)."""
+def wait_mem(min_gb: float, sleep=None, log=print):
+    """ADR-0009 부하 제한: 가용 메모리가 min_gb 미만이면 60초씩 기다린다(사용자 PC 부하 테스트와 겹치지 않게).
+    문턱을 넘은 그 측정값을 돌려준다. 대기 중 중단되면 None(호출자는 시작하지 않는다)."""
     sleep = sleep or (lambda s: _stop.wait(s))
-    while min_gb and (m := mem_available_gb()) < min_gb and not _stop.is_set():
+    while True:
+        m = mem_available_gb()
+        if not min_gb or m >= min_gb:
+            return m
+        if _stop.is_set():
+            return None
         log(f"[runner] 가용 메모리 {m:.1f}GB < {min_gb}GB — 60초 대기", flush=True)
         sleep(60)
-    return mem_available_gb()
 
 
 def cmd_run(a) -> int:
@@ -1047,7 +1057,8 @@ def cmd_run(a) -> int:
             with case_lock(c):
                 if _stop.is_set():  # 잠금을 기다리는 동안 중단됨 — 시작하지 않은 job
                     return r
-                wait_mem(a.min_mem_gb)
+                if wait_mem(a.min_mem_gb) is None or _stop.is_set():  # 메모리 대기 중 중단 — 시작하지 않은 job
+                    return r
                 r = run_one(c, s, rep, a.model, results, a.budget, a.timeout, arm=a.arm,
                             stages=tuple(a.stages.split(",")) if a.stages else None)
             if r.get("invalid_reason") != "usage_limit" or attempt > a.limit_retries or _stop.is_set():

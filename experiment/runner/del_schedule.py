@@ -8,6 +8,7 @@
   python3 experiment/runner/del_schedule.py --phase main --tasks S1,S2,S3,S4,D1,D2,D3 --results-dir … [--dry-run]
 """
 import argparse
+import json
 import random
 import subprocess
 import sys
@@ -54,6 +55,7 @@ def main() -> int:
     ap.add_argument("--s-tasks", default="")
     ap.add_argument("--results-dir", required=True)
     ap.add_argument("--passes", type=int, default=3, help="전체 목록을 몇 번 훑나(1회 + 재실행 상한 2)")
+    ap.add_argument("--cap-usd", type=float, default=None, help="결과 폴더 누적 cost_usd 가 이 값 이상이면 새 실행을 시작하지 않는다")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     js = jobs(a.phase, a.tasks.split(","), [x for x in a.s_tasks.split(",") if x])
@@ -64,12 +66,41 @@ def main() -> int:
         return 0
     for p in range(1, a.passes + 1):
         for j in js:
+            if a.cap_usd is not None and spent(a.results_dir) >= a.cap_usd:
+                print(f"누적 비용 ≥ ${a.cap_usd} — 새 실행 중지", flush=True)
+                return 3
             r = subprocess.run(argv(j, a.results_dir, a.phase))
-            if r.returncode == 130:  # 러너 중단(SIGINT·SIGTERM) — 스케줄도 멈춘다
+            if r.returncode in (130, -2, -15, 143):  # 러너 중단(SIGINT·SIGTERM) — 스케줄도 멈춘다
                 print("중단", flush=True)
                 return 130
+            if r.returncode not in (0, 1):  # 1 = 무효 행 있음(다음 pass 재실행). 그 밖은 러너·설정 오류
+                print(f"러너 오류 rc={r.returncode} job={j} — 스케줄 중지", flush=True)
+                return 2
         print(f"pass {p} 끝", flush=True)
-    return 0
+    left = missing(js, a.results_dir)
+    print(f"미완료 키 {len(left)}개" + (f": {left[:10]}" if left else ""), flush=True)
+    return 1 if left else 0
+
+
+def _rows(results: str) -> list:
+    p = Path(results) / "runs.jsonl"
+    out = []
+    for line in (p.read_text(errors="replace").splitlines() if p.exists() else []):
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def spent(results: str) -> float:
+    return sum(r.get("cost_usd") or 0 for r in _rows(results))
+
+
+def missing(js: list, results: str) -> list:
+    """valid 행이 없는 (rep, case, structure, arm) — 재실행 상한 뒤에도 남은 결측(ADR-0009 §7.4)."""
+    done = {(r.get("rep"), r.get("case"), r.get("structure"), r.get("arm", "direct")) for r in _rows(results) if r.get("valid")}
+    return [j for j in js if j not in done]
 
 
 if __name__ == "__main__":
