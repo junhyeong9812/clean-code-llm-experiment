@@ -59,3 +59,4 @@
 2026-11-03 20:57:31|post-fix 재점검(codex, 수정 hunk 한정) — DT-1·2·4·5·8 해소, 새 지적 1: D1 G1 정산 항목이 기존 order_items(min id)에 기댐|채택 → dd165eb(준비가 결제 항목 직접 생성), D1 hidden fix·none·naive-1 두 구조 재판정 중
 2026-11-03 21:59:11|D1 hidden 재판정(dd165eb, 깨끗한 트리) — fix 12/12 두 구조, none 9·naive-1 7 실패 이름 수정 전과 동일|G1 지적 해소, ledger 루프 1 종료
 2026-11-04 05:44:32|채택 큐 완료(52회, 64행, 깨끗한 트리 77c3ea5·dd165eb) — fix·alt-1 전 단계 통과, fix 숨은 결정성 ≥5, none·naive 실패 이름·수 1회차와 같고 god=layered, tampered 0|과제 D1~D3 채택. 다음 = 파일럿(사용자 확인 대기)
+2026-11-04 10:03:32|push 전 혼합 커밋 6bde27a를 code(c5a3022)·docs(a8852e3)로 분리 — 이후 커밋 SHA 재작성, 트리 동일(diff 0). 옛→새: 8389a02→a5ce641, 81d7983→825db15, 66cbb30→b8749a9, 6139696→1a1c69b, 8e6322b→a0d575e, 01edabf→5d4a1e0, 6ce8731→f0cbbe5, 77c3ea5→568bfee, dd165eb→47a5782, 269dd35→819ff66. 결과 행 code_sha는 옛 SHA 그대로(로컬 백업 브랜치 backup/delegation-measure-pre-split에 보존)|push 진행
