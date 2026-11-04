@@ -65,7 +65,7 @@
 
 - **과제 러너 분석 메모 — layered 2단계가 남긴 것(근거: `docs/plans/2026-10-22/layered-stage2/log.md`):** 재합의 1 — 규칙 위치와 SQL 동치가 부딪히는 곳(§8.1 등급 선택·등급 경계·정산 대상 조건·수수료 floor)은 god SQL과 같게 infra에 둠. 실험 분석(과제 러너) 때 '구조 차이'로 다룰 항목.
 
-- 시드 이미지(2026-10-25 갱신): 500k 이미지 재빌드 완료(`ccle-postgres-seed:500k-s42` 16.6GB, verify 위반 0, 빌드 1:28:48) — 유지 중. 이전 기록: equiv 2단계 착수 시 docker에서 `ccle-postgres-seed:1k-s42`·500k 이미지가 모두 없었다(세션 밖 정리로 추정 — 디스크 6.7G → 54G). 1k는 `tools/seedgen/build-image.sh ~/ccle-csv/1k 1k-s42`로 재빌드(verify 위반 0, 기존 7개 equiv 판정 불변). 500k는 2026-10-25 재빌드됨
+- 시드 이미지(2026-10-25 갱신): 500k 이미지 재빌드 완료(`ccle-postgres-seed:500k-s42` 16.6GB, verify 위반 0, 빌드 1:28:48) — **2026-11-04 디스크 부족으로 삭제**(사용자 승인; 단계 A 스키마 뒤라 어차피 새 CSV부터 재빌드 필요). 1k v1(`1k-s42`)도 삭제, 현행 `1k-s42-v2`만 남음. 이전 기록: equiv 2단계 착수 시 docker에서 `ccle-postgres-seed:1k-s42`·500k 이미지가 모두 없었다(세션 밖 정리로 추정 — 디스크 6.7G → 54G). 1k는 `tools/seedgen/build-image.sh ~/ccle-csv/1k 1k-s42`로 재빌드(verify 위반 0, 기존 7개 equiv 판정 불변). 500k는 2026-10-25 재빌드됨
 
 - 동치 하네스 한계(근거: `docs/plans/2026-10-19/equiv-harness/log.md`): 폴링 접기는 반복 단위가 통째로 늘어나는 변경을 못 잡음(재합의 2) · docker 데몬 오류 시 정리 잔여 확인이 "없음"으로 처리(리뷰 N2) · 직렬 시나리오는 준비 문장 이름까지 비교(부하 큰 호스트에서 흔들리면 재합의) · docker 로그 회전 없음 가정 · 재개 조건: 해당 증상이 실제로 관측될 때
 

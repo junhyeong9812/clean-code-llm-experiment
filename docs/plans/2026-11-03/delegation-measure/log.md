@@ -60,3 +60,7 @@
 2026-11-03 21:59:11|D1 hidden 재판정(dd165eb, 깨끗한 트리) — fix 12/12 두 구조, none 9·naive-1 7 실패 이름 수정 전과 동일|G1 지적 해소, ledger 루프 1 종료
 2026-11-04 05:44:32|채택 큐 완료(52회, 64행, 깨끗한 트리 77c3ea5·dd165eb) — fix·alt-1 전 단계 통과, fix 숨은 결정성 ≥5, none·naive 실패 이름·수 1회차와 같고 god=layered, tampered 0|과제 D1~D3 채택. 다음 = 파일럿(사용자 확인 대기)
 2026-11-04 10:03:32|push 전 혼합 커밋 6bde27a를 code(c5a3022)·docs(a8852e3)로 분리 — 이후 커밋 SHA 재작성, 트리 동일(diff 0). 옛→새: 8389a02→a5ce641, 81d7983→825db15, 66cbb30→b8749a9, 6139696→1a1c69b, 8e6322b→a0d575e, 01edabf→5d4a1e0, 6ce8731→f0cbbe5, 77c3ea5→568bfee, dd165eb→47a5782, 269dd35→819ff66. 결과 행 code_sha는 옛 SHA 그대로(로컬 백업 브랜치 backup/delegation-measure-pre-split에 보존)|push 진행
+2026-11-04 10:04:02|push origin/delegation-measure(새 원격 브랜치, 사용자 지시) 완료. 파일럿 시작 — keepalive --below-min 5 + del_schedule pilot 32실행 cap $30, parallel 1·메모리 ≥12GB 대기|진행
+2026-11-04 21:04:28|파일럿 중단(스케줄 3패스 소진, exit 1) — 21:01부터 러너 디스크 가드(여유 ≥10GB) 발동, 여유 6.5GB(/ 99%). 유효 22/32, 미완료 10키(D1 god solo·explore-haiku, S1~S4 solo 8). 무효 행 30 = 시작 전 거부(에이전트 미실행·비용 0)|사용자에게 디스크 확보 확인 요청
+2026-11-04 23:34:52|디스크 확보(사용자, 여유 18GB) — 파일럿 재개(남은 10키, 같은 명령)|진행
+2026-11-04 23:43:39|디스크 정리(사용자 승인) — 안 쓰는 이미지(1k-s42 v1·postgres:16·redis·nginx·ryuk×2)·빌드 캐시, ccle-postgres-seed:500k-s42(16.6GB)·익명 고아 볼륨 2703개 삭제. 여유 17→35GB, 파일럿 진행 중 영향 없음|완료
