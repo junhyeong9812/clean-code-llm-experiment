@@ -73,6 +73,17 @@ class ReviewGaps(unittest.TestCase):
         self.assertAlmostEqual(r["R"]["value"], 2.0 ** (1 / 14))
         lo, hi = r["R"]["ci"]
         self.assertEqual((round(lo, 9), round(hi, 9)), (1.0, round(3.0 ** (1 / 14), 9)))
+        # 두 방식을 짝지어(같은 인덱스로) 뽑으면 A=B=[1,2,3]인 칸의 비는 늘 1 → 구간 (1, 1). 독립 추출이면 넓어진다.
+        c2 = cells(1.0, 1.0)
+        c2[("D0", "god", "A")] = [run(1.0), run(2.0), run(3.0)]
+        c2[("D0", "god", "B")] = [run(1.0), run(2.0), run(3.0)]
+        lo2, hi2 = da.compare(c2, "A", "B", boot=400)["R"]["ci"]
+        self.assertLess(lo2, 1.0)
+        self.assertGreater(hi2, 1.0)
+        # 남은 회차 수 그대로 뽑는다: 2회짜리 칸 [1, 3]의 median은 {1, 2, 3} → 상한 3^(1/14)
+        c3 = cells(1.0, 1.0)
+        c3[("D0", "god", "A")] = [run(1.0), run(3.0)]
+        self.assertAlmostEqual(da.compare(c3, "A", "B", boot=400)["R"]["ci"][1], 3.0 ** (1 / 14))
         # 같은 시드면 같은 구간(재현성)
         self.assertEqual(da.compare(c, "A", "B", boot=400)["R"]["ci"], r["R"]["ci"])
 
@@ -113,6 +124,7 @@ class ReviewGaps(unittest.TestCase):
 
     def test_empty_and_few_d_cells_are_undecidable_not_crash(self):
         self.assertTrue(da.compare({}, "A", "B")["row"].startswith("판정 불가"))
+        self.assertEqual(da.aux({})["solo"]["runs"], 0)
         c = cells(0.5, 1.0)
         for i in range(2):  # D 칸 2개 비용 값을 1개로 → D 공통 칸 4 < 5
             c[(f"D{i}", "god", "A")] = [run(0.5)]

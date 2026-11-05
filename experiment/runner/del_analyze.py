@@ -156,6 +156,9 @@ def aux(cells: dict) -> dict:
     for a in ARMS:
         runs = [r for (c, s, x), rs in cells.items() if x == a for r in rs]
         ok = [r for r in runs if r.get("cost_check") == "ok"]  # 비용 평균도 §7.4와 같게 비용 검사 ok만
+        if not runs or not ok:
+            out[a] = {"runs": len(runs), "note": "실행 또는 비용 값 없음"}
+            continue
         out[a] = {
             "runs": len(runs),
             "success": sum(r["success"] for r in runs),
